@@ -2080,7 +2080,401 @@ function updateClock() {
     $('clock').textContent = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// PLACEHOLDER: étapes 21-23 JS sera ajouté ici
+// ========== ORDER BOOK ==========
+let obLastPrice = null;
+let obLastDirection = 'up';
+
+async function loadOrderBook(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/orderbook?symbol=' + symbol + '&limit=12');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const asks = (data.asks || []).slice(0, 12).reverse();
+        const bids = (data.bids || []).slice(0, 12);
+
+        const maxAskQty = asks.reduce(function(m, a) { return Math.max(m, parseFloat(a[1])); }, 0);
+        const maxBidQty = bids.reduce(function(m, b) { return Math.max(m, parseFloat(b[1])); }, 0);
+        const maxQty = Math.max(maxAskQty, maxBidQty) || 1;
+
+        let totalAskVol = 0, totalBidVol = 0;
+
+        // Asks (sells)
+        const asksEl = $('ob-asks');
+        let asksHtml = '';
+        let cumAsk = 0;
+        for (let i = 0; i < asks.length; i++) {
+            const price = parseFloat(asks[i][0]);
+            const qty = parseFloat(asks[i][1]);
+            cumAsk += qty;
+            totalAskVol += qty;
+            const pct = (qty / maxQty * 100).toFixed(1);
+            asksHtml += '<div class="ob-row ask">'
+                + '<div class="ob-depth" style="width:' + pct + '%"></div>'
+                + '<span class="price">' + fmt(price) + '</span>'
+                + '<span class="qty">' + fmtK(qty) + '</span>'
+                + '<span class="total">' + fmtK(cumAsk) + '</span>'
+                + '</div>';
+        }
+        asksEl.innerHTML = asksHtml;
+
+        // Bids (buys)
+        const bidsEl = $('ob-bids');
+        let bidsHtml = '';
+        let cumBid = 0;
+        for (let i = 0; i < bids.length; i++) {
+            const price = parseFloat(bids[i][0]);
+            const qty = parseFloat(bids[i][1]);
+            cumBid += qty;
+            totalBidVol += qty;
+            const pct = (qty / maxQty * 100).toFixed(1);
+            bidsHtml += '<div class="ob-row bid">'
+                + '<div class="ob-depth" style="width:' + pct + '%"></div>'
+                + '<span class="price">' + fmt(price) + '</span>'
+                + '<span class="qty">' + fmtK(qty) + '</span>'
+                + '<span class="total">' + fmtK(cumBid) + '</span>'
+                + '</div>';
+        }
+        bidsEl.innerHTML = bidsHtml;
+
+        // Spread
+        if (asks.length && bids.length) {
+            const bestAsk = parseFloat(asks[asks.length - 1][0]);
+            const bestBid = parseFloat(bids[0][0]);
+            const spread = bestAsk - bestBid;
+            const spreadPct = ((spread / bestAsk) * 100).toFixed(4);
+            const midPrice = (bestAsk + bestBid) / 2;
+
+            if (obLastPrice != null) {
+                obLastDirection = midPrice >= obLastPrice ? 'up' : 'down';
+            }
+            obLastPrice = midPrice;
+
+            $('spread-price').textContent = fmt(midPrice);
+            $('spread-pct').textContent = spreadPct + '%';
+            const arrow = $('ob-spread').querySelector('.spread-arrow');
+            if (arrow) {
+                arrow.innerHTML = obLastDirection === 'up' ? '&#9650;' : '&#9660;';
+                arrow.className = 'spread-arrow ' + obLastDirection;
+            }
+        }
+
+        // Buy/Sell ratio bar
+        const total = totalBidVol + totalAskVol || 1;
+        $('ratio-buy').style.width = ((totalBidVol / total) * 100).toFixed(1) + '%';
+        $('ratio-sell').style.width = ((totalAskVol / total) * 100).toFixed(1) + '%';
+
+    } catch (err) {
+        console.error('loadOrderBook error:', err);
+    }
+}
+
+// ========== RECENT TRADES ==========
+async function loadTrades(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/trades?symbol=' + symbol);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const trades = data.trades || [];
+
+        const el = $('trades-list');
+        let html = '';
+        for (let i = 0; i < trades.length; i++) {
+            const t = trades[i];
+            const side = t.isBuyerMaker ? 'sell' : 'buy';
+            const time = new Date(t.time).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            html += '<div class="t-row">'
+                + '<span class="t-price ' + side + '">' + fmt(parseFloat(t.price)) + '</span>'
+                + '<span class="t-qty">' + fmtK(parseFloat(t.qty)) + '</span>'
+                + '<span class="t-time">' + time + '</span>'
+                + '</div>';
+        }
+        el.innerHTML = html;
+
+    } catch (err) {
+        console.error('loadTrades error:', err);
+    }
+}
+
+// ========== TICKER (footer + asset bar) ==========
+async function loadTicker() {
+    try {
+        const resp = await fetch(API + '/api/ticker');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const tickers = data.tickers || [];
+
+        // Footer scrolling ticker
+        const tickerEl = $('ft-ticker');
+        if (tickerEl && tickers.length) {
+            let html = '';
+            for (let pass = 0; pass < 2; pass++) {
+                for (let i = 0; i < tickers.length; i++) {
+                    const t = tickers[i];
+                    const cls = parseFloat(t.change_pct) >= 0 ? 'up' : 'down';
+                    const sign = parseFloat(t.change_pct) >= 0 ? '+' : '';
+                    html += '<span class="ft-ticker-item">'
+                        + '<span class="sym">' + t.symbol + '</span>'
+                        + '<span class="val ' + cls + '">' + fmt(parseFloat(t.price)) + ' ' + sign + parseFloat(t.change_pct).toFixed(2) + '%</span>'
+                        + '</span>';
+                }
+            }
+            tickerEl.innerHTML = '<div class="ft-ticker-inner">' + html + '</div>';
+        }
+
+        // Asset bar stats for current symbol
+        const cur = tickers.find(function(t) { return t.symbol === currentSymbol; });
+        if (cur) {
+            updateAssetPrice(parseFloat(cur.price));
+            const chg = parseFloat(cur.change_pct);
+            const chgEl = $('stat-change');
+            if (chgEl) {
+                chgEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+                chgEl.className = 'asset-stat-value ' + (chg >= 0 ? 'up' : 'down');
+            }
+            if (cur.high) $('stat-high').textContent = fmt(parseFloat(cur.high));
+            if (cur.low) $('stat-low').textContent = fmt(parseFloat(cur.low));
+            if (cur.volume) $('stat-vol').textContent = fmtK(parseFloat(cur.volume));
+        }
+
+    } catch (err) {
+        console.error('loadTicker error:', err);
+    }
+}
+
+// ========== PRICE / TICKER DATA (asset bar supplementary) ==========
+async function loadPriceData(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/price?symbol=' + symbol);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data.price) updateAssetPrice(data.price);
+        if (data.change_pct != null) {
+            const chgEl = $('stat-change');
+            if (chgEl) {
+                const c = data.change_pct;
+                chgEl.textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
+                chgEl.className = 'asset-stat-value ' + (c >= 0 ? 'up' : 'down');
+            }
+        }
+        if (data.high) $('stat-high').textContent = fmt(data.high);
+        if (data.low) $('stat-low').textContent = fmt(data.low);
+        if (data.volume) $('stat-vol').textContent = fmtK(data.volume);
+
+    } catch (err) {
+        console.error('loadPriceData error:', err);
+    }
+}
+
+// ========== FUNDING + SENTIMENT (asset bar) ==========
+async function loadFunding(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/funding?symbol=' + symbol);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const el = $('stat-funding');
+        if (el && data.rate != null) {
+            const r = (data.rate * 100).toFixed(4);
+            el.textContent = r + '%';
+            el.className = 'asset-stat-value ' + (data.rate >= 0 ? 'up' : 'down');
+        }
+    } catch (err) {
+        console.error('loadFunding error:', err);
+    }
+}
+
+async function loadSentiment(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/sentiment?symbol=' + symbol);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const oiEl = $('stat-oi');
+        if (oiEl && data.open_interest != null) {
+            oiEl.textContent = fmtK(data.open_interest);
+        }
+    } catch (err) {
+        console.error('loadSentiment error:', err);
+    }
+}
+
+// ========== FEAR & GREED ==========
+async function loadFearGreed() {
+    try {
+        const resp = await fetch(API + '/api/fear-greed');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const el = $('ft-fg');
+        if (el && data.value != null) {
+            el.textContent = data.value + ' (' + (data.classification || '') + ')';
+            const v = data.value;
+            el.style.color = v <= 25 ? '#f6465d' : v <= 45 ? '#ff8c00' : v <= 55 ? '#848e9c' : v <= 75 ? '#0ecb81' : '#0ecb81';
+        }
+    } catch (err) {
+        console.error('loadFearGreed error:', err);
+    }
+}
+
+// ========== DRAWDOWN STATUS ==========
+async function loadDrawdown() {
+    try {
+        const resp = await fetch(API + '/api/drawdown');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const el = $('ft-dd');
+        if (el) {
+            const dd = data.drawdown_pct || 0;
+            el.textContent = dd.toFixed(1) + '%';
+            el.style.color = dd >= 15 ? '#f6465d' : dd >= 10 ? '#ff8c00' : dd >= 5 ? '#f0b90b' : '#848e9c';
+        }
+
+        // Alert banner
+        const alertEl = $('alert-drawdown');
+        if (alertEl && data.level && data.level !== 'normal') {
+            $('drawdown-msg').textContent = 'DRAWDOWN ' + data.level.toUpperCase() + ' — ' + (data.drawdown_pct || 0).toFixed(1) + '% loss';
+            alertEl.classList.add('visible');
+        }
+    } catch (err) {
+        console.error('loadDrawdown error:', err);
+    }
+}
+
+// ========== KILL SWITCH STATUS ==========
+async function loadKillSwitchStatus() {
+    try {
+        const resp = await fetch(API + '/api/killswitch/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const btn = $('btn-killswitch');
+        const alert = $('alert-kill');
+        if (data.active) {
+            btn.classList.add('active');
+            alert.classList.add('visible');
+        } else {
+            btn.classList.remove('active');
+            alert.classList.remove('visible');
+        }
+    } catch (err) {
+        console.error('loadKillSwitchStatus error:', err);
+    }
+}
+
+// ========== BOTTOM PANEL TAB SWITCHING ==========
+function switchBPTab(tab) {
+    document.querySelectorAll('.bp-tabs button').forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+
+    if (tab === 'positions') loadPositions();
+    else if (tab === 'paper') loadPaperHistory();
+    else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + tab + '</div>';
+}
+
+// ========== POSITIONS TABLE ==========
+async function loadPositions() {
+    try {
+        const resp = await fetch(API + '/api/positions');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const positions = data.positions || [];
+
+        const badge = $('pos-count');
+        if (badge) {
+            badge.textContent = positions.length;
+            badge.style.display = positions.length > 0 ? 'inline' : 'none';
+        }
+
+        if (!positions.length) {
+            $('bp-content').innerHTML = '<div class="bp-empty">No open positions</div>';
+            return;
+        }
+
+        let html = '<table class="bp-table"><thead><tr>'
+            + '<th>Symbol</th><th>Side</th><th>Size</th><th>Entry</th>'
+            + '<th>Mark</th><th>Liq.</th><th>Margin</th><th>PNL</th><th>ROE%</th><th>TP/SL</th><th></th>'
+            + '</tr></thead><tbody>';
+
+        for (let i = 0; i < positions.length; i++) {
+            const p = positions[i];
+            const sideClass = p.side === 'LONG' ? 'col-long' : 'col-short';
+            const pnl = p.unrealized_pnl || 0;
+            const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
+            const roe = p.roe_pct || 0;
+
+            html += '<tr>'
+                + '<td class="col-symbol">' + p.symbol + '</td>'
+                + '<td class="' + sideClass + '">' + p.side + '</td>'
+                + '<td>' + fmt(p.size, 4) + '</td>'
+                + '<td>' + fmt(p.entry_price) + '</td>'
+                + '<td>' + fmt(p.mark_price || p.entry_price) + '</td>'
+                + '<td>' + fmt(p.liq_price || 0) + '</td>'
+                + '<td>' + fmt(p.margin || 0, 2) + '</td>'
+                + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
+                + '<td class="' + pnlClass + '">' + (roe >= 0 ? '+' : '') + roe.toFixed(2) + '%</td>'
+                + '<td>' + (p.tp ? fmt(p.tp) : '--') + '/' + (p.sl ? fmt(p.sl) : '--') + '</td>'
+                + '<td><button class="btn-close-pos" onclick="closePosition(\'' + p.id + '\')">Close</button></td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        $('bp-content').innerHTML = html;
+
+    } catch (err) {
+        console.error('loadPositions error:', err);
+    }
+}
+
+// ========== PAPER TRADE HISTORY ==========
+async function loadPaperHistory() {
+    try {
+        const resp = await fetch(API + '/api/paper/history');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const trades = data.trades || [];
+
+        if (!trades.length) {
+            $('bp-content').innerHTML = '<div class="bp-empty">No paper trades yet</div>';
+            return;
+        }
+
+        let html = '<table class="bp-table"><thead><tr>'
+            + '<th>Time</th><th>Symbol</th><th>Side</th><th>Size</th>'
+            + '<th>Entry</th><th>Exit</th><th>PNL</th><th>Status</th>'
+            + '</tr></thead><tbody>';
+
+        for (let i = 0; i < trades.length; i++) {
+            const t = trades[i];
+            const pnl = t.pnl || 0;
+            const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
+
+            html += '<tr>'
+                + '<td>' + new Date(t.opened_at).toLocaleString() + '</td>'
+                + '<td class="col-symbol">' + t.symbol + '</td>'
+                + '<td class="' + (t.side === 'LONG' ? 'col-long' : 'col-short') + '">' + t.side + '</td>'
+                + '<td>' + fmt(t.size, 4) + '</td>'
+                + '<td>' + fmt(t.entry_price) + '</td>'
+                + '<td>' + (t.exit_price ? fmt(t.exit_price) : '--') + '</td>'
+                + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
+                + '<td>' + (t.status || 'open') + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        $('bp-content').innerHTML = html;
+
+    } catch (err) {
+        console.error('loadPaperHistory error:', err);
+    }
+}
+
+// PLACEHOLDER: étapes 22-23 JS sera ajouté ici
 
 </body>
 </html>
