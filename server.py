@@ -131,5 +131,232 @@ cache = Cache()
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 2-15 seront ajoutées ici par Edit/append
+# Database — SQLite WAL
+# ---------------------------------------------------------------------------
+
+def get_db():
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""CREATE TABLE IF NOT EXISTS exchanges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        exchange_type TEXT NOT NULL,
+        api_key_enc TEXT NOT NULL,
+        api_secret_enc TEXT NOT NULL,
+        passphrase_enc TEXT DEFAULT '',
+        is_testnet INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS paper_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        exit_price REAL,
+        quantity REAL NOT NULL,
+        leverage INTEGER DEFAULT 1,
+        pnl REAL DEFAULT 0,
+        status TEXT DEFAULT 'open',
+        opened_at TEXT DEFAULT (datetime('now')),
+        closed_at TEXT
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS trade_journal (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        action TEXT NOT NULL,
+        reason TEXT,
+        signal_score REAL,
+        confidence REAL,
+        regime TEXT,
+        result TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS killswitch (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        active INTEGER DEFAULT 0,
+        activated_at TEXT,
+        reason TEXT
+    )""")
+    c.execute("INSERT OR IGNORE INTO killswitch (id, active) VALUES (1, 0)")
+
+    conn.commit()
+    conn.close()
+    log.info("Database initialized at %s", DB_PATH)
+
+
+# ---------------------------------------------------------------------------
+# Encryption — Fernet for exchange API keys
+# ---------------------------------------------------------------------------
+
+_fernet_instance = None
+
+
+def get_fernet():
+    global _fernet_instance
+    if _fernet_instance:
+        return _fernet_instance
+    if not HAS_FERNET:
+        return None
+    if SECRET_KEY_FILE.exists():
+        key = SECRET_KEY_FILE.read_bytes().strip()
+    else:
+        key = Fernet.generate_key()
+        SECRET_KEY_FILE.write_bytes(key)
+        os.chmod(str(SECRET_KEY_FILE), 0o600)
+        log.info("Generated new encryption key")
+    _fernet_instance = Fernet(key)
+    return _fernet_instance
+
+
+def encrypt_string(plaintext):
+    f = get_fernet()
+    if not f:
+        return b64encode(plaintext.encode()).decode()
+    return f.encrypt(plaintext.encode()).decode()
+
+
+def decrypt_string(ciphertext):
+    f = get_fernet()
+    if not f:
+        return b64decode(ciphertext.encode()).decode()
+    return f.decrypt(ciphertext.encode()).decode()
+
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+def get_setting(key, default=None):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+        (key, str(value), str(value)),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Binance API helpers
+# ---------------------------------------------------------------------------
+
+def fetch_binance(endpoint, params=None, base=None, ttl=15):
+    base = base or BINANCE_BASE
+    cache_key = f"binance:{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
+    cached = cache.get(cache_key, ttl=ttl)
+    if cached is not None:
+        return cached
+    try:
+        resp = requests.get(f"{base}{endpoint}", params=params, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        cache.set(cache_key, data)
+        return data
+    except requests.RequestException as e:
+        log.warning("Binance %s failed: %s", endpoint, e)
+        return None
+
+
+def transform_klines(raw):
+    return [
+        {
+            "time": int(k[0]) // 1000,
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        }
+        for k in raw
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Gold/Silver via Stooq CSV (no yfinance dependency needed)
+# ---------------------------------------------------------------------------
+
+def fetch_stooq_price(symbol_info):
+    sym = symbol_info.get("stooq_sym", "")
+    if not sym:
+        return None
+    cache_key = f"stooq:{sym}"
+    cached = cache.get(cache_key, ttl=60)
+    if cached is not None:
+        return cached
+    try:
+        resp = requests.get(
+            STOOQ_BASE,
+            params={"s": sym, "f": "sd2t2ohlcv", "h": "", "e": "csv"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        lines = resp.text.strip().split("\n")
+        if len(lines) < 2:
+            return None
+        headers = [h.strip().lower() for h in lines[0].split(",")]
+        values = lines[1].split(",")
+        row = dict(zip(headers, values))
+        data = {
+            "symbol": symbol_info["base"] + symbol_info["quote"],
+            "price": float(row.get("close", 0)),
+            "open": float(row.get("open", 0)),
+            "high": float(row.get("high", 0)),
+            "low": float(row.get("low", 0)),
+            "volume": float(row.get("volume", 0)) if row.get("volume", "N/A") != "N/A" else 0,
+            "source": "stooq",
+        }
+        cache.set(cache_key, data)
+        return data
+    except Exception as e:
+        log.warning("Stooq %s failed: %s", sym, e)
+        return None
+
+
+def generate_gold_silver_candles(symbol_info, limit=100):
+    price_data = fetch_stooq_price(symbol_info)
+    if not price_data or not price_data["price"]:
+        return []
+    p = price_data["price"]
+    now = int(time.time())
+    candles = []
+    for i in range(limit):
+        t = now - (limit - i) * 3600
+        noise = math.sin(i * 0.1) * p * 0.002
+        candles.append({
+            "time": t,
+            "open": round(p + noise, 2),
+            "high": round(p + abs(noise) + p * 0.001, 2),
+            "low": round(p - abs(noise) - p * 0.001, 2),
+            "close": round(p + noise * 0.5, 2),
+            "volume": 0,
+        })
+    return candles
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 3-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
