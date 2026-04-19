@@ -1202,5 +1202,209 @@ risk_engine = RiskEngine()
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 8-15 seront ajoutées ici
+# Dip/Top Detectors — 4 algorithms + confluence scorer
+# ---------------------------------------------------------------------------
+
+class DipTopDetector:
+
+    def detect_rsi_divergence(self, closes, rsi, lookback=30):
+        n = len(closes)
+        if n < lookback + 5 or len(rsi) < n:
+            return {"bullish": False, "bearish": False, "detail": "Insufficient data"}
+
+        segment_c = closes[-lookback:]
+        segment_r = [v for v in rsi[-lookback:] if v is not None]
+        if len(segment_r) < lookback // 2:
+            return {"bullish": False, "bearish": False, "detail": "Not enough RSI data"}
+
+        # Find two recent swing lows/highs in price
+        lows_idx = self._find_swing_points(segment_c, mode="low")
+        highs_idx = self._find_swing_points(segment_c, mode="high")
+
+        bullish = False
+        bearish = False
+        detail = "No divergence"
+
+        # Bullish divergence: price makes lower low, RSI makes higher low
+        if len(lows_idx) >= 2:
+            i1, i2 = lows_idx[-2], lows_idx[-1]
+            if i2 < len(segment_r) and i1 < len(segment_r):
+                if segment_c[i2] < segment_c[i1] and segment_r[i2] > segment_r[i1]:
+                    bullish = True
+                    detail = f"Bullish divergence: price LL, RSI HL at bar {i2}"
+
+        # Bearish divergence: price makes higher high, RSI makes lower high
+        if len(highs_idx) >= 2:
+            i1, i2 = highs_idx[-2], highs_idx[-1]
+            if i2 < len(segment_r) and i1 < len(segment_r):
+                if segment_c[i2] > segment_c[i1] and segment_r[i2] < segment_r[i1]:
+                    bearish = True
+                    detail = f"Bearish divergence: price HH, RSI LH at bar {i2}"
+
+        return {"bullish": bullish, "bearish": bearish, "detail": detail}
+
+    def detect_volume_climax(self, volumes, closes, lookback=20):
+        if len(volumes) < lookback + 1:
+            return {"selling_climax": False, "buying_climax": False, "detail": "Insufficient data"}
+
+        recent_vol = volumes[-lookback:]
+        avg_vol = sum(recent_vol) / len(recent_vol)
+        last_vol = volumes[-1]
+        vol_ratio = last_vol / avg_vol if avg_vol > 0 else 0
+
+        price_change = closes[-1] - closes[-2] if len(closes) >= 2 else 0
+
+        selling_climax = vol_ratio > 3.0 and price_change < 0
+        buying_climax = vol_ratio > 3.0 and price_change > 0
+
+        detail = f"Vol ratio {vol_ratio:.1f}x avg"
+        if selling_climax:
+            detail = f"SELLING CLIMAX — {vol_ratio:.1f}x avg volume on down move"
+        elif buying_climax:
+            detail = f"BUYING CLIMAX — {vol_ratio:.1f}x avg volume on up move"
+
+        return {
+            "selling_climax": selling_climax,
+            "buying_climax": buying_climax,
+            "vol_ratio": round(vol_ratio, 2),
+            "detail": detail,
+        }
+
+    def detect_wyckoff_spring(self, ohlcv, lookback=50):
+        if len(ohlcv) < lookback + 3:
+            return {"spring": False, "upthrust": False, "detail": "Insufficient data"}
+
+        closes = [c["close"] for c in ohlcv]
+        lows = [c["low"] for c in ohlcv]
+        highs = [c["high"] for c in ohlcv]
+
+        range_lows = lows[-lookback:-3]
+        range_highs = highs[-lookback:-3]
+        if not range_lows or not range_highs:
+            return {"spring": False, "upthrust": False, "detail": "No range data"}
+
+        support = min(range_lows)
+        resistance = max(range_highs)
+
+        last_low = lows[-1]
+        last_close = closes[-1]
+        prev_close = closes[-2]
+        last_high = highs[-1]
+
+        # Spring: price dips below support then closes back above it
+        spring = last_low < support and last_close > support and last_close > prev_close
+
+        # Upthrust: price pushes above resistance then closes back below it
+        upthrust = last_high > resistance and last_close < resistance and last_close < prev_close
+
+        detail = "No Wyckoff pattern"
+        if spring:
+            detail = f"SPRING — pierced support {support:.2f}, recovered to {last_close:.2f}"
+        elif upthrust:
+            detail = f"UPTHRUST — pierced resistance {resistance:.2f}, rejected to {last_close:.2f}"
+
+        return {
+            "spring": spring,
+            "upthrust": upthrust,
+            "support": round(support, 2),
+            "resistance": round(resistance, 2),
+            "detail": detail,
+        }
+
+    def confluence_score(self, ohlcv, raw_indicators):
+        closes = raw_indicators["closes"]
+        volumes = raw_indicators["volumes"]
+        rsi = raw_indicators["rsi"]
+
+        score = 0
+        signals = []
+
+        # RSI divergence (max 30 points)
+        div = self.detect_rsi_divergence(closes, rsi)
+        if div["bullish"]:
+            score += 30
+            signals.append("RSI bullish divergence (+30)")
+        elif div["bearish"]:
+            score += 25
+            signals.append("RSI bearish divergence (+25)")
+
+        # Volume climax (max 25 points)
+        vc = self.detect_volume_climax(volumes, closes)
+        if vc["selling_climax"]:
+            score += 25
+            signals.append("Selling climax (+25)")
+        elif vc["buying_climax"]:
+            score += 20
+            signals.append("Buying climax (+20)")
+        elif vc.get("vol_ratio", 0) > 2.0:
+            score += 10
+            signals.append(f"High volume {vc['vol_ratio']:.1f}x (+10)")
+
+        # Wyckoff (max 30 points)
+        wy = self.detect_wyckoff_spring(ohlcv)
+        if wy["spring"]:
+            score += 30
+            signals.append("Wyckoff Spring (+30)")
+        elif wy["upthrust"]:
+            score += 25
+            signals.append("Wyckoff Upthrust (+25)")
+
+        # RSI extremes (max 15 points)
+        last_rsi = None
+        for v in reversed(rsi):
+            if v is not None:
+                last_rsi = v
+                break
+        if last_rsi is not None:
+            if last_rsi < 25 or last_rsi > 75:
+                score += 15
+                signals.append(f"RSI extreme ({last_rsi:.0f}) (+15)")
+            elif last_rsi < 35 or last_rsi > 65:
+                score += 5
+                signals.append(f"RSI extended ({last_rsi:.0f}) (+5)")
+
+        score = min(score, 100)
+        return {"score": score, "signals": signals, "strong": score >= 70}
+
+    def analyze(self, symbol, ohlcv, raw_indicators):
+        closes = raw_indicators["closes"]
+        volumes = raw_indicators["volumes"]
+        rsi = raw_indicators["rsi"]
+
+        rsi_div = self.detect_rsi_divergence(closes, rsi)
+        vol_climax = self.detect_volume_climax(volumes, closes)
+        wyckoff = self.detect_wyckoff_spring(ohlcv)
+        confluence = self.confluence_score(ohlcv, raw_indicators)
+
+        is_dip = rsi_div["bullish"] or vol_climax["selling_climax"] or wyckoff["spring"]
+        is_top = rsi_div["bearish"] or vol_climax["buying_climax"] or wyckoff["upthrust"]
+
+        return {
+            "symbol": symbol,
+            "is_dip": is_dip,
+            "is_top": is_top,
+            "rsi_divergence": rsi_div,
+            "volume_climax": vol_climax,
+            "wyckoff": wyckoff,
+            "confluence": confluence,
+            "alert": "DIP" if is_dip else ("TOP" if is_top else None),
+        }
+
+    @staticmethod
+    def _find_swing_points(data, mode="low", window=3):
+        points = []
+        for i in range(window, len(data) - window):
+            segment = data[i - window:i + window + 1]
+            if mode == "low" and data[i] == min(segment):
+                points.append(i)
+            elif mode == "high" and data[i] == max(segment):
+                points.append(i)
+        return points
+
+
+dip_top_detector = DipTopDetector()
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 9-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
