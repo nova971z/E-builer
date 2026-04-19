@@ -1406,5 +1406,161 @@ dip_top_detector = DipTopDetector()
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 9-15 seront ajoutées ici
+# Exchange Adapters — Abstract base + MEXC implementation
+# ---------------------------------------------------------------------------
+
+class ExchangeAdapter(ABC):
+
+    def __init__(self, name, api_key="", api_secret="", passphrase="", testnet=False):
+        self.name = name
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.passphrase = passphrase
+        self.testnet = testnet
+
+    @abstractmethod
+    def get_balance(self):
+        pass
+
+    @abstractmethod
+    def get_positions(self):
+        pass
+
+    @abstractmethod
+    def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
+        pass
+
+    @abstractmethod
+    def close_position(self, symbol, position_id=None):
+        pass
+
+    @abstractmethod
+    def test_connection(self):
+        pass
+
+
+class MEXCAdapter(ExchangeAdapter):
+
+    SPOT_BASE = "https://api.mexc.com"
+
+    def __init__(self, api_key="", api_secret="", testnet=False):
+        super().__init__("MEXC", api_key, api_secret, testnet=testnet)
+        self._exchange = None
+        if HAS_CCXT and api_key:
+            try:
+                self._exchange = ccxt.mexc({
+                    "apiKey": api_key,
+                    "secret": api_secret,
+                    "sandbox": testnet,
+                    "enableRateLimit": True,
+                    "options": {"defaultType": "spot"},
+                })
+            except Exception as e:
+                log.warning("CCXT MEXC init failed: %s", e)
+
+    def get_balance(self):
+        if not self._exchange:
+            return self._no_exchange()
+        try:
+            bal = self._exchange.fetch_balance()
+            assets = {}
+            for currency, info in bal.get("total", {}).items():
+                if info and float(info) > 0:
+                    assets[currency] = {
+                        "total": float(info),
+                        "free": float(bal["free"].get(currency, 0)),
+                        "used": float(bal["used"].get(currency, 0)),
+                    }
+            total_usdt = sum(
+                a["total"] for c, a in assets.items() if c == "USDT"
+            )
+            return {"exchange": self.name, "assets": assets, "total_usdt": total_usdt}
+        except Exception as e:
+            return {"exchange": self.name, "error": str(e), "assets": {}}
+
+    def get_positions(self):
+        if not self._exchange:
+            return []
+        try:
+            bal = self._exchange.fetch_balance()
+            positions = []
+            for currency, info in bal.get("total", {}).items():
+                amount = float(info) if info else 0
+                if amount > 0 and currency != "USDT":
+                    positions.append({
+                        "symbol": f"{currency}USDT",
+                        "side": "long",
+                        "quantity": amount,
+                        "entry_price": 0,
+                        "current_price": 0,
+                        "pnl": 0,
+                        "exchange": self.name,
+                        "type": "spot",
+                    })
+            return positions
+        except Exception as e:
+            log.warning("MEXC get_positions failed: %s", e)
+            return []
+
+    def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
+        if not self._exchange:
+            return self._no_exchange()
+        try:
+            params = {}
+            if order_type == "limit" and price:
+                order = self._exchange.create_order(symbol, "limit", side, quantity, price, params)
+            else:
+                order = self._exchange.create_order(symbol, "market", side, quantity, None, params)
+            return {
+                "success": True,
+                "order_id": order.get("id"),
+                "symbol": symbol,
+                "side": side,
+                "type": order_type,
+                "quantity": quantity,
+                "price": price or order.get("average", 0),
+                "exchange": self.name,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e), "exchange": self.name}
+
+    def close_position(self, symbol, position_id=None):
+        if not self._exchange:
+            return self._no_exchange()
+        try:
+            positions = self.get_positions()
+            target = None
+            for p in positions:
+                if p["symbol"] == symbol:
+                    target = p
+                    break
+            if not target:
+                return {"success": False, "error": f"No position found for {symbol}"}
+            order = self._exchange.create_order(symbol, "market", "sell", target["quantity"])
+            return {"success": True, "order_id": order.get("id"), "closed": symbol}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def test_connection(self):
+        if not self._exchange:
+            if not self.api_key:
+                return {"connected": False, "error": "No API key configured"}
+            return {"connected": False, "error": "CCXT not installed"}
+        try:
+            self._exchange.fetch_time()
+            return {"connected": True, "exchange": self.name, "testnet": self.testnet}
+        except Exception as e:
+            return {"connected": False, "error": str(e)}
+
+    @staticmethod
+    def _no_exchange():
+        return {
+            "exchange": "MEXC",
+            "error": "CCXT not available or no API key configured",
+            "assets": {},
+        }
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 10-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
