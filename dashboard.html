@@ -1577,7 +1577,510 @@ button:active { opacity: 0.7; }
     </div>
 </div>
 
-<!-- PLACEHOLDER: étapes 20-23 JS sera ajouté ici -->
+<!-- Lightweight Charts -->
+<script src="lw-charts.js"></script>
+<script>
+'use strict';
+
+// ========== GLOBAL STATE ==========
+const API = '';
+let currentSymbol = 'BTCUSDT';
+let currentInterval = '1h';
+let candleData = [];
+
+// Chart instances
+let mainChart = null;
+let candleSeries = null;
+let volumeSeries = null;
+let rsiChart = null;
+let rsiSeries = null;
+let macdChart = null;
+let macdLineSeries = null;
+let macdSignalSeries = null;
+let macdHistSeries = null;
+
+// Indicator overlay series (nullable — toggled on/off)
+let bbUpperSeries = null;
+let bbMiddleSeries = null;
+let bbLowerSeries = null;
+let ema9Series = null;
+let ema21Series = null;
+let ema50Series = null;
+let ema200Series = null;
+
+// Toggle state
+const indicatorState = {
+    bb: false, ema9: false, ema21: false, ema50: false, ema200: false, vol: true
+};
+
+// ========== UTILITIES ==========
+function fmt(n, decimals) {
+    if (n == null || isNaN(n)) return '--';
+    const d = decimals != null ? decimals : (Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : 6);
+    return Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function fmtK(n) {
+    if (n == null || isNaN(n)) return '--';
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toFixed(2);
+}
+
+function $(id) { return document.getElementById(id); }
+
+function epochToLocal(ts) {
+    return ts - new Date().getTimezoneOffset() * 60;
+}
+
+// ========== CHART THEME ==========
+const chartOptions = {
+    layout: {
+        background: { color: '#0b0e11' },
+        textColor: '#848e9c',
+        fontSize: 11,
+        fontFamily: "'SF Mono', 'Consolas', monospace",
+    },
+    grid: {
+        vertLines: { color: 'rgba(43,49,57,0.5)' },
+        horzLines: { color: 'rgba(43,49,57,0.5)' },
+    },
+    crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: 'rgba(255,255,255,0.2)', style: 0, width: 1 },
+        horzLine: { color: 'rgba(255,255,255,0.2)', style: 0, width: 1 },
+    },
+    rightPriceScale: {
+        borderColor: '#2b3139',
+        scaleMargins: { top: 0.05, bottom: 0.05 },
+    },
+    timeScale: {
+        borderColor: '#2b3139',
+        timeVisible: true,
+        secondsVisible: false,
+    },
+    watermark: {
+        visible: true,
+        text: 'J.A.R.V.I.S.',
+        fontSize: 48,
+        color: 'rgba(0,212,255,0.04)',
+    },
+    handleScroll: { vertTouchDrag: false },
+};
+
+// ========== INIT MAIN CHART ==========
+function initMainChart() {
+    const container = $('chart-container');
+    if (!container) return;
+
+    mainChart = LightweightCharts.createChart(container, {
+        ...chartOptions,
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+
+    candleSeries = mainChart.addCandlestickSeries({
+        upColor: '#0ecb81',
+        downColor: '#f6465d',
+        borderUpColor: '#0ecb81',
+        borderDownColor: '#f6465d',
+        wickUpColor: '#0ecb81',
+        wickDownColor: '#f6465d',
+    });
+
+    volumeSeries = mainChart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+        scaleMargins: { top: 0.85, bottom: 0 },
+    });
+
+    mainChart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+        drawTicks: false,
+        borderVisible: false,
+    });
+
+    // Crosshair OHLCV overlay
+    mainChart.subscribeCrosshairMove(function(param) {
+        if (!param || !param.time) return;
+        const d = param.seriesData && param.seriesData.get(candleSeries);
+        if (!d) return;
+        $('ov-o').textContent = fmt(d.open);
+        $('ov-h').textContent = fmt(d.high);
+        $('ov-l').textContent = fmt(d.low);
+        $('ov-c').textContent = fmt(d.close);
+        const vd = param.seriesData.get(volumeSeries);
+        $('ov-v').textContent = vd ? fmtK(vd.value) : '--';
+    });
+
+    new ResizeObserver(function() {
+        mainChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+// ========== INIT SUB-CHARTS ==========
+const subChartOptions = {
+    layout: { background: { color: '#0b0e11' }, textColor: '#5e6673', fontSize: 10 },
+    grid: {
+        vertLines: { color: 'rgba(43,49,57,0.3)' },
+        horzLines: { color: 'rgba(43,49,57,0.3)' },
+    },
+    rightPriceScale: { borderColor: '#2b3139', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    timeScale: { visible: false },
+    crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
+    handleScroll: { vertTouchDrag: false },
+};
+
+function initRSIChart() {
+    const container = $('rsi-container');
+    if (!container) return;
+
+    rsiChart = LightweightCharts.createChart(container, {
+        ...subChartOptions,
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+
+    rsiSeries = rsiChart.addLineSeries({
+        color: '#f0b90b',
+        lineWidth: 1,
+        priceFormat: { type: 'custom', formatter: function(v) { return v.toFixed(1); } },
+    });
+
+    // Overbought/Oversold reference lines via price lines
+    rsiSeries.createPriceLine({ price: 70, color: 'rgba(246,70,93,0.4)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+    rsiSeries.createPriceLine({ price: 30, color: 'rgba(14,203,129,0.4)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+
+    new ResizeObserver(function() {
+        rsiChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+function initMACDChart() {
+    const container = $('macd-container');
+    if (!container) return;
+
+    macdChart = LightweightCharts.createChart(container, {
+        ...subChartOptions,
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+
+    macdHistSeries = macdChart.addHistogramSeries({
+        priceFormat: { type: 'custom', formatter: function(v) { return v.toFixed(4); } },
+    });
+
+    macdLineSeries = macdChart.addLineSeries({
+        color: '#00d4ff',
+        lineWidth: 1,
+        priceFormat: { type: 'custom', formatter: function(v) { return v.toFixed(4); } },
+    });
+
+    macdSignalSeries = macdChart.addLineSeries({
+        color: '#ff8c00',
+        lineWidth: 1,
+        priceFormat: { type: 'custom', formatter: function(v) { return v.toFixed(4); } },
+    });
+
+    macdChart.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.15, bottom: 0.15 },
+    });
+
+    new ResizeObserver(function() {
+        macdChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+// ========== SYNC TIME SCALES ==========
+function syncTimeScales() {
+    if (!mainChart || !rsiChart || !macdChart) return;
+
+    const mainTS = mainChart.timeScale();
+    const rsiTS = rsiChart.timeScale();
+    const macdTS = macdChart.timeScale();
+
+    let syncing = false;
+
+    mainTS.subscribeVisibleLogicalRangeChange(function(range) {
+        if (syncing || !range) return;
+        syncing = true;
+        rsiTS.setVisibleLogicalRange(range);
+        macdTS.setVisibleLogicalRange(range);
+        syncing = false;
+    });
+
+    rsiTS.subscribeVisibleLogicalRangeChange(function(range) {
+        if (syncing || !range) return;
+        syncing = true;
+        mainTS.setVisibleLogicalRange(range);
+        macdTS.setVisibleLogicalRange(range);
+        syncing = false;
+    });
+
+    macdTS.subscribeVisibleLogicalRangeChange(function(range) {
+        if (syncing || !range) return;
+        syncing = true;
+        mainTS.setVisibleLogicalRange(range);
+        rsiTS.setVisibleLogicalRange(range);
+        syncing = false;
+    });
+}
+
+// ========== LOAD CANDLES ==========
+async function loadCandles(symbol, interval) {
+    symbol = symbol || currentSymbol;
+    interval = interval || currentInterval;
+
+    try {
+        const resp = await fetch(API + '/api/candles?symbol=' + symbol + '&interval=' + interval + '&limit=500');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+
+        if (!data.candles || !data.candles.length) {
+            console.warn('No candle data received');
+            return;
+        }
+
+        candleData = data.candles;
+
+        const candles = [];
+        const volumes = [];
+
+        for (let i = 0; i < candleData.length; i++) {
+            const c = candleData[i];
+            const t = epochToLocal(Math.floor(c.time / 1000));
+            candles.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
+            volumes.push({
+                time: t,
+                value: c.volume,
+                color: c.close >= c.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
+            });
+        }
+
+        candleSeries.setData(candles);
+        volumeSeries.setData(volumes);
+
+        // Update price display
+        const last = candleData[candleData.length - 1];
+        if (last) updateAssetPrice(last.close, candleData.length > 1 ? candleData[candleData.length - 2].close : last.open);
+
+        // Load indicators after candles
+        loadIndicators(symbol, interval);
+
+    } catch (err) {
+        console.error('loadCandles error:', err);
+    }
+}
+
+// ========== LOAD INDICATORS ==========
+async function loadIndicators(symbol, interval) {
+    symbol = symbol || currentSymbol;
+    interval = interval || currentInterval;
+
+    try {
+        const resp = await fetch(API + '/api/indicators?symbol=' + symbol + '&interval=' + interval);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const ind = data.indicators || {};
+        const regime = data.regime || {};
+        const signal = data.signal || {};
+
+        // RSI sub-chart
+        if (ind.rsi && rsiSeries) {
+            const rsiData = [];
+            for (let i = 0; i < ind.rsi.length; i++) {
+                if (ind.rsi[i] != null && candleData[i]) {
+                    rsiData.push({ time: epochToLocal(Math.floor(candleData[i].time / 1000)), value: ind.rsi[i] });
+                }
+            }
+            rsiSeries.setData(rsiData);
+        }
+
+        // MACD sub-chart
+        if (ind.macd && macdLineSeries) {
+            const macdL = [], macdS = [], macdH = [];
+            const macd = ind.macd;
+            for (let i = 0; i < (macd.line || []).length; i++) {
+                const ci = candleData.length - (macd.line.length - i);
+                if (ci < 0 || !candleData[ci]) continue;
+                const t = epochToLocal(Math.floor(candleData[ci].time / 1000));
+                if (macd.line[i] != null) macdL.push({ time: t, value: macd.line[i] });
+                if (macd.signal && macd.signal[i] != null) macdS.push({ time: t, value: macd.signal[i] });
+                if (macd.histogram && macd.histogram[i] != null) {
+                    macdH.push({
+                        time: t,
+                        value: macd.histogram[i],
+                        color: macd.histogram[i] >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)',
+                    });
+                }
+            }
+            macdLineSeries.setData(macdL);
+            macdSignalSeries.setData(macdS);
+            macdHistSeries.setData(macdH);
+        }
+
+        // Bollinger Bands overlay
+        if (indicatorState.bb && ind.bollinger) applyBollinger(ind.bollinger);
+
+        // EMA overlays
+        if (indicatorState.ema9 && ind.ema_9) applyEMA(ind.ema_9, 'ema9', '#f0b90b');
+        if (indicatorState.ema21 && ind.ema_21) applyEMA(ind.ema_21, 'ema21', '#ff8c00');
+        if (indicatorState.ema50 && ind.ema_50) applyEMA(ind.ema_50, 'ema50', '#00d4ff');
+        if (indicatorState.ema200 && ind.ema_200) applyEMA(ind.ema_200, 'ema200', '#e040fb');
+
+        // Update footer regime + signal
+        updateRegimeDisplay(regime);
+        updateSignalDisplay(signal);
+
+    } catch (err) {
+        console.error('loadIndicators error:', err);
+    }
+}
+
+// ========== INDICATOR OVERLAY HELPERS ==========
+function buildOverlayData(values) {
+    const result = [];
+    for (let i = 0; i < values.length; i++) {
+        const ci = candleData.length - (values.length - i);
+        if (ci < 0 || !candleData[ci] || values[i] == null) continue;
+        result.push({ time: epochToLocal(Math.floor(candleData[ci].time / 1000)), value: values[i] });
+    }
+    return result;
+}
+
+function applyBollinger(bb) {
+    if (!mainChart) return;
+
+    removeBollinger();
+
+    if (bb.upper) {
+        bbUpperSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.4)', lineWidth: 1, lineStyle: 2 });
+        bbUpperSeries.setData(buildOverlayData(bb.upper));
+    }
+    if (bb.middle) {
+        bbMiddleSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.25)', lineWidth: 1, lineStyle: 1 });
+        bbMiddleSeries.setData(buildOverlayData(bb.middle));
+    }
+    if (bb.lower) {
+        bbLowerSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.4)', lineWidth: 1, lineStyle: 2 });
+        bbLowerSeries.setData(buildOverlayData(bb.lower));
+    }
+}
+
+function removeBollinger() {
+    if (bbUpperSeries) { mainChart.removeSeries(bbUpperSeries); bbUpperSeries = null; }
+    if (bbMiddleSeries) { mainChart.removeSeries(bbMiddleSeries); bbMiddleSeries = null; }
+    if (bbLowerSeries) { mainChart.removeSeries(bbLowerSeries); bbLowerSeries = null; }
+}
+
+function applyEMA(values, key, color) {
+    if (!mainChart) return;
+    removeEMA(key);
+
+    const series = mainChart.addLineSeries({ color: color, lineWidth: 1 });
+    series.setData(buildOverlayData(values));
+
+    if (key === 'ema9') ema9Series = series;
+    else if (key === 'ema21') ema21Series = series;
+    else if (key === 'ema50') ema50Series = series;
+    else if (key === 'ema200') ema200Series = series;
+}
+
+function removeEMA(key) {
+    let s = null;
+    if (key === 'ema9') { s = ema9Series; ema9Series = null; }
+    else if (key === 'ema21') { s = ema21Series; ema21Series = null; }
+    else if (key === 'ema50') { s = ema50Series; ema50Series = null; }
+    else if (key === 'ema200') { s = ema200Series; ema200Series = null; }
+    if (s && mainChart) mainChart.removeSeries(s);
+}
+
+// ========== TOGGLE INDICATORS ==========
+function toggleIndicator(key) {
+    indicatorState[key] = !indicatorState[key];
+    const btn = $('tog-' + key);
+    if (btn) btn.classList.toggle('on', indicatorState[key]);
+
+    if (key === 'bb') {
+        if (indicatorState.bb) loadIndicators();
+        else removeBollinger();
+    } else if (key.startsWith('ema')) {
+        if (indicatorState[key]) loadIndicators();
+        else removeEMA(key);
+    } else if (key === 'vol') {
+        if (volumeSeries) {
+            volumeSeries.applyOptions({ visible: indicatorState.vol });
+        }
+    }
+}
+
+// ========== CHANGE SYMBOL / TIMEFRAME ==========
+function changeSymbol(sym) {
+    currentSymbol = sym;
+    $('symbol-select').value = sym;
+    const unit = sym.replace('USDT', '').replace('GOLD', 'XAU').replace('SILVER', 'XAG');
+    $('qty-unit').textContent = unit;
+
+    // Clear overlays before reload
+    removeBollinger();
+    removeEMA('ema9');
+    removeEMA('ema21');
+    removeEMA('ema50');
+    removeEMA('ema200');
+
+    loadCandles(sym, currentInterval);
+}
+
+function changeTF(tf) {
+    currentInterval = tf;
+    document.querySelectorAll('.tf-btn').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tf-btn').forEach(function(b) {
+        if (b.textContent === tf) b.classList.add('active');
+    });
+
+    removeBollinger();
+    removeEMA('ema9');
+    removeEMA('ema21');
+    removeEMA('ema50');
+    removeEMA('ema200');
+
+    loadCandles(currentSymbol, tf);
+}
+
+// ========== DISPLAY HELPERS ==========
+function updateAssetPrice(price, prevPrice) {
+    const el = $('asset-price');
+    if (!el) return;
+    el.textContent = fmt(price);
+    el.classList.remove('up', 'down');
+    if (prevPrice != null) el.classList.add(price >= prevPrice ? 'up' : 'down');
+}
+
+function updateRegimeDisplay(regime) {
+    const el = $('ft-regime');
+    if (!el || !regime.regime) return;
+    const r = regime.regime.toLowerCase();
+    el.textContent = regime.regime;
+    el.className = 'ft-regime ' + r;
+}
+
+function updateSignalDisplay(signal) {
+    const el = $('ft-signal');
+    if (!el) return;
+    if (!signal.direction) { el.textContent = '--'; return; }
+    el.textContent = signal.direction + ' (' + (signal.score || 0) + ')';
+    el.style.color = signal.direction === 'LONG' ? '#0ecb81' : signal.direction === 'SHORT' ? '#f6465d' : '#848e9c';
+}
+
+// ========== CLOCK ==========
+function updateClock() {
+    const now = new Date();
+    $('clock').textContent = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// PLACEHOLDER: étapes 21-23 JS sera ajouté ici
 
 </body>
 </html>
