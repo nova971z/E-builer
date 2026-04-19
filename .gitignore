@@ -1,12 +1,33 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
+
+# Database
 jarvis.db
 jarvis.db-wal
 jarvis.db-shm
+
+# Secrets
 secret.key
 .env
+.env.*
+credentials.json
+
+# Runtime
 backups/
+exports/
 *.log
+*.pid
+.jarvis.pid
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Dependencies
 node_modules/
+package-lock.json
