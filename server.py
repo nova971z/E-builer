@@ -476,5 +476,219 @@ def calc_bollinger(closes, period=20, num_std=2):
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 4-15 seront ajoutées ici
+# Technical Indicators — Part 2 (ATR, StochRSI, ADX, OBV, Williams %R)
+# ---------------------------------------------------------------------------
+
+def calc_atr(highs, lows, closes, period=14):
+    if len(closes) < 2:
+        return [None] * len(closes)
+    tr_list = [highs[0] - lows[0]]
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        tr_list.append(tr)
+    if len(tr_list) < period:
+        return [None] * len(closes)
+    out = [None] * (period - 1)
+    atr = sum(tr_list[:period]) / period
+    out.append(atr)
+    for i in range(period, len(tr_list)):
+        atr = (atr * (period - 1) + tr_list[i]) / period
+        out.append(atr)
+    return out
+
+
+def calc_stoch_rsi(closes, rsi_period=14, stoch_period=14, smooth_k=3, smooth_d=3):
+    rsi = calc_rsi(closes, rsi_period)
+    valid_rsi = [v for v in rsi if v is not None]
+    if len(valid_rsi) < stoch_period:
+        return {"k": [None] * len(closes), "d": [None] * len(closes)}
+    stoch_raw = []
+    for i in range(stoch_period - 1, len(valid_rsi)):
+        window = valid_rsi[i - stoch_period + 1:i + 1]
+        lo = min(window)
+        hi = max(window)
+        if hi == lo:
+            stoch_raw.append(50.0)
+        else:
+            stoch_raw.append((valid_rsi[i] - lo) / (hi - lo) * 100.0)
+    k_raw = calc_sma(stoch_raw, smooth_k)
+    k_valid = [v for v in k_raw if v is not None]
+    d_raw = calc_sma(k_valid, smooth_d) if k_valid else []
+    prefix_len = len(closes) - len(stoch_raw)
+    k_out = [None] * prefix_len + k_raw
+    d_prefix = len(closes) - len(d_raw) if d_raw else len(closes)
+    d_out = [None] * d_prefix + (d_raw if d_raw else [])
+    if len(k_out) < len(closes):
+        k_out = [None] * (len(closes) - len(k_out)) + k_out
+    if len(d_out) < len(closes):
+        d_out = [None] * (len(closes) - len(d_out)) + d_out
+    return {"k": k_out[:len(closes)], "d": d_out[:len(closes)]}
+
+
+def calc_adx(highs, lows, closes, period=14):
+    n = len(closes)
+    if n < period + 1:
+        return {"adx": [None] * n, "dmi_plus": [None] * n, "dmi_minus": [None] * n}
+    plus_dm = []
+    minus_dm = []
+    tr_list = []
+    for i in range(1, n):
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        plus_dm.append(up if up > down and up > 0 else 0.0)
+        minus_dm.append(down if down > up and down > 0 else 0.0)
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        tr_list.append(tr)
+    def wilder_smooth(data, p):
+        if len(data) < p:
+            return []
+        out = [sum(data[:p])]
+        for i in range(p, len(data)):
+            out.append(out[-1] - out[-1] / p + data[i])
+        return out
+    sm_tr = wilder_smooth(tr_list, period)
+    sm_plus = wilder_smooth(plus_dm, period)
+    sm_minus = wilder_smooth(minus_dm, period)
+    if not sm_tr:
+        return {"adx": [None] * n, "dmi_plus": [None] * n, "dmi_minus": [None] * n}
+    di_plus = []
+    di_minus = []
+    dx_list = []
+    for i in range(len(sm_tr)):
+        dp = (sm_plus[i] / sm_tr[i] * 100.0) if sm_tr[i] != 0 else 0.0
+        dm = (sm_minus[i] / sm_tr[i] * 100.0) if sm_tr[i] != 0 else 0.0
+        di_plus.append(dp)
+        di_minus.append(dm)
+        total = dp + dm
+        dx_list.append(abs(dp - dm) / total * 100.0 if total != 0 else 0.0)
+    adx_raw = wilder_smooth(dx_list, period)
+    adx_out = [None] * n
+    dmi_plus_out = [None] * n
+    dmi_minus_out = [None] * n
+    offset_di = period
+    for i, (dp, dm) in enumerate(zip(di_plus, di_minus)):
+        idx = offset_di + i
+        if idx < n:
+            dmi_plus_out[idx] = dp
+            dmi_minus_out[idx] = dm
+    offset_adx = offset_di + period - 1
+    for i, a in enumerate(adx_raw):
+        idx = offset_adx + i
+        if idx < n:
+            adx_out[idx] = a
+    return {"adx": adx_out, "dmi_plus": dmi_plus_out, "dmi_minus": dmi_minus_out}
+
+
+def calc_obv(closes, volumes):
+    if not closes:
+        return []
+    out = [0.0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            out.append(out[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            out.append(out[-1] - volumes[i])
+        else:
+            out.append(out[-1])
+    return out
+
+
+def calc_williams_r(highs, lows, closes, period=14):
+    if len(closes) < period:
+        return [None] * len(closes)
+    out = [None] * (period - 1)
+    for i in range(period - 1, len(closes)):
+        hi = max(highs[i - period + 1:i + 1])
+        lo = min(lows[i - period + 1:i + 1])
+        if hi == lo:
+            out.append(-50.0)
+        else:
+            out.append((hi - closes[i]) / (hi - lo) * -100.0)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Consolidated indicator computation
+# ---------------------------------------------------------------------------
+
+def compute_all_indicators(ohlcv):
+    closes = [c["close"] for c in ohlcv]
+    highs = [c["high"] for c in ohlcv]
+    lows = [c["low"] for c in ohlcv]
+    volumes = [c["volume"] for c in ohlcv]
+    times = [c["time"] for c in ohlcv]
+
+    def ts_pair(values):
+        return [
+            {"time": t, "value": round(v, 6) if v is not None else None}
+            for t, v in zip(times, values)
+            if v is not None
+        ]
+
+    rsi = calc_rsi(closes)
+    macd = calc_macd(closes)
+    bb = calc_bollinger(closes)
+    atr = calc_atr(highs, lows, closes)
+    stoch = calc_stoch_rsi(closes)
+    adx = calc_adx(highs, lows, closes)
+    obv = calc_obv(closes, volumes)
+    wr = calc_williams_r(highs, lows, closes)
+
+    return {
+        "rsi": ts_pair(rsi),
+        "macd": {
+            "line": ts_pair(macd["line"]),
+            "signal": ts_pair(macd["signal"]),
+            "histogram": ts_pair(macd["histogram"]),
+        },
+        "bollinger": {
+            "upper": ts_pair(bb["upper"]),
+            "middle": ts_pair(bb["middle"]),
+            "lower": ts_pair(bb["lower"]),
+        },
+        "atr": ts_pair(atr),
+        "ema9": ts_pair(calc_ema(closes, 9)),
+        "ema21": ts_pair(calc_ema(closes, 21)),
+        "ema50": ts_pair(calc_ema(closes, 50)),
+        "ema200": ts_pair(calc_ema(closes, 200)),
+        "stoch_rsi": {
+            "k": ts_pair(stoch["k"]),
+            "d": ts_pair(stoch["d"]),
+        },
+        "adx": {
+            "adx": ts_pair(adx["adx"]),
+            "dmi_plus": ts_pair(adx["dmi_plus"]),
+            "dmi_minus": ts_pair(adx["dmi_minus"]),
+        },
+        "obv": ts_pair(obv),
+        "williams_r": ts_pair(wr),
+        "_raw": {
+            "closes": closes,
+            "highs": highs,
+            "lows": lows,
+            "volumes": volumes,
+            "rsi": rsi,
+            "macd": macd,
+            "bb": bb,
+            "atr": atr,
+            "ema50": calc_ema(closes, 50),
+            "ema200": calc_ema(closes, 200),
+            "adx": adx,
+            "stoch_rsi": stoch,
+            "obv": obv,
+            "williams_r": wr,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 5-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
