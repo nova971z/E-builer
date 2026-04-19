@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J.A.R.V.I.S. Trading System</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b0e11' stroke='%2300d4ff' stroke-width='2'/><circle cx='16' cy='16' r='6' fill='%2300d4ff' opacity='0.8'/><circle cx='16' cy='16' r='2' fill='white'/></svg>">
+<style>
+:root {
+    --bg: #0b0e11;
+    --surface: #1e2329;
+    --surface-2: #2b3139;
+    --surface-3: #363c45;
+    --border: #2b3139;
+    --text: #eaecef;
+    --text-dim: #848e9c;
+    --text-muted: #5e6673;
+    --green: #0ecb81;
+    --green-bg: rgba(14,203,129,0.1);
+    --red: #f6465d;
+    --red-bg: rgba(246,70,93,0.1);
+    --accent: #00d4ff;
+    --accent-bg: rgba(0,212,255,0.1);
+    --yellow: #f0b90b;
+    --yellow-bg: rgba(240,185,11,0.1);
+    --orange: #ff8c00;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    --radius: 4px;
+    --transition: 0.15s ease;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow: hidden;
+    user-select: none;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+input, select, button, textarea {
+    font-family: var(--font);
+    font-size: 12px;
+    color: var(--text);
+    outline: none;
+    border: none;
+}
+
+button { cursor: pointer; transition: opacity var(--transition); }
+button:hover { opacity: 0.85; }
+button:active { opacity: 0.7; }
+
+/* ========== NAVBAR ========== */
+.navbar {
+    display: flex;
+    align-items: center;
+    height: 48px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 12px;
+    gap: 8px;
+    z-index: 100;
+}
+
+.navbar-logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 16px;
+}
+
+.arc-reactor {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #00d4ff 0%, #0066aa 50%, #003355 100%);
+    box-shadow: 0 0 12px rgba(0,212,255,0.6), 0 0 4px rgba(0,212,255,0.8) inset;
+    animation: pulse-reactor 2s ease-in-out infinite;
+}
+
+@keyframes pulse-reactor {
+    0%, 100% { box-shadow: 0 0 12px rgba(0,212,255,0.6), 0 0 4px rgba(0,212,255,0.8) inset; }
+    50% { box-shadow: 0 0 20px rgba(0,212,255,0.8), 0 0 8px rgba(0,212,255,1) inset; }
+}
+
+.navbar-logo span {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 2px;
+}
+
+.navbar-menu {
+    display: flex;
+    gap: 2px;
+}
+
+.navbar-menu a {
+    padding: 6px 12px;
+    color: var(--text-dim);
+    text-decoration: none;
+    border-radius: var(--radius);
+    font-size: 13px;
+    transition: all var(--transition);
+}
+
+.navbar-menu a:hover { color: var(--text); background: var(--surface-2); }
+.navbar-menu a.active { color: var(--yellow); }
+
+.navbar-spacer { flex: 1; }
+
+.navbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-nav {
+    padding: 5px 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.btn-nav:hover { color: var(--text); border-color: var(--text-muted); }
+
+.btn-kill {
+    background: var(--red-bg);
+    border-color: var(--red);
+    color: var(--red);
+}
+.btn-kill.active {
+    background: var(--red);
+    color: white;
+    animation: blink-kill 1s infinite;
+}
+@keyframes blink-kill { 50% { opacity: 0.6; } }
+
+.navbar-clock {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    min-width: 55px;
+    text-align: right;
+}
+
+/* PLACEHOLDER: étapes 17-19 CSS sera ajouté ici */
+
+</style>
+</head>
+<body>
+
+<!-- NAVBAR -->
+<div class="navbar">
+    <div class="navbar-logo">
+        <div class="arc-reactor"></div>
+        <span>J.A.R.V.I.S.</span>
+    </div>
+    <div class="navbar-menu">
+        <a href="#" class="active">USDT-M</a>
+        <a href="#">Coin-M</a>
+        <a href="#">Copy</a>
+        <a href="#">Grid</a>
+    </div>
+    <div class="navbar-spacer"></div>
+    <div class="navbar-actions">
+        <button class="btn-nav" onclick="toggleJarvisChat()">AI</button>
+        <button class="btn-nav" onclick="showSettings()">Settings</button>
+        <button class="btn-nav btn-kill" id="btn-killswitch" onclick="toggleKillSwitch()">KILL</button>
+    </div>
+    <div class="navbar-clock" id="clock"></div>
+</div>
+
+<!-- PLACEHOLDER: étapes 17-23 HTML + JS seront ajoutés ici -->
+
+</body>
+</html>
