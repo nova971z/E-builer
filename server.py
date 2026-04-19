@@ -1047,5 +1047,160 @@ signal_engine = SignalEngine()
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 7-15 seront ajoutées ici
+# Risk Engine — Absolute veto system
+# Any single veto condition blocks trade execution entirely.
+# ---------------------------------------------------------------------------
+
+class RiskEngine:
+
+    DRAWDOWN_LEVELS = [
+        {"level": "green", "threshold": 5.0, "label": "Safe"},
+        {"level": "yellow", "threshold": 5.0, "label": "Caution"},
+        {"level": "orange", "threshold": 10.0, "label": "Warning"},
+        {"level": "red", "threshold": 15.0, "label": "Critical"},
+    ]
+
+    def check(self, signal, portfolio_state=None):
+        portfolio_state = portfolio_state or {}
+        vetoes = []
+        warnings = []
+
+        confidence = signal.get("confidence", 0)
+        regime = signal.get("regime", "RANGE")
+        direction = signal.get("direction", "NEUTRAL")
+
+        # Veto 1: Low confidence
+        if confidence < 30:
+            vetoes.append(f"Confidence too low ({confidence}% < 30%)")
+
+        # Veto 2: CRISIS regime
+        if regime == "CRISIS":
+            vetoes.append("Market in CRISIS regime — all trading suspended")
+
+        # Veto 3: Daily loss >= 5%
+        daily_pnl_pct = portfolio_state.get("daily_pnl_pct", 0)
+        if daily_pnl_pct <= -5.0:
+            vetoes.append(f"Daily loss {daily_pnl_pct:.1f}% exceeds -5% limit")
+
+        # Veto 4: Kill switch active
+        if self._is_kill_switch_active():
+            vetoes.append("Kill switch is active")
+
+        # Veto 5: Event mode (economic calendar)
+        event = self._check_event_mode()
+        if event:
+            vetoes.append(f"Event mode active: {event}")
+
+        # Veto 6: Drawdown > 15%
+        drawdown = portfolio_state.get("drawdown_pct", 0)
+        if drawdown >= 15.0:
+            vetoes.append(f"Drawdown {drawdown:.1f}% exceeds 15% limit")
+
+        # Veto 7: NEUTRAL signal
+        if direction == "NEUTRAL":
+            vetoes.append("Signal is NEUTRAL — no trade direction")
+
+        # Warnings (non-blocking)
+        if 30 <= confidence < 50:
+            warnings.append(f"Low confidence ({confidence}%)")
+        if 5.0 <= drawdown < 15.0:
+            warnings.append(f"Elevated drawdown ({drawdown:.1f}%)")
+        if daily_pnl_pct <= -3.0:
+            warnings.append(f"Significant daily loss ({daily_pnl_pct:.1f}%)")
+
+        return {
+            "approved": len(vetoes) == 0,
+            "vetoed": len(vetoes) > 0,
+            "vetoes": vetoes,
+            "warnings": warnings,
+            "veto_count": len(vetoes),
+        }
+
+    def _is_kill_switch_active(self):
+        try:
+            conn = get_db()
+            row = conn.execute("SELECT active FROM killswitch WHERE id = 1").fetchone()
+            conn.close()
+            return bool(row and row["active"])
+        except Exception:
+            return False
+
+    def _check_event_mode(self):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for cal in ECONOMIC_CALENDAR:
+            if today in cal["dates"] and cal["impact"] == "high":
+                return cal["event"]
+        return None
+
+    def get_drawdown_status(self):
+        try:
+            conn = get_db()
+            trades = conn.execute(
+                "SELECT pnl FROM paper_trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 100"
+            ).fetchall()
+            conn.close()
+        except Exception:
+            trades = []
+
+        if not trades:
+            return {"drawdown_pct": 0, "level": "green", "label": "Safe", "peak": 0, "current": 0}
+
+        pnls = [t["pnl"] for t in trades]
+        equity_curve = []
+        running = 0
+        for pnl in reversed(pnls):
+            running += pnl
+            equity_curve.append(running)
+
+        if not equity_curve:
+            return {"drawdown_pct": 0, "level": "green", "label": "Safe", "peak": 0, "current": 0}
+
+        peak = equity_curve[0]
+        max_dd = 0
+        for val in equity_curve:
+            if val > peak:
+                peak = val
+            dd = peak - val
+            if dd > max_dd:
+                max_dd = dd
+
+        dd_pct = (max_dd / peak * 100) if peak > 0 else 0
+
+        if dd_pct >= 15:
+            level, label = "red", "Critical"
+        elif dd_pct >= 10:
+            level, label = "orange", "Warning"
+        elif dd_pct >= 5:
+            level, label = "yellow", "Caution"
+        else:
+            level, label = "green", "Safe"
+
+        return {
+            "drawdown_pct": round(dd_pct, 2),
+            "level": level,
+            "label": label,
+            "peak": round(peak, 2),
+            "current": round(equity_curve[-1], 2),
+            "max_drawdown_abs": round(max_dd, 2),
+        }
+
+    def get_daily_pnl(self):
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            conn = get_db()
+            row = conn.execute(
+                "SELECT COALESCE(SUM(pnl), 0) as total FROM paper_trades WHERE status = 'closed' AND closed_at LIKE ?",
+                (f"{today}%",),
+            ).fetchone()
+            conn.close()
+            return row["total"] if row else 0
+        except Exception:
+            return 0
+
+
+risk_engine = RiskEngine()
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 8-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
