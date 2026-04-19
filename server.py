@@ -1827,6 +1827,165 @@ micro_engine = MicroPositionEngine()
 paper_trader = PaperTrader()
 
 
+# ===========================================================================
+# API ROUTES — Market Data (5 routes)
+# ===========================================================================
+
+@app.route("/api/candles")
+def api_candles():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    interval = request.args.get("interval", "1h")
+    limit = min(int(request.args.get("limit", 500)), 1500)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info:
+        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
+
+    if sym_info["source"] == "stooq":
+        candles = generate_gold_silver_candles(sym_info, limit)
+        return jsonify(candles)
+
+    if interval not in INTERVALS:
+        return jsonify({"error": f"Invalid interval: {interval}"}), 400
+
+    raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
+    if raw is None:
+        return jsonify({"error": "Failed to fetch candles from Binance"}), 502
+    return jsonify(transform_klines(raw))
+
+
+@app.route("/api/price")
+def api_price():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info:
+        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
+
+    if sym_info["source"] == "stooq":
+        data = fetch_stooq_price(sym_info)
+        if not data:
+            return jsonify({"error": "Failed to fetch price from Stooq"}), 502
+        return jsonify(data)
+
+    ticker = fetch_binance("/api/v3/ticker/24hr", {"symbol": symbol}, ttl=5)
+    if not ticker:
+        return jsonify({"error": "Failed to fetch price from Binance"}), 502
+
+    return jsonify({
+        "symbol": symbol,
+        "price": float(ticker.get("lastPrice", 0)),
+        "change_24h": float(ticker.get("priceChange", 0)),
+        "change_24h_pct": float(ticker.get("priceChangePercent", 0)),
+        "high_24h": float(ticker.get("highPrice", 0)),
+        "low_24h": float(ticker.get("lowPrice", 0)),
+        "volume_24h": float(ticker.get("volume", 0)),
+        "quote_volume": float(ticker.get("quoteVolume", 0)),
+        "weighted_avg": float(ticker.get("weightedAvgPrice", 0)),
+        "source": "binance",
+    })
+
+
+@app.route("/api/orderbook")
+def api_orderbook():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    limit = min(int(request.args.get("limit", 20)), 100)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info or sym_info["source"] != "binance":
+        return jsonify({"bids": [], "asks": [], "spread": 0, "spread_pct": 0})
+
+    data = fetch_binance("/api/v3/depth", {"symbol": symbol, "limit": limit}, ttl=2)
+    if not data:
+        return jsonify({"error": "Failed to fetch order book"}), 502
+
+    bids = [[float(p), float(q)] for p, q in data.get("bids", [])]
+    asks = [[float(p), float(q)] for p, q in data.get("asks", [])]
+
+    best_bid = bids[0][0] if bids else 0
+    best_ask = asks[0][0] if asks else 0
+    spread = best_ask - best_bid
+    spread_pct = (spread / best_ask * 100) if best_ask > 0 else 0
+
+    total_bid_vol = sum(q for _, q in bids)
+    total_ask_vol = sum(q for _, q in asks)
+    total = total_bid_vol + total_ask_vol
+    buy_ratio = (total_bid_vol / total * 100) if total > 0 else 50
+
+    return jsonify({
+        "bids": bids,
+        "asks": asks,
+        "spread": round(spread, 8),
+        "spread_pct": round(spread_pct, 4),
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "buy_ratio": round(buy_ratio, 1),
+        "sell_ratio": round(100 - buy_ratio, 1),
+    })
+
+
+@app.route("/api/trades")
+def api_trades():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    limit = min(int(request.args.get("limit", 30)), 100)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info or sym_info["source"] != "binance":
+        return jsonify([])
+
+    data = fetch_binance("/api/v3/trades", {"symbol": symbol, "limit": limit}, ttl=3)
+    if not data:
+        return jsonify([])
+
+    return jsonify([
+        {
+            "id": t["id"],
+            "price": float(t["price"]),
+            "quantity": float(t["qty"]),
+            "quote_qty": float(t["quoteQty"]),
+            "time": t["time"],
+            "is_buyer_maker": t["isBuyerMaker"],
+            "side": "sell" if t["isBuyerMaker"] else "buy",
+        }
+        for t in data
+    ])
+
+
+@app.route("/api/ticker")
+def api_ticker():
+    pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+    result = []
+
+    data = fetch_binance("/api/v3/ticker/price", ttl=5)
+    if not data:
+        return jsonify([])
+
+    price_map = {item["symbol"]: float(item["price"]) for item in data}
+
+    for pair in pairs:
+        if pair in price_map:
+            ticker_24h = fetch_binance("/api/v3/ticker/24hr", {"symbol": pair}, ttl=15)
+            change_pct = float(ticker_24h.get("priceChangePercent", 0)) if ticker_24h else 0
+            result.append({
+                "symbol": pair,
+                "base": SUPPORTED_SYMBOLS[pair]["base"],
+                "price": price_map[pair],
+                "change_pct": change_pct,
+            })
+
+    for sym_key in ("GOLD", "SILVER"):
+        sym_info = SUPPORTED_SYMBOLS[sym_key]
+        stooq = fetch_stooq_price(sym_info)
+        if stooq and stooq["price"]:
+            result.append({
+                "symbol": sym_key,
+                "base": sym_info["base"],
+                "price": stooq["price"],
+                "change_pct": 0,
+            })
+
+    return jsonify(result)
+
+
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 11-15 seront ajoutées ici
+# PLACEHOLDER: étapes 12-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
