@@ -1986,6 +1986,150 @@ def api_ticker():
     return jsonify(result)
 
 
+# ===========================================================================
+# API ROUTES — Indicators & Intelligence (3 routes)
+# ===========================================================================
+
+@app.route("/api/indicators")
+def api_indicators():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    interval = request.args.get("interval", "1h")
+    limit = min(int(request.args.get("limit", 500)), 1500)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info:
+        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
+
+    if sym_info["source"] == "stooq":
+        ohlcv = generate_gold_silver_candles(sym_info, limit)
+    else:
+        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
+        if not raw:
+            return jsonify({"error": "Failed to fetch candles"}), 502
+        ohlcv = transform_klines(raw)
+
+    if len(ohlcv) < 30:
+        return jsonify({"error": "Not enough data for indicators", "candles": len(ohlcv)}), 400
+
+    indicators = compute_all_indicators(ohlcv)
+
+    regime_info = regime_detector.detect(ohlcv, indicators["_raw"])
+    signal_info = signal_engine.generate(indicators["_raw"], regime_info)
+    risk_info = risk_engine.check(signal_info, {
+        "daily_pnl_pct": 0,
+        "drawdown_pct": risk_engine.get_drawdown_status()["drawdown_pct"],
+    })
+
+    result = {k: v for k, v in indicators.items() if k != "_raw"}
+    result["regime"] = regime_info
+    result["signal"] = signal_info
+    result["risk"] = risk_info
+    result["meta"] = {"symbol": symbol, "interval": interval, "candles": len(ohlcv)}
+
+    return jsonify(result)
+
+
+@app.route("/api/dip-top")
+def api_dip_top():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    interval = request.args.get("interval", "1h")
+    limit = min(int(request.args.get("limit", 500)), 1500)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info:
+        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
+
+    if sym_info["source"] == "stooq":
+        ohlcv = generate_gold_silver_candles(sym_info, limit)
+    else:
+        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
+        if not raw:
+            return jsonify({"error": "Failed to fetch candles"}), 502
+        ohlcv = transform_klines(raw)
+
+    if len(ohlcv) < 60:
+        return jsonify({"error": "Need at least 60 candles for dip/top detection"}), 400
+
+    indicators = compute_all_indicators(ohlcv)
+    analysis = dip_top_detector.analyze(symbol, ohlcv, indicators["_raw"])
+    return jsonify(analysis)
+
+
+@app.route("/api/whales")
+def api_whales():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    min_value_usd = float(request.args.get("min_value", 100000))
+
+    result = {
+        "symbol": symbol,
+        "large_trades": [],
+        "whale_alert": [],
+        "net_flow": 0,
+        "summary": "",
+    }
+
+    # Binance large trades detection
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if sym_info and sym_info["source"] == "binance":
+        trades_raw = fetch_binance("/api/v3/trades", {"symbol": symbol, "limit": 100}, ttl=10)
+        if trades_raw:
+            price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=5)
+            current_price = float(price_data["price"]) if price_data else 0
+
+            large = []
+            buy_vol = 0
+            sell_vol = 0
+            for t in trades_raw:
+                value = float(t["price"]) * float(t["qty"])
+                if value >= min_value_usd:
+                    side = "sell" if t["isBuyerMaker"] else "buy"
+                    large.append({
+                        "price": float(t["price"]),
+                        "quantity": float(t["qty"]),
+                        "value_usd": round(value, 2),
+                        "side": side,
+                        "time": t["time"],
+                    })
+                    if side == "buy":
+                        buy_vol += value
+                    else:
+                        sell_vol += value
+
+            result["large_trades"] = large
+            result["net_flow"] = round(buy_vol - sell_vol, 2)
+            if buy_vol > sell_vol * 1.5:
+                result["summary"] = f"Whale accumulation: ${buy_vol:,.0f} buys vs ${sell_vol:,.0f} sells"
+            elif sell_vol > buy_vol * 1.5:
+                result["summary"] = f"Whale distribution: ${sell_vol:,.0f} sells vs ${buy_vol:,.0f} buys"
+            else:
+                result["summary"] = f"Balanced whale activity: ${buy_vol:,.0f} buys, ${sell_vol:,.0f} sells"
+
+    # Whale Alert API (optional)
+    if WHALE_ALERT_KEY:
+        try:
+            since = int(time.time()) - 3600
+            resp = requests.get(
+                f"{WHALE_ALERT_BASE}/transactions",
+                params={"api_key": WHALE_ALERT_KEY, "min_value": int(min_value_usd), "start": since, "currency": "btc"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                wa_data = resp.json()
+                for tx in wa_data.get("transactions", [])[:20]:
+                    result["whale_alert"].append({
+                        "hash": tx.get("hash", "")[:16],
+                        "from": tx.get("from", {}).get("owner", "unknown"),
+                        "to": tx.get("to", {}).get("owner", "unknown"),
+                        "amount": tx.get("amount", 0),
+                        "amount_usd": tx.get("amount_usd", 0),
+                        "timestamp": tx.get("timestamp", 0),
+                    })
+        except Exception as e:
+            log.warning("Whale Alert API failed: %s", e)
+
+    return jsonify(result)
+
+
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 12-15 seront ajoutées ici
+# PLACEHOLDER: étapes 13-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
