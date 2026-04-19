@@ -2130,6 +2130,278 @@ def api_whales():
     return jsonify(result)
 
 
+# ===========================================================================
+# API ROUTES — Sentiment (3 routes) + News (2 routes) + Calendar (1 route)
+# ===========================================================================
+
+@app.route("/api/funding")
+def api_funding():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+
+    current = fetch_binance("/fapi/v1/premiumIndex", {"symbol": symbol}, base=BINANCE_FAPI, ttl=30)
+    history = fetch_binance("/fapi/v1/fundingRate", {"symbol": symbol, "limit": 100}, base=BINANCE_FAPI, ttl=60)
+
+    if not current:
+        return jsonify({
+            "symbol": symbol, "rate": 0, "next_time": 0,
+            "percentile": 50, "signal": "neutral",
+            "history": [], "error": "Funding data unavailable",
+        })
+
+    rate = float(current.get("lastFundingRate", 0))
+    next_time = int(current.get("nextFundingTime", 0))
+
+    rates = []
+    if history:
+        rates = [float(h["fundingRate"]) for h in history]
+
+    percentile = 50
+    if rates:
+        below = sum(1 for r in rates if r <= rate)
+        percentile = int(below / len(rates) * 100)
+
+    if rate > 0.03:
+        signal = "contrarian_short"
+    elif rate < -0.03:
+        signal = "contrarian_long"
+    elif rate > 0.01:
+        signal = "slightly_bullish"
+    elif rate < -0.01:
+        signal = "slightly_bearish"
+    else:
+        signal = "neutral"
+
+    return jsonify({
+        "symbol": symbol,
+        "rate": rate,
+        "rate_pct": round(rate * 100, 4),
+        "next_funding_time": next_time,
+        "percentile": percentile,
+        "signal": signal,
+        "history": [{"rate": float(h["fundingRate"]), "time": h["fundingTime"]} for h in (history or [])[-20:]],
+    })
+
+
+@app.route("/api/fear-greed")
+def api_fear_greed():
+    cache_key = "fear_greed"
+    cached = cache.get(cache_key, ttl=300)
+    if cached:
+        return jsonify(cached)
+
+    try:
+        resp = requests.get(f"{ALTERNATIVE_ME}/fng/", params={"limit": 7}, timeout=5)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+    except Exception as e:
+        log.warning("Fear & Greed API failed: %s", e)
+        data = []
+
+    if not data:
+        return jsonify({"value": 50, "label": "Neutral", "trend": "stable", "history": []})
+
+    current = data[0]
+    value = int(current.get("value", 50))
+
+    if value <= 20:
+        label = "Extreme Fear"
+    elif value <= 40:
+        label = "Fear"
+    elif value <= 60:
+        label = "Neutral"
+    elif value <= 80:
+        label = "Greed"
+    else:
+        label = "Extreme Greed"
+
+    history = [{"value": int(d["value"]), "label": d.get("value_classification", ""), "date": d.get("timestamp", "")} for d in data]
+
+    trend = "stable"
+    if len(data) >= 7:
+        avg_recent = sum(int(d["value"]) for d in data[:3]) / 3
+        avg_older = sum(int(d["value"]) for d in data[4:7]) / 3
+        diff = avg_recent - avg_older
+        if diff > 10:
+            trend = "improving"
+        elif diff < -10:
+            trend = "worsening"
+
+    result = {"value": value, "label": label, "trend": trend, "history": history}
+    cache.set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/sentiment")
+def api_sentiment():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+
+    oi_data = fetch_binance("/fapi/v1/openInterest", {"symbol": symbol}, base=BINANCE_FAPI, ttl=30)
+    ls_data = fetch_binance("/futures/data/globalLongShortAccountRatio",
+                            {"symbol": symbol, "period": "1h", "limit": 30}, base=BINANCE_FAPI, ttl=60)
+
+    oi = float(oi_data.get("openInterest", 0)) if oi_data else 0
+
+    ls_history = []
+    current_ratio = 1.0
+    if ls_data:
+        for entry in ls_data:
+            ratio = float(entry.get("longShortRatio", 1))
+            ls_history.append({"ratio": ratio, "time": entry.get("timestamp", 0)})
+            current_ratio = ratio
+
+    divergence = None
+    if current_ratio > 2.0:
+        divergence = "extreme_long"
+    elif current_ratio < 0.5:
+        divergence = "extreme_short"
+
+    return jsonify({
+        "symbol": symbol,
+        "open_interest": oi,
+        "long_short_ratio": current_ratio,
+        "divergence": divergence,
+        "history": ls_history[-20:],
+    })
+
+
+@app.route("/api/news")
+def api_news():
+    cache_key = "rss_news"
+    cached = cache.get(cache_key, ttl=120)
+    if cached:
+        return jsonify(cached)
+
+    feeds = [
+        {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss"},
+        {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+        {"name": "CryptoNews", "url": "https://cryptonews.com/news/feed/"},
+    ]
+
+    articles = []
+    for feed in feeds:
+        try:
+            resp = requests.get(feed["url"], timeout=5, headers={"User-Agent": "JARVIS/3.0"})
+            if resp.status_code != 200:
+                continue
+            items = _parse_rss_minimal(resp.text, feed["name"])
+            articles.extend(items)
+        except Exception as e:
+            log.warning("RSS %s failed: %s", feed["name"], e)
+
+    articles.sort(key=lambda a: a.get("pub_date", ""), reverse=True)
+    result = articles[:30]
+    cache.set(cache_key, result)
+    return jsonify(result)
+
+
+def _parse_rss_minimal(xml_text, source_name):
+    items = []
+    parts = xml_text.split("<item>")
+    for part in parts[1:21]:
+        title = _extract_tag(part, "title")
+        link = _extract_tag(part, "link")
+        pub_date = _extract_tag(part, "pubDate")
+        desc = _extract_tag(part, "description")
+        if desc:
+            desc = re.sub(r"<[^>]+>", "", desc)[:200]
+        if title:
+            items.append({
+                "title": title,
+                "link": link or "",
+                "pub_date": pub_date or "",
+                "description": desc or "",
+                "source": source_name,
+            })
+    return items
+
+
+def _extract_tag(text, tag):
+    pattern = f"<{tag}[^>]*>(.*?)</{tag}>"
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        content = match.group(1).strip()
+        if content.startswith("<![CDATA["):
+            content = content[9:]
+        if content.endswith("]]>"):
+            content = content[:-3]
+        return content.strip()
+    return ""
+
+
+@app.route("/api/news/summarize", methods=["POST"])
+def api_news_summarize():
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"summary": "API key not configured", "sentiment": "NEUTRAL"})
+
+    body = request.get_json(force=True)
+    text = body.get("text", "")
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": f"Summarize this crypto news in 2 sentences. End with sentiment: BULLISH, BEARISH, or NEUTRAL.\n\n{text[:2000]}"}],
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("content", [{}])[0].get("text", "")
+        sentiment = "NEUTRAL"
+        if "BULLISH" in content.upper():
+            sentiment = "BULLISH"
+        elif "BEARISH" in content.upper():
+            sentiment = "BEARISH"
+        return jsonify({"summary": content, "sentiment": sentiment})
+    except Exception as e:
+        return jsonify({"summary": f"Summarization failed: {e}", "sentiment": "NEUTRAL"})
+
+
+@app.route("/api/calendar")
+def api_calendar():
+    today = datetime.now(timezone.utc)
+    today_str = today.strftime("%Y-%m-%d")
+
+    events = []
+    event_mode = False
+    for cal in ECONOMIC_CALENDAR:
+        for date_str in cal["dates"]:
+            try:
+                event_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                days_until = (event_date - today).days
+                if -1 <= days_until <= 30:
+                    entry = {
+                        "event": cal["event"],
+                        "date": date_str,
+                        "impact": cal["impact"],
+                        "days_until": days_until,
+                        "is_today": days_until == 0,
+                    }
+                    events.append(entry)
+                    if days_until == 0 and cal["impact"] == "high":
+                        event_mode = True
+            except ValueError:
+                continue
+
+    events.sort(key=lambda e: e["days_until"])
+
+    return jsonify({
+        "events": events,
+        "event_mode": event_mode,
+        "today": today_str,
+        "next_event": events[0] if events else None,
+    })
+
+
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 13-15 seront ajoutées ici
+# PLACEHOLDER: étapes 14-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
