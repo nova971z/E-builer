@@ -690,5 +690,139 @@ def compute_all_indicators(ohlcv):
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 5-15 seront ajoutées ici
+# Market Regime Detector — 4 states: BULL, BEAR, RANGE, CRISIS
+# Uses trend (EMA50 vs EMA200), volatility (ATR percentile),
+# directional strength (ADX), and Bollinger width.
+# ---------------------------------------------------------------------------
+
+class MarketRegimeDetector:
+
+    REGIMES = ("BULL", "BEAR", "RANGE", "CRISIS")
+
+    def detect(self, ohlcv, raw_indicators):
+        closes = raw_indicators["closes"]
+        if len(closes) < 50:
+            return {"regime": "RANGE", "confidence": 0, "reasons": ["Insufficient data"]}
+
+        ema50 = raw_indicators["ema50"]
+        ema200 = raw_indicators["ema200"]
+        atr = raw_indicators["atr"]
+        adx_data = raw_indicators["adx"]
+        bb = raw_indicators["bb"]
+
+        score = {"BULL": 0, "BEAR": 0, "RANGE": 0, "CRISIS": 0}
+        reasons = []
+
+        # --- Trend: EMA 50 vs EMA 200 ---
+        e50 = self._last_valid(ema50)
+        e200 = self._last_valid(ema200)
+        price = closes[-1]
+        if e50 is not None and e200 is not None:
+            if e50 > e200 and price > e50:
+                score["BULL"] += 30
+                reasons.append("Price above EMA50 > EMA200 (golden alignment)")
+            elif e50 < e200 and price < e50:
+                score["BEAR"] += 30
+                reasons.append("Price below EMA50 < EMA200 (death alignment)")
+            else:
+                score["RANGE"] += 15
+                reasons.append("EMAs mixed — no clear trend")
+        elif e50 is not None:
+            if price > e50:
+                score["BULL"] += 15
+            else:
+                score["BEAR"] += 15
+
+        # --- Momentum: price position relative to recent range ---
+        lookback = min(50, len(closes))
+        recent = closes[-lookback:]
+        hi = max(recent)
+        lo = min(recent)
+        if hi != lo:
+            position = (price - lo) / (hi - lo)
+            if position > 0.75:
+                score["BULL"] += 20
+                reasons.append(f"Price at {position:.0%} of 50-bar range (upper)")
+            elif position < 0.25:
+                score["BEAR"] += 20
+                reasons.append(f"Price at {position:.0%} of 50-bar range (lower)")
+            else:
+                score["RANGE"] += 15
+                reasons.append(f"Price at {position:.0%} of 50-bar range (middle)")
+
+        # --- Directional strength: ADX ---
+        adx_val = self._last_valid(adx_data["adx"])
+        if adx_val is not None:
+            if adx_val > 25:
+                dmi_p = self._last_valid(adx_data["dmi_plus"])
+                dmi_m = self._last_valid(adx_data["dmi_minus"])
+                if dmi_p is not None and dmi_m is not None:
+                    if dmi_p > dmi_m:
+                        score["BULL"] += 25
+                        reasons.append(f"ADX {adx_val:.0f} strong + DMI+ leads")
+                    else:
+                        score["BEAR"] += 25
+                        reasons.append(f"ADX {adx_val:.0f} strong + DMI- leads")
+            else:
+                score["RANGE"] += 25
+                reasons.append(f"ADX {adx_val:.0f} weak — no directional bias")
+
+        # --- Volatility: ATR as % of price ---
+        atr_val = self._last_valid(atr)
+        if atr_val is not None and price > 0:
+            vol_pct = atr_val / price * 100
+            atr_valid = [v for v in atr if v is not None]
+            if len(atr_valid) >= 30:
+                avg_atr = sum(atr_valid[-30:]) / 30
+                vol_ratio = atr_val / avg_atr if avg_atr > 0 else 1.0
+                if vol_ratio > 3.0:
+                    score["CRISIS"] += 50
+                    reasons.append(f"Volatility {vol_ratio:.1f}x average — CRISIS")
+                elif vol_ratio > 2.0:
+                    score["CRISIS"] += 25
+                    reasons.append(f"Volatility {vol_ratio:.1f}x average — elevated")
+                elif vol_ratio < 0.5:
+                    score["RANGE"] += 15
+                    reasons.append(f"Volatility {vol_ratio:.1f}x average — compressed")
+
+        # --- Bollinger Band width ---
+        bb_upper = self._last_valid(bb["upper"])
+        bb_lower = self._last_valid(bb["lower"])
+        bb_mid = self._last_valid(bb["middle"])
+        if bb_upper and bb_lower and bb_mid and bb_mid > 0:
+            bb_width = (bb_upper - bb_lower) / bb_mid * 100
+            if bb_width < 2.0:
+                score["RANGE"] += 15
+                reasons.append(f"BB width {bb_width:.1f}% — squeeze")
+            elif bb_width > 8.0:
+                score["CRISIS"] += 10
+                reasons.append(f"BB width {bb_width:.1f}% — expansion")
+
+        # --- Pick winner ---
+        regime = max(score, key=score.get)
+        total = sum(score.values())
+        confidence = int(score[regime] / total * 100) if total > 0 else 0
+
+        return {
+            "regime": regime,
+            "confidence": confidence,
+            "scores": score,
+            "reasons": reasons,
+        }
+
+    @staticmethod
+    def _last_valid(series):
+        if not series:
+            return None
+        for v in reversed(series):
+            if v is not None:
+                return v
+        return None
+
+
+regime_detector = MarketRegimeDetector()
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 6-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
