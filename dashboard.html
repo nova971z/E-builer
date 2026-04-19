@@ -2873,7 +2873,304 @@ async function removeExchange(id) {
     }
 }
 
-// PLACEHOLDER: étape 23 JS sera ajouté ici
+// ========== JARVIS CHAT ==========
+function toggleJarvisChat() {
+    const chat = $('jarvis-chat');
+    chat.classList.toggle('open');
+    if (chat.classList.contains('open')) $('jc-input').focus();
+}
+
+function sendJarvisQuick(msg) {
+    $('jc-input').value = msg;
+    sendJarvis();
+}
+
+async function sendJarvis() {
+    const input = $('jc-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+
+    appendChatMsg(msg, 'user');
+
+    try {
+        const resp = await fetch(API + '/api/jarvis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: msg,
+                context: {
+                    symbol: currentSymbol,
+                    interval: currentInterval,
+                    leverage: leverage,
+                },
+            }),
+        });
+        const data = await resp.json();
+        appendChatMsg(data.response || data.error || 'No response', 'bot');
+    } catch (err) {
+        appendChatMsg('Connection error: ' + err.message, 'bot');
+    }
+}
+
+function appendChatMsg(text, role) {
+    const el = $('jc-messages');
+    const div = document.createElement('div');
+    div.className = 'jc-msg ' + role;
+    div.textContent = text;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+}
+
+// ========== VOICE RECOGNITION ==========
+let recognition = null;
+let isRecording = false;
+
+const voiceCommands = {
+    'bitcoin': function() { changeSymbol('BTCUSDT'); },
+    'btc': function() { changeSymbol('BTCUSDT'); },
+    'ethereum': function() { changeSymbol('ETHUSDT'); },
+    'eth': function() { changeSymbol('ETHUSDT'); },
+    'solana': function() { changeSymbol('SOLUSDT'); },
+    'sol': function() { changeSymbol('SOLUSDT'); },
+    'ripple': function() { changeSymbol('XRPUSDT'); },
+    'xrp': function() { changeSymbol('XRPUSDT'); },
+    'doge': function() { changeSymbol('DOGEUSDT'); },
+    'dogecoin': function() { changeSymbol('DOGEUSDT'); },
+    'gold': function() { changeSymbol('GOLD'); },
+    'or': function() { changeSymbol('GOLD'); },
+    'silver': function() { changeSymbol('SILVER'); },
+    'argent': function() { changeSymbol('SILVER'); },
+    'kill': function() { toggleKillSwitch(); },
+    'stop': function() { toggleKillSwitch(); },
+    'analyse': function() { sendJarvisQuick('Analyse complète ' + currentSymbol); },
+    'signal': function() { sendJarvisQuick('Signal actuel ' + currentSymbol); },
+    'risque': function() { sendJarvisQuick('Risque portefeuille'); },
+};
+
+function toggleVoice() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        showToast('Voice not supported in this browser', 'error');
+        return;
+    }
+
+    if (isRecording) {
+        stopVoice();
+        return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.lang = 'fr-FR';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = function() {
+        isRecording = true;
+        $('btn-mic').classList.add('recording');
+    };
+
+    recognition.onresult = function(e) {
+        const transcript = e.results[0][0].transcript.toLowerCase().trim();
+        stopVoice();
+
+        let handled = false;
+        for (var cmd in voiceCommands) {
+            if (transcript.indexOf(cmd) !== -1) {
+                voiceCommands[cmd]();
+                showToast('Voice: ' + cmd, 'success');
+                handled = true;
+                break;
+            }
+        }
+
+        if (!handled) {
+            $('jc-input').value = transcript;
+            sendJarvis();
+        }
+    };
+
+    recognition.onerror = function() { stopVoice(); };
+    recognition.onend = function() { stopVoice(); };
+
+    recognition.start();
+}
+
+function stopVoice() {
+    isRecording = false;
+    $('btn-mic').classList.remove('recording');
+    if (recognition) {
+        try { recognition.stop(); } catch (e) {}
+        recognition = null;
+    }
+}
+
+// ========== NEWS ==========
+async function loadNews() {
+    try {
+        const resp = await fetch(API + '/api/news');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        // News data available for JARVIS context — no dedicated UI panel in this layout
+    } catch (err) {
+        console.error('loadNews error:', err);
+    }
+}
+
+// ========== CALENDAR + EVENT MODE ==========
+async function loadCalendar() {
+    try {
+        const resp = await fetch(API + '/api/calendar');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data.event_mode) {
+            $('alert-event').classList.add('visible');
+        } else {
+            $('alert-event').classList.remove('visible');
+        }
+    } catch (err) {
+        console.error('loadCalendar error:', err);
+    }
+}
+
+// ========== DIP/TOP ALERTS ==========
+async function loadDipTop(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/dip-top?symbol=' + symbol);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const alertEl = $('alert-diptop');
+        const msgEl = $('diptop-msg');
+
+        if (data.confluence_score >= 60) {
+            let signals = [];
+            if (data.rsi_divergence && data.rsi_divergence.type) signals.push('RSI ' + data.rsi_divergence.type);
+            if (data.volume_climax && data.volume_climax.type) signals.push(data.volume_climax.type);
+            if (data.wyckoff && data.wyckoff.type) signals.push(data.wyckoff.type);
+
+            msgEl.textContent = 'DIP/TOP DETECTED — Score: ' + data.confluence_score + '/100 — ' + signals.join(', ');
+            alertEl.classList.add('visible');
+        } else {
+            alertEl.classList.remove('visible');
+        }
+    } catch (err) {
+        console.error('loadDipTop error:', err);
+    }
+}
+
+// ========== WHALE TRACKING ==========
+async function loadWhales(symbol) {
+    symbol = symbol || currentSymbol;
+    try {
+        const resp = await fetch(API + '/api/whales?symbol=' + symbol);
+        if (!resp.ok) return;
+        // Whale data available for signal engine — no dedicated panel
+    } catch (err) {
+        console.error('loadWhales error:', err);
+    }
+}
+
+// ========== AUTO-REFRESH INTERVALS ==========
+const refreshTimers = [];
+
+function startAutoRefresh() {
+    // Fast: 2s — order book
+    refreshTimers.push(setInterval(function() { loadOrderBook(); }, 2000));
+
+    // Medium-fast: 5s — trades + price
+    refreshTimers.push(setInterval(function() { loadTrades(); loadPriceData(); }, 5000));
+
+    // Medium: 10s — ticker
+    refreshTimers.push(setInterval(function() { loadTicker(); }, 10000));
+
+    // Moderate: 30s — candles + indicators
+    refreshTimers.push(setInterval(function() { loadCandles(); }, 30000));
+
+    // Slow: 60s — positions, wallet, paper status, kill switch, funding, sentiment
+    refreshTimers.push(setInterval(function() {
+        loadPositions();
+        loadWallet();
+        loadPaperStatus();
+        loadKillSwitchStatus();
+        loadFunding();
+        loadSentiment();
+    }, 60000));
+
+    // Very slow: 120s — fear & greed, drawdown, dip/top
+    refreshTimers.push(setInterval(function() {
+        loadFearGreed();
+        loadDrawdown();
+        loadDipTop();
+    }, 120000));
+
+    // Glacial: 300s — news, calendar, whales
+    refreshTimers.push(setInterval(function() {
+        loadNews();
+        loadCalendar();
+        loadWhales();
+    }, 300000));
+
+    // Clock: 1s
+    refreshTimers.push(setInterval(updateClock, 1000));
+}
+
+// ========== KEYBOARD SHORTCUTS ==========
+document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    // Escape — close modals / chat
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-overlay.open').forEach(function(m) { m.classList.remove('open'); });
+        $('jarvis-chat').classList.remove('open');
+        return;
+    }
+
+    // J — toggle JARVIS chat
+    if (e.key === 'j' || e.key === 'J') { toggleJarvisChat(); e.preventDefault(); return; }
+
+    // K — kill switch
+    if (e.key === 'k' || e.key === 'K') { toggleKillSwitch(); e.preventDefault(); return; }
+
+    // 1-8 — timeframes
+    var tfMap = { '1': '1m', '2': '5m', '3': '15m', '4': '30m', '5': '1h', '6': '4h', '7': '1d', '8': '1w' };
+    if (tfMap[e.key]) { changeTF(tfMap[e.key]); e.preventDefault(); return; }
+});
+
+// ========== INIT ON DOM READY ==========
+document.addEventListener('DOMContentLoaded', function() {
+    // Init charts
+    initMainChart();
+    initRSIChart();
+    initMACDChart();
+    syncTimeScales();
+
+    // First data load
+    updateClock();
+    loadCandles(currentSymbol, currentInterval);
+    loadOrderBook();
+    loadTrades();
+    loadTicker();
+    loadPriceData();
+    loadFunding();
+    loadSentiment();
+    loadFearGreed();
+    loadDrawdown();
+    loadPositions();
+    loadWallet();
+    loadPaperStatus();
+    loadKillSwitchStatus();
+    loadNews();
+    loadCalendar();
+    loadDipTop();
+    loadWhales();
+
+    // Start auto-refresh
+    startAutoRefresh();
+});
+</script>
 
 </body>
 </html>
