@@ -1,0 +1,8 @@
+flask
+flask-cors
+requests
+ccxt
+yfinance
+feedparser
+anthropic
+cryptography
