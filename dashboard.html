@@ -2474,7 +2474,406 @@ async function loadPaperHistory() {
     }
 }
 
-// PLACEHOLDER: étapes 22-23 JS sera ajouté ici
+// ========== ORDER FORM STATE ==========
+let orderTab = 'open';
+let marginMode = 'isolated';
+let orderType = 'limit';
+let leverage = 10;
+
+// ========== LEVERAGE SLIDER ==========
+function updateLeverage(val) {
+    leverage = parseInt(val, 10);
+    $('lev-display').textContent = leverage + 'x';
+    updateOrderInfo();
+}
+
+// ========== ORDER TAB / TYPE SWITCHING ==========
+function switchOrderTab(tab) {
+    orderTab = tab;
+    document.querySelectorAll('.of-tabs button').forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+}
+
+function switchOrderType(type) {
+    orderType = type;
+    document.querySelectorAll('.of-type-tabs button').forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+
+    const priceField = $('order-price');
+    if (type === 'market') {
+        priceField.value = '';
+        priceField.placeholder = 'Market';
+        priceField.disabled = true;
+    } else {
+        priceField.disabled = false;
+        priceField.placeholder = '0.00';
+    }
+}
+
+// ========== MARGIN MODE ==========
+(function() {
+    const isoBtn = $('btn-isolated');
+    const crossBtn = $('btn-cross');
+    if (isoBtn) isoBtn.addEventListener('click', function() {
+        marginMode = 'isolated';
+        isoBtn.classList.add('active');
+        crossBtn.classList.remove('active');
+    });
+    if (crossBtn) crossBtn.addEventListener('click', function() {
+        marginMode = 'cross';
+        crossBtn.classList.add('active');
+        isoBtn.classList.remove('active');
+    });
+})();
+
+// ========== FIELD ADJUSTMENTS ==========
+function adjustField(field, delta) {
+    const input = $(field === 'price' ? 'order-price' : 'order-qty');
+    if (!input || input.disabled) return;
+    let val = parseFloat(input.value) || 0;
+    const step = field === 'price' ? getTickSize() : getQtyStep();
+    val = Math.max(0, val + delta * step);
+    input.value = val.toFixed(field === 'price' ? getPriceDecimals() : getQtyDecimals());
+    updateOrderInfo();
+}
+
+function getTickSize() {
+    if (currentSymbol === 'BTCUSDT') return 0.1;
+    if (currentSymbol === 'ETHUSDT') return 0.01;
+    if (currentSymbol === 'GOLD') return 0.1;
+    return 0.0001;
+}
+
+function getQtyStep() {
+    if (currentSymbol === 'BTCUSDT') return 0.001;
+    if (currentSymbol === 'ETHUSDT') return 0.01;
+    if (currentSymbol === 'DOGEUSDT') return 1;
+    if (currentSymbol === 'XRPUSDT') return 1;
+    return 0.01;
+}
+
+function getPriceDecimals() {
+    if (currentSymbol === 'BTCUSDT') return 1;
+    if (currentSymbol === 'ETHUSDT') return 2;
+    if (currentSymbol === 'DOGEUSDT') return 5;
+    if (currentSymbol === 'XRPUSDT') return 4;
+    return 2;
+}
+
+function getQtyDecimals() {
+    if (currentSymbol === 'BTCUSDT') return 3;
+    if (currentSymbol === 'ETHUSDT') return 2;
+    if (currentSymbol === 'DOGEUSDT') return 0;
+    if (currentSymbol === 'XRPUSDT') return 0;
+    return 3;
+}
+
+// ========== QTY PERCENTAGE BUTTONS ==========
+function setQtyPct(pct) {
+    const available = parseFloat($('w-available').textContent) || 0;
+    const price = parseFloat($('order-price').value) || obLastPrice || 0;
+    if (!price || !available) return;
+
+    const margin = (available * pct / 100);
+    const notional = margin * leverage;
+    const qty = notional / price;
+    $('order-qty').value = qty.toFixed(getQtyDecimals());
+    updateOrderInfo();
+}
+
+// ========== ORDER INFO (cost / fee) ==========
+function updateOrderInfo() {
+    const price = parseFloat($('order-price').value) || obLastPrice || 0;
+    const qty = parseFloat($('order-qty').value) || 0;
+    const notional = price * qty;
+    const cost = notional / leverage;
+    const fee = notional * 0.0004;
+
+    $('order-cost').textContent = cost > 0 ? fmt(cost, 2) + ' USDT' : '--';
+    $('order-fee').textContent = fee > 0 ? '~' + fmt(fee, 2) + ' USDT' : '--';
+}
+
+// Listen for input changes
+(function() {
+    var priceInput = $('order-price');
+    var qtyInput = $('order-qty');
+    if (priceInput) priceInput.addEventListener('input', updateOrderInfo);
+    if (qtyInput) qtyInput.addEventListener('input', updateOrderInfo);
+})();
+
+// ========== EXECUTE ORDER ==========
+async function executeOrder(side) {
+    const price = orderType === 'market' ? null : parseFloat($('order-price').value);
+    const qty = parseFloat($('order-qty').value);
+    const tp = parseFloat($('order-tp').value) || null;
+    const sl = parseFloat($('order-sl').value) || null;
+
+    if (!qty || qty <= 0) {
+        showToast('Please enter a valid quantity', 'error');
+        return;
+    }
+    if (orderType !== 'market' && (!price || price <= 0)) {
+        showToast('Please enter a valid price', 'error');
+        return;
+    }
+
+    const body = {
+        symbol: currentSymbol,
+        side: side,
+        type: orderType,
+        quantity: qty,
+        leverage: leverage,
+        margin_mode: marginMode,
+        tp: tp,
+        sl: sl,
+    };
+    if (price) body.price = price;
+
+    try {
+        const resp = await fetch(API + '/api/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            showToast(data.error, 'error');
+            return;
+        }
+
+        showToast(side + ' ' + currentSymbol + ' executed — ' + (data.mode || 'paper'), 'success');
+
+        // Clear form
+        $('order-qty').value = '';
+        $('order-tp').value = '';
+        $('order-sl').value = '';
+        updateOrderInfo();
+
+        // Reload positions + paper
+        loadPositions();
+        loadPaperStatus();
+        loadWallet();
+
+    } catch (err) {
+        showToast('Order failed: ' + err.message, 'error');
+    }
+}
+
+// ========== CLOSE POSITION ==========
+async function closePosition(posId) {
+    try {
+        const resp = await fetch(API + '/api/close', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position_id: posId }),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            showToast(data.error, 'error');
+            return;
+        }
+
+        showToast('Position closed — PNL: ' + fmt(data.pnl || 0, 2), data.pnl >= 0 ? 'success' : 'error');
+        loadPositions();
+        loadPaperStatus();
+        loadWallet();
+
+    } catch (err) {
+        showToast('Close failed: ' + err.message, 'error');
+    }
+}
+
+// ========== TOAST NOTIFICATIONS ==========
+function showToast(msg, type) {
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;top:60px;right:12px;padding:10px 16px;border-radius:4px;font-size:12px;z-index:999;'
+        + 'animation:slide-down 0.3s ease;max-width:320px;word-wrap:break-word;'
+        + (type === 'error' ? 'background:#f6465d;color:white;' : 'background:#0ecb81;color:white;');
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; }, 2500);
+    setTimeout(function() { toast.remove(); }, 3000);
+}
+
+// ========== PAPER TRADING STATUS ==========
+async function loadPaperStatus() {
+    try {
+        const resp = await fetch(API + '/api/paper/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const modeEl = $('ft-mode');
+        if (modeEl) {
+            if (data.is_live_allowed) {
+                modeEl.textContent = 'LIVE';
+                modeEl.classList.add('live');
+            } else {
+                modeEl.textContent = 'PAPER (' + (data.trade_count || 0) + '/50)';
+                modeEl.classList.remove('live');
+            }
+        }
+    } catch (err) {
+        console.error('loadPaperStatus error:', err);
+    }
+}
+
+// ========== WALLET / BALANCE ==========
+async function loadWallet() {
+    try {
+        const resp = await fetch(API + '/api/balance');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        $('w-balance').textContent = fmt(data.balance || 0, 2) + ' USDT';
+        $('w-equity').textContent = fmt(data.equity || 0, 2) + ' USDT';
+        $('w-available').textContent = fmt(data.available || 0, 2) + ' USDT';
+
+        const pnl = data.unrealized_pnl || 0;
+        const pnlEl = $('w-pnl');
+        pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + ' USDT';
+        pnlEl.className = 'wvalue ' + (pnl >= 0 ? 'up' : 'down');
+
+    } catch (err) {
+        console.error('loadWallet error:', err);
+    }
+}
+
+// ========== KILL SWITCH ==========
+function toggleKillSwitch() {
+    const btn = $('btn-killswitch');
+    if (btn.classList.contains('active')) {
+        confirmKillSwitchOff();
+    } else {
+        openModal('modal-kill');
+    }
+}
+
+async function confirmKillSwitch() {
+    closeModal('modal-kill');
+    try {
+        await fetch(API + '/api/killswitch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: true, reason: 'Manual activation' }),
+        });
+        showToast('KILL SWITCH ACTIVATED', 'error');
+        loadKillSwitchStatus();
+    } catch (err) {
+        showToast('Kill switch error: ' + err.message, 'error');
+    }
+}
+
+async function confirmKillSwitchOff() {
+    try {
+        await fetch(API + '/api/killswitch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: false }),
+        });
+        showToast('Kill switch deactivated', 'success');
+        loadKillSwitchStatus();
+    } catch (err) {
+        showToast('Kill switch error: ' + err.message, 'error');
+    }
+}
+
+// ========== MODALS ==========
+function openModal(id) { $(id).classList.add('open'); }
+function closeModal(id) { $(id).classList.remove('open'); }
+function showSettings() { openModal('modal-settings'); loadExchangeList(); }
+function showAddExchange() { openModal('modal-exchange'); }
+
+// ========== SETTINGS ==========
+async function saveSettings() {
+    const anthropicKey = $('set-anthropic-key').value;
+    const defaultSymbol = $('set-default-symbol').value;
+    const paperCapital = $('set-paper-capital').value;
+
+    if (anthropicKey) {
+        try { await fetch(API + '/api/jarvis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: '__set_key__:' + anthropicKey }) }); } catch (e) {}
+    }
+    if (defaultSymbol && defaultSymbol !== currentSymbol) changeSymbol(defaultSymbol);
+
+    closeModal('modal-settings');
+    showToast('Settings saved', 'success');
+}
+
+// ========== EXCHANGE MANAGEMENT ==========
+async function loadExchangeList() {
+    try {
+        const resp = await fetch(API + '/api/exchanges/list');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const list = data.exchanges || [];
+
+        const el = $('exchange-list');
+        if (!list.length) {
+            el.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:8px;text-align:center">No exchanges connected</div>';
+            return;
+        }
+
+        let html = '';
+        for (let i = 0; i < list.length; i++) {
+            const ex = list[i];
+            html += '<div class="exchange-item">'
+                + '<span class="ex-name">' + (ex.name || ex.exchange) + '</span>'
+                + '<span class="ex-status">' + (ex.status || 'connected') + '</span>'
+                + '<button onclick="removeExchange(' + ex.id + ')">Remove</button>'
+                + '</div>';
+        }
+        el.innerHTML = html;
+    } catch (err) {
+        console.error('loadExchangeList error:', err);
+    }
+}
+
+async function addExchange() {
+    const exchange = $('ex-type').value;
+    const name = $('ex-name').value || exchange;
+    const apiKey = $('ex-key').value;
+    const secret = $('ex-secret').value;
+
+    if (!apiKey || !secret) {
+        showToast('API key and secret are required', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch(API + '/api/exchanges/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exchange: exchange, name: name, api_key: apiKey, api_secret: secret }),
+        });
+        const data = await resp.json();
+
+        if (data.error) { showToast(data.error, 'error'); return; }
+        showToast('Exchange connected', 'success');
+        closeModal('modal-exchange');
+        $('ex-key').value = '';
+        $('ex-secret').value = '';
+        loadExchangeList();
+    } catch (err) {
+        showToast('Failed: ' + err.message, 'error');
+    }
+}
+
+async function removeExchange(id) {
+    try {
+        await fetch(API + '/api/exchanges/remove', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id }),
+        });
+        loadExchangeList();
+        showToast('Exchange removed', 'success');
+    } catch (err) {
+        showToast('Remove failed: ' + err.message, 'error');
+    }
+}
+
+// PLACEHOLDER: étape 23 JS sera ajouté ici
 
 </body>
 </html>
