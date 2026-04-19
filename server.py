@@ -824,5 +824,228 @@ regime_detector = MarketRegimeDetector()
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 6-15 seront ajoutées ici
+# Signal Engine — Multi-indicator weighted scoring
+# Score: -300 (strong short) → +300 (strong long), confidence 0-100%
+# ---------------------------------------------------------------------------
+
+class SignalEngine:
+
+    REGIME_MULTIPLIER = {"BULL": 1.0, "BEAR": 1.0, "RANGE": 0.6, "CRISIS": 0.3}
+
+    def generate(self, raw_indicators, regime_info, sentiment=None, whales=None):
+        closes = raw_indicators["closes"]
+        if len(closes) < 30:
+            return self._neutral("Insufficient data")
+
+        components = []
+        total_score = 0
+
+        # --- RSI (weight ±70) ---
+        rsi_vals = raw_indicators["rsi"]
+        rsi = self._last_valid(rsi_vals)
+        if rsi is not None:
+            if rsi < 30:
+                s = 70 * (30 - rsi) / 30
+                components.append({"name": "RSI", "score": s, "detail": f"RSI {rsi:.0f} oversold"})
+                total_score += s
+            elif rsi > 70:
+                s = -70 * (rsi - 70) / 30
+                components.append({"name": "RSI", "score": s, "detail": f"RSI {rsi:.0f} overbought"})
+                total_score += s
+            else:
+                components.append({"name": "RSI", "score": 0, "detail": f"RSI {rsi:.0f} neutral"})
+
+        # --- MACD (weight ±60) ---
+        macd = raw_indicators["macd"]
+        ml = self._last_valid(macd["line"])
+        ms = self._last_valid(macd["signal"])
+        mh = self._last_valid(macd["histogram"])
+        if ml is not None and ms is not None:
+            if ml > ms and mh is not None and mh > 0:
+                s = min(60, abs(mh) / (abs(ml) + 1e-9) * 60)
+                components.append({"name": "MACD", "score": s, "detail": "MACD bullish crossover"})
+                total_score += s
+            elif ml < ms and mh is not None and mh < 0:
+                s = -min(60, abs(mh) / (abs(ml) + 1e-9) * 60)
+                components.append({"name": "MACD", "score": s, "detail": "MACD bearish crossover"})
+                total_score += s
+            else:
+                components.append({"name": "MACD", "score": 0, "detail": "MACD neutral"})
+
+        # --- Bollinger (weight ±50) ---
+        bb = raw_indicators["bb"]
+        bb_u = self._last_valid(bb["upper"])
+        bb_l = self._last_valid(bb["lower"])
+        bb_m = self._last_valid(bb["middle"])
+        price = closes[-1]
+        if bb_u and bb_l and bb_m:
+            bb_range = bb_u - bb_l
+            if bb_range > 0:
+                pos = (price - bb_l) / bb_range
+                if pos < 0.1:
+                    s = 50 * (1 - pos * 10)
+                    components.append({"name": "BB", "score": s, "detail": f"Price at lower BB ({pos:.0%})"})
+                    total_score += s
+                elif pos > 0.9:
+                    s = -50 * ((pos - 0.9) * 10)
+                    components.append({"name": "BB", "score": s, "detail": f"Price at upper BB ({pos:.0%})"})
+                    total_score += s
+                else:
+                    components.append({"name": "BB", "score": 0, "detail": f"Price mid-BB ({pos:.0%})"})
+
+        # --- EMA Alignment (weight ±80) ---
+        ema50 = raw_indicators["ema50"]
+        ema200 = raw_indicators["ema200"]
+        e50 = self._last_valid(ema50)
+        e200 = self._last_valid(ema200)
+        if e50 is not None and e200 is not None:
+            if price > e50 > e200:
+                s = 80
+                components.append({"name": "EMA", "score": s, "detail": "Full bullish alignment P>50>200"})
+                total_score += s
+            elif price < e50 < e200:
+                s = -80
+                components.append({"name": "EMA", "score": s, "detail": "Full bearish alignment P<50<200"})
+                total_score += s
+            elif price > e50:
+                s = 30
+                components.append({"name": "EMA", "score": s, "detail": "Price above EMA50"})
+                total_score += s
+            elif price < e50:
+                s = -30
+                components.append({"name": "EMA", "score": s, "detail": "Price below EMA50"})
+                total_score += s
+
+        # --- Stochastic RSI (weight ±40) ---
+        stoch = raw_indicators["stoch_rsi"]
+        sk = self._last_valid(stoch["k"])
+        sd = self._last_valid(stoch["d"])
+        if sk is not None:
+            if sk < 20:
+                s = 40 * (20 - sk) / 20
+                components.append({"name": "StochRSI", "score": s, "detail": f"StochRSI K={sk:.0f} oversold"})
+                total_score += s
+            elif sk > 80:
+                s = -40 * (sk - 80) / 20
+                components.append({"name": "StochRSI", "score": s, "detail": f"StochRSI K={sk:.0f} overbought"})
+                total_score += s
+            else:
+                components.append({"name": "StochRSI", "score": 0, "detail": f"StochRSI K={sk:.0f} neutral"})
+
+        # --- Williams %R (weight ±30) ---
+        wr = self._last_valid(raw_indicators["williams_r"])
+        if wr is not None:
+            if wr < -80:
+                s = 30 * (-80 - wr) / 20
+                components.append({"name": "Williams%R", "score": s, "detail": f"W%R {wr:.0f} oversold"})
+                total_score += s
+            elif wr > -20:
+                s = -30 * (wr + 20) / 20
+                components.append({"name": "Williams%R", "score": s, "detail": f"W%R {wr:.0f} overbought"})
+                total_score += s
+            else:
+                components.append({"name": "Williams%R", "score": 0, "detail": f"W%R {wr:.0f} neutral"})
+
+        # --- Sentiment: Funding Rate (weight ±40) ---
+        if sentiment and "funding_rate" in sentiment:
+            fr = sentiment["funding_rate"]
+            if fr > 0.05:
+                s = -40
+                components.append({"name": "Funding", "score": s, "detail": f"Extreme positive funding {fr:.4f}"})
+                total_score += s
+            elif fr < -0.05:
+                s = 40
+                components.append({"name": "Funding", "score": s, "detail": f"Extreme negative funding {fr:.4f}"})
+                total_score += s
+
+        # --- Sentiment: Fear & Greed (weight ±30) ---
+        if sentiment and "fear_greed" in sentiment:
+            fg = sentiment["fear_greed"]
+            if fg < 20:
+                s = 30
+                components.append({"name": "F&G", "score": s, "detail": f"Extreme Fear ({fg})"})
+                total_score += s
+            elif fg > 80:
+                s = -30
+                components.append({"name": "F&G", "score": s, "detail": f"Extreme Greed ({fg})"})
+                total_score += s
+
+        # --- Sentiment divergence (weight ±50) ---
+        if sentiment and "long_short_ratio" in sentiment:
+            lsr = sentiment["long_short_ratio"]
+            if lsr > 3.0 and total_score < 0:
+                s = -50
+                components.append({"name": "Divergence", "score": s, "detail": f"Crowd long ({lsr:.1f}) vs bearish signal"})
+                total_score += s
+            elif lsr < 0.5 and total_score > 0:
+                s = 50
+                components.append({"name": "Divergence", "score": s, "detail": f"Crowd short ({lsr:.1f}) vs bullish signal"})
+                total_score += s
+
+        # --- Whales (weight ±30) ---
+        if whales and "net_flow" in whales:
+            nf = whales["net_flow"]
+            if nf > 0:
+                s = 30
+                components.append({"name": "Whales", "score": s, "detail": "Whale accumulation detected"})
+                total_score += s
+            elif nf < 0:
+                s = -30
+                components.append({"name": "Whales", "score": s, "detail": "Whale distribution detected"})
+                total_score += s
+
+        # --- Apply regime multiplier ---
+        regime = regime_info.get("regime", "RANGE")
+        multiplier = self.REGIME_MULTIPLIER.get(regime, 1.0)
+        adjusted_score = total_score * multiplier
+
+        # --- Clamp and determine direction ---
+        adjusted_score = max(-300, min(300, adjusted_score))
+        if adjusted_score > 50:
+            direction = "LONG"
+        elif adjusted_score < -50:
+            direction = "SHORT"
+        else:
+            direction = "NEUTRAL"
+
+        # --- Confidence: how many indicators agree ---
+        agreeing = sum(1 for c in components if (c["score"] > 0) == (adjusted_score > 0) and c["score"] != 0)
+        total_active = sum(1 for c in components if c["score"] != 0)
+        confidence = int(agreeing / max(total_active, 1) * 100)
+
+        reasons = [c["detail"] for c in components if c["score"] != 0]
+
+        return {
+            "direction": direction,
+            "score": round(adjusted_score, 1),
+            "raw_score": round(total_score, 1),
+            "confidence": confidence,
+            "regime": regime,
+            "regime_multiplier": multiplier,
+            "components": components,
+            "reasons": reasons,
+        }
+
+    def _neutral(self, reason):
+        return {
+            "direction": "NEUTRAL", "score": 0, "raw_score": 0,
+            "confidence": 0, "regime": "RANGE", "regime_multiplier": 1.0,
+            "components": [], "reasons": [reason],
+        }
+
+    @staticmethod
+    def _last_valid(series):
+        if not series:
+            return None
+        for v in reversed(series):
+            if v is not None:
+                return v
+        return None
+
+
+signal_engine = SignalEngine()
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 7-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
