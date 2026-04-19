@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+jarvis.db
+jarvis.db-wal
+jarvis.db-shm
+secret.key
+.env
+backups/
+*.log
+.DS_Store
+node_modules/
