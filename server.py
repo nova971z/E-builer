@@ -2623,6 +2623,181 @@ def api_paper_history():
     return jsonify(paper_trader.get_history(limit))
 
 
-# ---------------------------------------------------------------------------
-# PLACEHOLDER: étape 15 sera ajoutée ici
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# API ROUTES — Exchange Management (4 routes)
+# ===========================================================================
+
+@app.route("/api/exchanges/add", methods=["POST"])
+def api_exchanges_add():
+    body = request.get_json(force=True)
+    name = body.get("name", "").strip()
+    exchange_type = body.get("type", "").strip().lower()
+    api_key = body.get("api_key", "").strip()
+    api_secret = body.get("api_secret", "").strip()
+    passphrase = body.get("passphrase", "").strip()
+    testnet = bool(body.get("testnet", False))
+
+    if not name or not exchange_type or not api_key:
+        return jsonify({"error": "name, type, and api_key are required"}), 400
+
+    if exchange_type not in ("mexc", "gmx"):
+        return jsonify({"error": f"Unsupported exchange type: {exchange_type}. Supported: mexc, gmx"}), 400
+
+    result = exchange_manager.add_exchange(name, exchange_type, api_key, api_secret, passphrase, testnet)
+    return jsonify(result)
+
+
+@app.route("/api/exchanges/list")
+def api_exchanges_list():
+    return jsonify(exchange_manager.list_exchanges())
+
+
+@app.route("/api/exchanges/remove", methods=["DELETE"])
+def api_exchanges_remove():
+    body = request.get_json(force=True)
+    exchange_id = body.get("id")
+    if not exchange_id:
+        return jsonify({"error": "id is required"}), 400
+    return jsonify(exchange_manager.remove_exchange(int(exchange_id)))
+
+
+@app.route("/api/exchanges/test", methods=["POST"])
+def api_exchanges_test():
+    body = request.get_json(force=True)
+    exchange_id = body.get("id")
+    if not exchange_id:
+        return jsonify({"error": "id is required"}), 400
+    return jsonify(exchange_manager.test_exchange(int(exchange_id)))
+
+
+# ===========================================================================
+# API ROUTES — Monitoring & Control (5 routes)
+# ===========================================================================
+
+@app.route("/api/drawdown")
+def api_drawdown():
+    return jsonify(risk_engine.get_drawdown_status())
+
+
+@app.route("/api/killswitch", methods=["POST"])
+def api_killswitch():
+    body = request.get_json(force=True)
+    active = bool(body.get("active", False))
+    reason = body.get("reason", "Manual toggle")
+
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat() if active else None
+    conn.execute(
+        "UPDATE killswitch SET active = ?, activated_at = ?, reason = ? WHERE id = 1",
+        (int(active), now, reason),
+    )
+    conn.commit()
+    conn.close()
+
+    status = "ACTIVATED" if active else "DEACTIVATED"
+    log.warning("Kill switch %s: %s", status, reason)
+
+    return jsonify({"active": active, "reason": reason, "status": status})
+
+
+@app.route("/api/killswitch/status")
+def api_killswitch_status():
+    conn = get_db()
+    row = conn.execute("SELECT * FROM killswitch WHERE id = 1").fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"active": False})
+    return jsonify({
+        "active": bool(row["active"]),
+        "activated_at": row["activated_at"],
+        "reason": row["reason"],
+    })
+
+
+@app.route("/api/journal")
+def api_journal():
+    limit = int(request.args.get("limit", 50))
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/export/csv")
+def api_export_csv():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM trade_journal ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    if rows:
+        writer = csv.writer(output)
+        writer.writerow(rows[0].keys())
+        for row in rows:
+            writer.writerow(tuple(row))
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=jarvis_journal_{datetime.now().strftime('%Y%m%d')}.csv"},
+    )
+
+
+# ===========================================================================
+# API ROUTES — System (2 routes)
+# ===========================================================================
+
+@app.route("/api/status")
+def api_status():
+    uptime = time.time() - START_TIME
+    hours = int(uptime // 3600)
+    minutes = int((uptime % 3600) // 60)
+
+    return jsonify({
+        "status": "online",
+        "version": APP_VERSION,
+        "uptime": f"{hours}h {minutes}m",
+        "uptime_seconds": int(uptime),
+        "ai_available": bool(ANTHROPIC_API_KEY),
+        "whale_alert": bool(WHALE_ALERT_KEY),
+        "ccxt_available": HAS_CCXT,
+        "fernet_available": HAS_FERNET,
+        "exchanges_configured": len(exchange_manager.list_exchanges()),
+        "paper_trades": paper_trader.get_status()["total_trades"],
+        "features": {
+            "indicators": True,
+            "signal_engine": True,
+            "risk_engine": True,
+            "dip_top_detector": True,
+            "paper_trading": True,
+            "live_trading": HAS_CCXT,
+            "ai_chat": bool(ANTHROPIC_API_KEY),
+            "whale_tracking": True,
+            "news_aggregation": True,
+        },
+    })
+
+
+@app.route("/")
+def serve_dashboard():
+    return send_from_directory(str(BASE_DIR), "dashboard.html")
+
+
+@app.route("/<path:path>")
+def serve_static(path):
+    return send_from_directory(str(BASE_DIR), path)
+
+
+# ===========================================================================
+# Main entry point
+# ===========================================================================
+
+if __name__ == "__main__":
+    init_db()
+    exchange_manager.load_from_db()
+    log.info("J.A.R.V.I.S. Trading System v%s starting on port 5000", APP_VERSION)
+    app.run(host="0.0.0.0", port=5000, debug=False)
