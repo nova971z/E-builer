@@ -2402,6 +2402,227 @@ def api_calendar():
     })
 
 
+# ===========================================================================
+# API ROUTES — JARVIS AI Chat (1 route)
+# ===========================================================================
+
+JARVIS_SYSTEM_PROMPT = """Tu es J.A.R.V.I.S., l'intelligence artificielle de Tony Stark, adaptée au trading crypto.
+Tu parles en français avec un ton professionnel mais accessible, comme dans Iron Man.
+Tu analyses les marchés, donnes des recommandations basées sur les données techniques, et protèges le capital de l'utilisateur.
+Règles :
+- Toujours mentionner les risques
+- Ne jamais garantir de profits
+- Recommander des micro-positions (max 5% du capital)
+- Alerter sur les événements économiques importants
+- Utiliser des analogies Iron Man quand c'est pertinent
+Signe tes messages "— J.A.R.V.I.S."
+"""
+
+
+@app.route("/api/jarvis", methods=["POST"])
+def api_jarvis():
+    if not ANTHROPIC_API_KEY:
+        return jsonify({
+            "response": "Monsieur, ma connexion au réseau Anthropic n'est pas configurée. "
+                        "Définissez la variable ANTHROPIC_API_KEY pour activer mes capacités d'analyse. — J.A.R.V.I.S.",
+            "model": None,
+        })
+
+    body = request.get_json(force=True)
+    user_msg = body.get("message", "")
+    context = body.get("context", {})
+
+    if not user_msg:
+        return jsonify({"error": "No message provided"}), 400
+
+    system = JARVIS_SYSTEM_PROMPT
+    if context:
+        system += f"\n\nContexte marché actuel:\n"
+        if "regime" in context:
+            system += f"- Régime: {context['regime']}\n"
+        if "signal" in context:
+            system += f"- Signal: {context['signal'].get('direction', 'N/A')} (score {context['signal'].get('score', 0)})\n"
+        if "price" in context:
+            system += f"- Prix: ${context['price']}\n"
+        if "symbol" in context:
+            system += f"- Paire: {context['symbol']}\n"
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "system": system,
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("content", [{}])[0].get("text", "Erreur de réponse.")
+        return jsonify({"response": content, "model": data.get("model", "unknown")})
+    except Exception as e:
+        return jsonify({
+            "response": f"Monsieur, j'ai rencontré une perturbation dans mes systèmes : {e} — J.A.R.V.I.S.",
+            "model": None,
+        })
+
+
+# ===========================================================================
+# API ROUTES — Execution (4 routes) + Paper Trading (2 routes)
+# ===========================================================================
+
+@app.route("/api/execute", methods=["POST"])
+def api_execute():
+    body = request.get_json(force=True)
+    symbol = body.get("symbol", "BTCUSDT").upper()
+    side = body.get("side", "long").lower()
+    order_type = body.get("type", "market").lower()
+    quantity = float(body.get("quantity", 0))
+    price = float(body.get("price", 0))
+    leverage = int(body.get("leverage", 1))
+    tp = body.get("tp")
+    sl = body.get("sl")
+    mode = body.get("mode", "paper")
+
+    if quantity <= 0:
+        return jsonify({"error": "Quantity must be positive"}), 400
+
+    if side not in ("long", "short", "buy", "sell"):
+        return jsonify({"error": f"Invalid side: {side}"}), 400
+
+    # Kill switch check
+    if risk_engine._is_kill_switch_active():
+        return jsonify({"error": "Kill switch is active — all trading suspended", "kill_switch": True}), 403
+
+    # Get current price if market order
+    if price <= 0:
+        price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=2)
+        if price_data:
+            price = float(price_data.get("price", 0))
+        if price <= 0:
+            return jsonify({"error": "Could not determine current price"}), 502
+
+    # Paper trading
+    if mode == "paper":
+        trade_side = "long" if side in ("long", "buy") else "short"
+        result = paper_trader.execute(symbol, trade_side, quantity, price, leverage, tp, sl)
+
+        # Log to journal
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO trade_journal (symbol, action, reason, signal_score, confidence, regime) VALUES (?, ?, ?, ?, ?, ?)",
+            (symbol, f"paper_{trade_side}", f"Paper {order_type} order", 0, 0, ""),
+        )
+        conn.commit()
+        conn.close()
+
+        return jsonify(result)
+
+    # Live trading
+    status = paper_trader.get_status()
+    if not status["is_live_allowed"]:
+        return jsonify({
+            "error": f"Live trading requires {status['required']} paper trades. Current: {status['total_trades']}",
+            "remaining": status["remaining"],
+        }), 403
+
+    # Micro position validation
+    balance = 1000
+    balances = exchange_manager.get_all_balances()
+    for b in balances:
+        if "total_usdt" in b:
+            balance = b["total_usdt"]
+            break
+
+    validation = micro_engine.validate_order(symbol, side, quantity, price, leverage, balance)
+    if not validation["valid"]:
+        return jsonify({"error": "Position validation failed", "issues": validation["issues"]}), 400
+
+    # Route to exchange
+    ccxt_side = "buy" if side in ("long", "buy") else "sell"
+    positions = exchange_manager.get_all_positions()
+    if not exchange_manager._adapters:
+        return jsonify({"error": "No exchange configured. Add one in Settings."}), 400
+
+    adapter = list(exchange_manager._adapters.values())[0]
+    result = adapter.place_order(symbol, ccxt_side, order_type, quantity, price if order_type == "limit" else None, leverage, tp, sl)
+    return jsonify(result)
+
+
+@app.route("/api/positions")
+def api_positions():
+    paper_pos = paper_trader.get_open_positions()
+    live_pos = exchange_manager.get_all_positions()
+
+    for p in paper_pos:
+        p["mode"] = "paper"
+    for p in live_pos:
+        p["mode"] = "live"
+
+    return jsonify(paper_pos + live_pos)
+
+
+@app.route("/api/balance")
+def api_balance():
+    live_balances = exchange_manager.get_all_balances()
+    paper_status = paper_trader.get_status()
+
+    return jsonify({
+        "live": live_balances,
+        "paper": {
+            "total_pnl": paper_status["total_pnl"],
+            "open_positions": paper_status["open_positions"],
+            "win_rate": paper_status["win_rate"],
+        },
+    })
+
+
+@app.route("/api/close", methods=["POST"])
+def api_close():
+    body = request.get_json(force=True)
+    trade_id = body.get("trade_id")
+    symbol = body.get("symbol", "")
+    mode = body.get("mode", "paper")
+    exit_price = float(body.get("exit_price", 0))
+
+    if mode == "paper":
+        if not trade_id:
+            return jsonify({"error": "trade_id required for paper close"}), 400
+        if exit_price <= 0:
+            price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=2)
+            if price_data:
+                exit_price = float(price_data.get("price", 0))
+            if exit_price <= 0:
+                return jsonify({"error": "Could not determine exit price"}), 502
+        return jsonify(paper_trader.close(int(trade_id), exit_price))
+
+    if not symbol:
+        return jsonify({"error": "symbol required for live close"}), 400
+    if not exchange_manager._adapters:
+        return jsonify({"error": "No exchange configured"}), 400
+
+    adapter = list(exchange_manager._adapters.values())[0]
+    return jsonify(adapter.close_position(symbol))
+
+
+@app.route("/api/paper/status")
+def api_paper_status():
+    return jsonify(paper_trader.get_status())
+
+
+@app.route("/api/paper/history")
+def api_paper_history():
+    limit = int(request.args.get("limit", 50))
+    return jsonify(paper_trader.get_history(limit))
+
+
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 14-15 seront ajoutées ici
+# PLACEHOLDER: étape 15 sera ajoutée ici
 # ---------------------------------------------------------------------------
