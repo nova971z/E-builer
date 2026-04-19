@@ -358,5 +358,123 @@ def generate_gold_silver_candles(symbol_info, limit=100):
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 3-15 seront ajoutées ici
+# Technical Indicators — Part 1 (SMA, EMA, RSI, MACD, Bollinger)
+# All pure Python, no numpy/pandas. Operate on lists of floats.
+# ---------------------------------------------------------------------------
+
+def calc_sma(data, period):
+    if len(data) < period:
+        return [None] * len(data)
+    out = [None] * (period - 1)
+    window_sum = sum(data[:period])
+    out.append(window_sum / period)
+    for i in range(period, len(data)):
+        window_sum += data[i] - data[i - period]
+        out.append(window_sum / period)
+    return out
+
+
+def calc_ema(data, period):
+    if len(data) < period:
+        return [None] * len(data)
+    k = 2.0 / (period + 1)
+    out = [None] * (period - 1)
+    seed = sum(data[:period]) / period
+    out.append(seed)
+    prev = seed
+    for i in range(period, len(data)):
+        val = data[i] * k + prev * (1 - k)
+        out.append(val)
+        prev = val
+    return out
+
+
+def calc_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return [None] * len(closes)
+    out = [None] * period
+    gains = []
+    losses = []
+    for i in range(1, period + 1):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        out.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        out.append(100.0 - 100.0 / (1.0 + rs))
+    for i in range(period + 1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gain = max(delta, 0)
+        loss = max(-delta, 0)
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            out.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            out.append(100.0 - 100.0 / (1.0 + rs))
+    return out
+
+
+def calc_macd(closes, fast=12, slow=26, signal_period=9):
+    ema_fast = calc_ema(closes, fast)
+    ema_slow = calc_ema(closes, slow)
+    macd_line = []
+    for f, s in zip(ema_fast, ema_slow):
+        if f is not None and s is not None:
+            macd_line.append(f - s)
+        else:
+            macd_line.append(None)
+    valid_macd = [v for v in macd_line if v is not None]
+    if len(valid_macd) < signal_period:
+        return {
+            "line": macd_line,
+            "signal": [None] * len(closes),
+            "histogram": [None] * len(closes),
+        }
+    signal_raw = calc_ema(valid_macd, signal_period)
+    signal_line = [None] * (len(macd_line) - len(valid_macd))
+    signal_line.extend(signal_raw)
+    histogram = []
+    for m, s in zip(macd_line, signal_line):
+        if m is not None and s is not None:
+            histogram.append(m - s)
+        else:
+            histogram.append(None)
+    return {"line": macd_line, "signal": signal_line, "histogram": histogram}
+
+
+def _std_dev(data):
+    n = len(data)
+    if n < 2:
+        return 0.0
+    mean = sum(data) / n
+    variance = sum((x - mean) ** 2 for x in data) / n
+    return math.sqrt(variance)
+
+
+def calc_bollinger(closes, period=20, num_std=2):
+    if len(closes) < period:
+        return {"upper": [None] * len(closes), "middle": [None] * len(closes), "lower": [None] * len(closes)}
+    middle = calc_sma(closes, period)
+    upper = []
+    lower = []
+    for i in range(len(closes)):
+        if middle[i] is None:
+            upper.append(None)
+            lower.append(None)
+        else:
+            window = closes[max(0, i - period + 1):i + 1]
+            sd = _std_dev(window)
+            upper.append(middle[i] + num_std * sd)
+            lower.append(middle[i] - num_std * sd)
+    return {"upper": upper, "middle": middle, "lower": lower}
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 4-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
