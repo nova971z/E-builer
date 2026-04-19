@@ -1562,5 +1562,271 @@ class MEXCAdapter(ExchangeAdapter):
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER: étapes 10-15 seront ajoutées ici
+# GMX Adapter — Placeholder (Arbitrum on-chain, requires web3.py)
+# ---------------------------------------------------------------------------
+
+class GMXAdapter(ExchangeAdapter):
+
+    def __init__(self, private_key="", rpc_url="https://arb1.arbitrum.io/rpc", testnet=False):
+        super().__init__("GMX", testnet=testnet)
+        self.private_key = private_key
+        self.rpc_url = rpc_url
+
+    def get_balance(self):
+        return {"exchange": "GMX", "error": "GMX adapter not yet implemented (requires web3.py)", "assets": {}}
+
+    def get_positions(self):
+        return []
+
+    def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
+        return {"success": False, "error": "GMX on-chain execution not yet implemented", "exchange": "GMX"}
+
+    def close_position(self, symbol, position_id=None):
+        return {"success": False, "error": "GMX on-chain close not yet implemented"}
+
+    def test_connection(self):
+        try:
+            resp = requests.get(self.rpc_url, timeout=3, json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1})
+            if resp.status_code == 200:
+                return {"connected": True, "exchange": "GMX", "network": "Arbitrum", "testnet": self.testnet}
+        except Exception:
+            pass
+        return {"connected": False, "error": "Cannot reach Arbitrum RPC"}
+
+
+# ---------------------------------------------------------------------------
+# Exchange Manager — Multi-exchange routing + persistence
+# ---------------------------------------------------------------------------
+
+class ExchangeManager:
+
+    def __init__(self):
+        self._adapters = {}
+
+    def add_exchange(self, name, exchange_type, api_key, api_secret, passphrase="", testnet=False):
+        key_enc = encrypt_string(api_key)
+        secret_enc = encrypt_string(api_secret)
+        pass_enc = encrypt_string(passphrase) if passphrase else ""
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO exchanges (name, exchange_type, api_key_enc, api_secret_enc, passphrase_enc, is_testnet) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, exchange_type, key_enc, secret_enc, pass_enc, int(testnet)),
+        )
+        conn.commit()
+        conn.close()
+        adapter = self._create_adapter(exchange_type, api_key, api_secret, passphrase, testnet)
+        if adapter:
+            self._adapters[name] = adapter
+        return {"success": True, "name": name, "type": exchange_type}
+
+    def list_exchanges(self):
+        conn = get_db()
+        rows = conn.execute("SELECT id, name, exchange_type, is_testnet, created_at FROM exchanges").fetchall()
+        conn.close()
+        return [{"id": r["id"], "name": r["name"], "type": r["exchange_type"],
+                 "testnet": bool(r["is_testnet"]), "created_at": r["created_at"],
+                 "connected": r["name"] in self._adapters} for r in rows]
+
+    def remove_exchange(self, exchange_id):
+        conn = get_db()
+        row = conn.execute("SELECT name FROM exchanges WHERE id = ?", (exchange_id,)).fetchone()
+        if row:
+            self._adapters.pop(row["name"], None)
+            conn.execute("DELETE FROM exchanges WHERE id = ?", (exchange_id,))
+            conn.commit()
+        conn.close()
+        return {"success": bool(row)}
+
+    def test_exchange(self, exchange_id):
+        conn = get_db()
+        row = conn.execute("SELECT * FROM exchanges WHERE id = ?", (exchange_id,)).fetchone()
+        conn.close()
+        if not row:
+            return {"connected": False, "error": "Exchange not found"}
+        api_key = decrypt_string(row["api_key_enc"])
+        api_secret = decrypt_string(row["api_secret_enc"])
+        adapter = self._create_adapter(row["exchange_type"], api_key, api_secret, "", bool(row["is_testnet"]))
+        if not adapter:
+            return {"connected": False, "error": f"Unknown exchange type: {row['exchange_type']}"}
+        return adapter.test_connection()
+
+    def get_all_balances(self):
+        balances = []
+        for name, adapter in self._adapters.items():
+            balances.append(adapter.get_balance())
+        return balances
+
+    def get_all_positions(self):
+        positions = []
+        for name, adapter in self._adapters.items():
+            positions.extend(adapter.get_positions())
+        return positions
+
+    def load_from_db(self):
+        conn = get_db()
+        rows = conn.execute("SELECT * FROM exchanges").fetchall()
+        conn.close()
+        for row in rows:
+            try:
+                api_key = decrypt_string(row["api_key_enc"])
+                api_secret = decrypt_string(row["api_secret_enc"])
+                adapter = self._create_adapter(row["exchange_type"], api_key, api_secret, "", bool(row["is_testnet"]))
+                if adapter:
+                    self._adapters[row["name"]] = adapter
+            except Exception as e:
+                log.warning("Failed to load exchange %s: %s", row["name"], e)
+
+    @staticmethod
+    def _create_adapter(exchange_type, api_key, api_secret, passphrase="", testnet=False):
+        t = exchange_type.lower()
+        if t == "mexc":
+            return MEXCAdapter(api_key, api_secret, testnet)
+        elif t == "gmx":
+            return GMXAdapter(private_key=api_key, testnet=testnet)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Micro Position Engine — Conservative risk management
+# ---------------------------------------------------------------------------
+
+class MicroPositionEngine:
+
+    MAX_CAPITAL_PCT = 5.0
+    MAX_POSITIONS = 5
+    DEFAULT_SIZE_USD = 10.0
+    LIQUIDATION_STOP_PCT = 80.0
+
+    def validate_order(self, symbol, side, quantity, price, leverage, balance_usdt):
+        issues = []
+        position_value = quantity * price
+        margin_required = position_value / leverage if leverage > 0 else position_value
+
+        if margin_required > balance_usdt * (self.MAX_CAPITAL_PCT / 100):
+            issues.append(f"Position exceeds {self.MAX_CAPITAL_PCT}% of capital (${margin_required:.2f} vs ${balance_usdt * self.MAX_CAPITAL_PCT / 100:.2f})")
+
+        if margin_required > self.DEFAULT_SIZE_USD * 5:
+            issues.append(f"Position size ${margin_required:.2f} exceeds 5x default (${self.DEFAULT_SIZE_USD * 5:.2f})")
+
+        if leverage > 20:
+            issues.append(f"Leverage {leverage}x exceeds recommended max 20x")
+
+        return {
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "margin_required": round(margin_required, 2),
+            "position_value": round(position_value, 2),
+            "liquidation_price": self._calc_liquidation(price, side, leverage),
+            "stop_loss_suggested": self._calc_stop(price, side, leverage),
+        }
+
+    def _calc_liquidation(self, entry, side, leverage):
+        if leverage <= 1:
+            return 0
+        move = 1.0 / leverage
+        if side == "long":
+            return round(entry * (1 - move), 2)
+        return round(entry * (1 + move), 2)
+
+    def _calc_stop(self, entry, side, leverage):
+        liq = self._calc_liquidation(entry, side, leverage)
+        if liq == 0:
+            return 0
+        pct = self.LIQUIDATION_STOP_PCT / 100
+        if side == "long":
+            return round(entry - (entry - liq) * pct, 2)
+        return round(entry + (liq - entry) * pct, 2)
+
+
+# ---------------------------------------------------------------------------
+# Paper Trader — Virtual execution with 50-trade gate
+# ---------------------------------------------------------------------------
+
+class PaperTrader:
+
+    REQUIRED_TRADES = 50
+
+    def execute(self, symbol, side, quantity, price, leverage=1, tp=None, sl=None):
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO paper_trades (symbol, side, entry_price, quantity, leverage, status) VALUES (?, ?, ?, ?, ?, 'open')",
+            (symbol, side, price, quantity, leverage),
+        )
+        conn.commit()
+        trade_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.close()
+        log.info("Paper trade opened: %s %s %s @ %.2f (x%d)", trade_id, side, symbol, price, leverage)
+        return {
+            "success": True, "trade_id": trade_id, "mode": "paper",
+            "symbol": symbol, "side": side, "entry_price": price,
+            "quantity": quantity, "leverage": leverage,
+        }
+
+    def close(self, trade_id, exit_price):
+        conn = get_db()
+        row = conn.execute("SELECT * FROM paper_trades WHERE id = ? AND status = 'open'", (trade_id,)).fetchone()
+        if not row:
+            conn.close()
+            return {"success": False, "error": "Trade not found or already closed"}
+        entry = row["entry_price"]
+        qty = row["quantity"]
+        lev = row["leverage"]
+        side = row["side"]
+        if side == "long":
+            pnl = (exit_price - entry) / entry * qty * lev
+        else:
+            pnl = (entry - exit_price) / entry * qty * lev
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE paper_trades SET exit_price = ?, pnl = ?, status = 'closed', closed_at = ? WHERE id = ?",
+            (exit_price, pnl, now, trade_id),
+        )
+        conn.commit()
+        conn.close()
+        log.info("Paper trade closed: %s pnl=%.4f", trade_id, pnl)
+        return {"success": True, "trade_id": trade_id, "pnl": round(pnl, 4), "exit_price": exit_price}
+
+    def get_open_positions(self):
+        conn = get_db()
+        rows = conn.execute("SELECT * FROM paper_trades WHERE status = 'open' ORDER BY opened_at DESC").fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_status(self):
+        conn = get_db()
+        total = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status = 'closed'").fetchone()["c"]
+        wins = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status = 'closed' AND pnl > 0").fetchone()["c"]
+        total_pnl = conn.execute("SELECT COALESCE(SUM(pnl), 0) as s FROM paper_trades WHERE status = 'closed'").fetchone()["s"]
+        open_count = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status = 'open'").fetchone()["c"]
+        conn.close()
+        win_rate = (wins / total * 100) if total > 0 else 0
+        return {
+            "total_trades": total,
+            "wins": wins,
+            "losses": total - wins,
+            "win_rate": round(win_rate, 1),
+            "total_pnl": round(total_pnl, 4),
+            "open_positions": open_count,
+            "required": self.REQUIRED_TRADES,
+            "is_live_allowed": total >= self.REQUIRED_TRADES,
+            "remaining": max(0, self.REQUIRED_TRADES - total),
+        }
+
+    def get_history(self, limit=50):
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT * FROM paper_trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+
+# Global instances
+exchange_manager = ExchangeManager()
+micro_engine = MicroPositionEngine()
+paper_trader = PaperTrader()
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER: étapes 11-15 seront ajoutées ici
 # ---------------------------------------------------------------------------
