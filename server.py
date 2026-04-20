@@ -1713,6 +1713,216 @@ class DipTopDetector:
                 points.append(i)
         return points
 
+    # -------------------------------------------------------------------
+    # High-Leverage Mode — Aggressive thresholds for GMX V2 dip/top hunting
+    # -------------------------------------------------------------------
+
+    HL_LEVERAGE_TIERS = [
+        (95, 20),
+        (90, 15),
+        (85, 10),
+        (80, 7),
+        (70, 5),
+        (60, 3),
+        (0, 2),
+    ]
+
+    HL_RSI_OVERSOLD = 22
+    HL_RSI_OVERBOUGHT = 78
+    HL_VOL_RATIO_THRESHOLD = 2.5
+    HL_MIN_CONFLUENCE = 60
+
+    def detect_hl_entry(self, symbol, ohlcv, raw_indicators):
+        """High-leverage entry detection with aggressive thresholds."""
+        closes = raw_indicators["closes"]
+        volumes = raw_indicators["volumes"]
+        rsi = raw_indicators["rsi"]
+
+        if len(closes) < 60:
+            return {"entry": False, "reason": "Insufficient data (need 60+ candles)"}
+
+        rsi_div = self.detect_rsi_divergence(closes, rsi, lookback=20)
+        vol_climax = self.detect_volume_climax(volumes, closes, lookback=15)
+        wyckoff = self.detect_wyckoff_spring(ohlcv, lookback=40)
+        confluence = self.confluence_score(ohlcv, raw_indicators)
+
+        last_rsi = None
+        for v in reversed(rsi):
+            if v is not None:
+                last_rsi = v
+                break
+
+        score = confluence["score"]
+        signals = list(confluence["signals"])
+        direction = None
+
+        is_dip = rsi_div["bullish"] or vol_climax["selling_climax"] or wyckoff["spring"]
+        is_top = rsi_div["bearish"] or vol_climax["buying_climax"] or wyckoff["upthrust"]
+
+        if last_rsi is not None:
+            if last_rsi <= self.HL_RSI_OVERSOLD:
+                score += 10
+                signals.append(f"HL RSI deep oversold ({last_rsi:.0f}) (+10)")
+                is_dip = True
+            elif last_rsi >= self.HL_RSI_OVERBOUGHT:
+                score += 10
+                signals.append(f"HL RSI deep overbought ({last_rsi:.0f}) (+10)")
+                is_top = True
+
+        if vol_climax.get("vol_ratio", 0) >= self.HL_VOL_RATIO_THRESHOLD:
+            score += 5
+            signals.append(f"HL high volume confirmation ({vol_climax['vol_ratio']:.1f}x) (+5)")
+
+        ema_short = raw_indicators.get("ema_9", [])
+        ema_long = raw_indicators.get("ema_21", [])
+        if len(ema_short) > 2 and len(ema_long) > 2:
+            if ema_short[-1] is not None and ema_long[-1] is not None:
+                if is_dip and ema_short[-1] < ema_long[-1] and ema_short[-1] > ema_short[-2]:
+                    score += 8
+                    signals.append("HL EMA crossover forming (bullish) (+8)")
+                elif is_top and ema_short[-1] > ema_long[-1] and ema_short[-1] < ema_short[-2]:
+                    score += 8
+                    signals.append("HL EMA crossover forming (bearish) (+8)")
+
+        bb = raw_indicators.get("bollinger", {})
+        if bb and closes:
+            bb_lower = bb.get("lower", [])
+            bb_upper = bb.get("upper", [])
+            if bb_lower and closes[-1] <= bb_lower[-1] * 1.005:
+                score += 7
+                signals.append("HL price at/below lower Bollinger (+7)")
+                is_dip = True
+            elif bb_upper and closes[-1] >= bb_upper[-1] * 0.995:
+                score += 7
+                signals.append("HL price at/above upper Bollinger (+7)")
+                is_top = True
+
+        score = min(score, 130)
+
+        if is_dip:
+            direction = "long"
+        elif is_top:
+            direction = "short"
+
+        if not direction or score < self.HL_MIN_CONFLUENCE:
+            return {
+                "entry": False,
+                "score": score,
+                "min_required": self.HL_MIN_CONFLUENCE,
+                "signals": signals,
+                "reason": "Confluence too low" if direction else "No clear dip/top signal",
+            }
+
+        leverage = 2
+        for threshold, lev in self.HL_LEVERAGE_TIERS:
+            if score >= threshold:
+                leverage = lev
+                break
+
+        return {
+            "entry": True,
+            "direction": direction,
+            "score": score,
+            "leverage": leverage,
+            "signals": signals,
+            "rsi": last_rsi,
+            "rsi_divergence": rsi_div,
+            "volume_climax": vol_climax,
+            "wyckoff": wyckoff,
+        }
+
+    def generate_gmx_entry_plan(self, symbol, ohlcv, raw_indicators, balance_usdt=100.0):
+        """Generate a complete GMX V2 entry plan with sizing, TP/SL, and risk parameters."""
+        hl_result = self.detect_hl_entry(symbol, ohlcv, raw_indicators)
+
+        if not hl_result.get("entry"):
+            return {
+                "actionable": False,
+                "symbol": symbol,
+                "score": hl_result.get("score", 0),
+                "reason": hl_result.get("reason", "No entry signal"),
+                "signals": hl_result.get("signals", []),
+            }
+
+        direction = hl_result["direction"]
+        leverage = hl_result["leverage"]
+        score = hl_result["score"]
+        closes = raw_indicators["closes"]
+        current_price = closes[-1] if closes else 0
+
+        if current_price <= 0:
+            return {"actionable": False, "symbol": symbol, "reason": "Cannot determine price"}
+
+        risk_pct = min(3.0 + (score - 60) * 0.05, 5.0)
+        collateral_usd = balance_usdt * (risk_pct / 100.0)
+        size_usd = collateral_usd * leverage
+        quantity = size_usd / current_price
+
+        atr_data = raw_indicators.get("atr", [])
+        if atr_data:
+            last_atr = None
+            for v in reversed(atr_data):
+                if v is not None and v > 0:
+                    last_atr = v
+                    break
+            if last_atr:
+                atr_mult_tp = 2.5 if score >= 90 else 2.0
+                atr_mult_sl = 1.2
+
+                if direction == "long":
+                    tp = current_price + last_atr * atr_mult_tp
+                    sl = current_price - last_atr * atr_mult_sl
+                else:
+                    tp = current_price - last_atr * atr_mult_tp
+                    sl = current_price + last_atr * atr_mult_sl
+            else:
+                tp, sl = self._fallback_tp_sl(current_price, direction, leverage)
+        else:
+            tp, sl = self._fallback_tp_sl(current_price, direction, leverage)
+
+        risk_reward = abs(tp - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
+        max_loss_usd = collateral_usd * abs(current_price - sl) / current_price * leverage
+        max_loss_pct = (max_loss_usd / balance_usdt) * 100 if balance_usdt > 0 else 0
+
+        confidence = "HIGH" if score >= 90 else ("MEDIUM" if score >= 75 else "LOW")
+
+        return {
+            "actionable": True,
+            "symbol": symbol,
+            "direction": direction,
+            "confidence": confidence,
+            "score": score,
+            "leverage": leverage,
+            "entry_price": round(current_price, 4),
+            "quantity": round(quantity, 8),
+            "size_usd": round(size_usd, 2),
+            "collateral_usd": round(collateral_usd, 2),
+            "risk_pct_of_balance": round(risk_pct, 2),
+            "take_profit": round(tp, 4),
+            "stop_loss": round(sl, 4),
+            "risk_reward_ratio": round(risk_reward, 2),
+            "max_loss_usd": round(max_loss_usd, 2),
+            "max_loss_pct": round(max_loss_pct, 2),
+            "signals": hl_result["signals"],
+            "rsi": hl_result.get("rsi"),
+            "execution": {
+                "exchange": "GMX",
+                "order_type": "market",
+                "market": GMX_V2_MARKETS.get(symbol, {}).get("market_token", ""),
+                "slippage_bps": GMX_DEFAULT_SLIPPAGE_BPS,
+                "execution_fee_eth": GMX_EXECUTION_FEE_BUFFER_WEI / 10**18,
+            },
+        }
+
+    @staticmethod
+    def _fallback_tp_sl(price, direction, leverage):
+        """Fallback TP/SL when ATR is unavailable."""
+        tp_pct = 0.03 if leverage <= 5 else (0.02 if leverage <= 10 else 0.015)
+        sl_pct = tp_pct / 2.0
+        if direction == "long":
+            return price * (1 + tp_pct), price * (1 - sl_pct)
+        return price * (1 - tp_pct), price * (1 + sl_pct)
+
 
 dip_top_detector = DipTopDetector()
 
@@ -3992,6 +4202,90 @@ def api_gmx_estimate():
         "max_slippage_bps": GMX_DEFAULT_SLIPPAGE_BPS,
         "max_leverage": GMX_MAX_LEVERAGE,
         "market_token": market["market_token"],
+    })
+
+
+@app.route("/api/gmx/entry-plan")
+def api_gmx_entry_plan():
+    """Generate a high-leverage GMX entry plan based on DipTopDetector analysis."""
+    symbol = request.args.get("symbol", "BTCUSDT")
+    interval = request.args.get("interval", "15m")
+    balance = float(request.args.get("balance", 100))
+
+    try:
+        params = {"symbol": symbol, "interval": INTERVALS.get(interval, interval), "limit": 100}
+        resp = requests.get(f"{BINANCE_BASE}/api/v3/klines", params=params, timeout=8)
+        if resp.status_code != 200:
+            return jsonify({"error": "Failed to fetch candles from Binance"}), 502
+
+        raw_klines = resp.json()
+        ohlcv = []
+        for k in raw_klines:
+            ohlcv.append({
+                "time": int(k[0]) // 1000,
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+
+        if len(ohlcv) < 60:
+            return jsonify({"actionable": False, "reason": "Not enough candles (need 60+)"}), 200
+
+        indicators = compute_all_indicators(ohlcv)
+        plan = dip_top_detector.generate_gmx_entry_plan(symbol, ohlcv, indicators["_raw"], balance)
+        plan["interval"] = interval
+        plan["candles_analyzed"] = len(ohlcv)
+
+        return jsonify(plan)
+
+    except Exception as e:
+        log.error("GMX entry-plan error: %s", e)
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/gmx/auto-scan")
+def api_gmx_auto_scan():
+    """Scan all GMX markets for high-leverage entry opportunities."""
+    interval = request.args.get("interval", "15m")
+    balance = float(request.args.get("balance", 100))
+
+    opportunities = []
+    for symbol in GMX_V2_MARKETS:
+        try:
+            params = {"symbol": symbol, "interval": INTERVALS.get(interval, interval), "limit": 100}
+            resp = requests.get(f"{BINANCE_BASE}/api/v3/klines", params=params, timeout=5)
+            if resp.status_code != 200:
+                continue
+
+            raw_klines = resp.json()
+            ohlcv = [{"time": int(k[0]) // 1000, "open": float(k[1]), "high": float(k[2]),
+                       "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
+                      for k in raw_klines]
+
+            if len(ohlcv) < 60:
+                continue
+
+            indicators = compute_all_indicators(ohlcv)
+            plan = dip_top_detector.generate_gmx_entry_plan(symbol, ohlcv, indicators["_raw"], balance)
+
+            if plan.get("actionable"):
+                opportunities.append(plan)
+
+        except Exception as e:
+            log.debug("Auto-scan %s failed: %s", symbol, e)
+            continue
+
+    opportunities.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    return jsonify({
+        "opportunities": opportunities,
+        "count": len(opportunities),
+        "markets_scanned": len(GMX_V2_MARKETS),
+        "interval": interval,
+        "balance": balance,
+        "timestamp": int(time.time()),
     })
 
 
