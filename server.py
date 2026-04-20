@@ -3156,13 +3156,12 @@ def api_candles():
     all_klines = []
     remaining = limit
     end_time = None
-    for _ in range(15):
+    for _ in range(200):
         batch = min(remaining, 1000)
         params = {"symbol": symbol, "interval": interval, "limit": batch}
         if end_time is not None:
             params["endTime"] = end_time - 1
-        cache_key_suffix = f":{end_time}" if end_time else ""
-        raw = fetch_binance("/api/v3/klines", params, ttl=15)
+        raw = fetch_binance("/api/v3/klines", params, ttl=30)
         if not raw:
             break
         all_klines = raw + all_klines
