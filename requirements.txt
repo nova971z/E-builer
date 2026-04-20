@@ -6,3 +6,4 @@ yfinance
 feedparser
 anthropic
 cryptography
+web3

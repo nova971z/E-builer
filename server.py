@@ -42,6 +42,14 @@ try:
 except ImportError:
     HAS_CCXT = False
 
+try:
+    from web3 import Web3
+    from web3.middleware import ExtraDataToPOAMiddleware
+    from eth_account import Account as Web3Account
+    HAS_WEB3 = True
+except ImportError:
+    HAS_WEB3 = False
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -82,6 +90,279 @@ ECONOMIC_CALENDAR = [
     {"event": "CPI Release", "dates": ["2026-01-14", "2026-02-12", "2026-03-12", "2026-04-14", "2026-05-13", "2026-06-10", "2026-07-14", "2026-08-12"], "impact": "high"},
     {"event": "NFP Report", "dates": ["2026-01-09", "2026-02-06", "2026-03-06", "2026-04-03", "2026-05-08", "2026-06-05", "2026-07-02", "2026-08-07"], "impact": "high"},
     {"event": "ECB Decision", "dates": ["2026-01-22", "2026-03-05", "2026-04-16", "2026-06-04", "2026-07-16", "2026-09-10", "2026-10-29", "2026-12-10"], "impact": "medium"},
+]
+
+# ---------------------------------------------------------------------------
+# GMX V2 — Arbitrum Contract Addresses & Configuration
+# ---------------------------------------------------------------------------
+
+GMX_RPC_MAINNET = os.environ.get("GMX_RPC_URL", "https://arb1.arbitrum.io/rpc")
+GMX_RPC_TESTNET = os.environ.get("GMX_RPC_TESTNET_URL", "https://sepolia-rollup.arbitrum.io/rpc")
+
+GMX_V2_CONTRACTS_MAINNET = {
+    "ExchangeRouter": "0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8",
+    "Router": "0x7452c558d45f8afC8c83dAe62C3f8A5BE19c71f6",
+    "OrderVault": "0x31eF83a530Fde1B38deDA89C0A6c72a85DC51756",
+    "DataStore": "0xFD70de6b91282D8017aA4E741e9Ae325CAb992d8",
+    "Reader": "0xf60becbba223EEA9495Da3f606753867eC10d139",
+    "OrderHandler": "0x352f684ab9e97a6321a13CF03A61316B681D9fD2",
+}
+
+GMX_V2_CONTRACTS_TESTNET = {
+    "ExchangeRouter": "0x69C527fC77291722b52649E45c838e41be8Bf5d5",
+    "Router": "0x820F92c1B3aD8E962E6C6D9d7CaF2a550Aec46fB",
+    "OrderVault": "0xCCbE3F6Bc04c60F474bFd8E00B450A8BaCA2e224",
+    "DataStore": "0xFD70de6b91282D8017aA4E741e9Ae325CAb992d8",
+    "Reader": "0x60a0fF4cDaF0f6D496d71e0bC0fFa86FE8E6B23c",
+    "OrderHandler": "0xB0Fc2c89B969C4426ADA23b3CF2e7dDcC6670277",
+}
+
+GMX_V2_TOKENS = {
+    "WETH": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    "USDC_BRIDGED": "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+    "WBTC": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+    "ARB": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+    "SOL": "0x2bcC6D6CdBbDC0a4071e48bb3B969b06B3330c07",
+    "DOGE": "0xC4da4c24fd591125c3F47b340b6f4f76111f1c88",
+}
+
+GMX_V2_MARKETS = {
+    "BTCUSDT": {
+        "market_token": "0x47c031236e19d024b42f8AE6DA7A0261C4f1F660",
+        "index_token": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+        "long_token": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+        "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    },
+    "ETHUSDT": {
+        "market_token": "0x70d95587d40A2caf56bd97485aB3Eec10Bee6336",
+        "index_token": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "long_token": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    },
+    "SOLUSDT": {
+        "market_token": "0x09400D9DB990D5ed3f35D7be61DfAEB900Af03C9",
+        "index_token": "0x2bcC6D6CdBbDC0a4071e48bb3B969b06B3330c07",
+        "long_token": "0x2bcC6D6CdBbDC0a4071e48bb3B969b06B3330c07",
+        "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    },
+    "ARBUSDT": {
+        "market_token": "0xC25cEf6061Cf5dE5eb761b50E4743c1F5D7E5407",
+        "index_token": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+        "long_token": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+        "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    },
+    "DOGEUSDT": {
+        "market_token": "0x6853EA96FF216fAb11D2d930CE3C508556A4bdc4",
+        "index_token": "0xC4da4c24fd591125c3F47b340b6f4f76111f1c88",
+        "long_token": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    },
+}
+
+GMX_ORDER_TYPE_MARKET_INCREASE = 2
+GMX_ORDER_TYPE_LIMIT_INCREASE = 3
+GMX_ORDER_TYPE_MARKET_DECREASE = 4
+GMX_ORDER_TYPE_LIMIT_DECREASE = 5
+GMX_ORDER_TYPE_STOP_LOSS_DECREASE = 6
+GMX_ORDER_TYPE_LIQUIDATION = 7
+GMX_DECREASE_POSITION_SWAP_TYPE = 0
+
+GMX_MAX_LEVERAGE = 50
+GMX_EXECUTION_FEE_BUFFER_WEI = 6000000000000000
+GMX_DEFAULT_SLIPPAGE_BPS = 30
+GMX_CALLBACK_GAS_LIMIT = 2000000
+GMX_POSITION_FEE_BPS = 5
+GMX_REFERRAL_CODE = b"\x00" * 32
+
+# ---------------------------------------------------------------------------
+# GMX V2 — Minimal ABIs (only functions called by the adapter)
+# ---------------------------------------------------------------------------
+
+GMX_READER_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "dataStore", "type": "address"},
+            {"internalType": "address", "name": "account", "type": "address"},
+            {"internalType": "uint256", "name": "start", "type": "uint256"},
+            {"internalType": "uint256", "name": "end", "type": "uint256"},
+        ],
+        "name": "getAccountPositions",
+        "outputs": [
+            {
+                "components": [
+                    {
+                        "components": [
+                            {"internalType": "address", "name": "account", "type": "address"},
+                            {"internalType": "address", "name": "market", "type": "address"},
+                            {"internalType": "address", "name": "collateralToken", "type": "address"},
+                        ],
+                        "internalType": "struct Position.Addresses",
+                        "name": "addresses",
+                        "type": "tuple",
+                    },
+                    {
+                        "components": [
+                            {"internalType": "uint256", "name": "sizeInUsd", "type": "uint256"},
+                            {"internalType": "uint256", "name": "sizeInTokens", "type": "uint256"},
+                            {"internalType": "uint256", "name": "collateralAmount", "type": "uint256"},
+                            {"internalType": "uint256", "name": "borrowingFactor", "type": "uint256"},
+                            {"internalType": "uint256", "name": "fundingFeeAmountPerSize", "type": "uint256"},
+                            {"internalType": "uint256", "name": "longTokenClaimableFundingAmountPerSize", "type": "uint256"},
+                            {"internalType": "uint256", "name": "shortTokenClaimableFundingAmountPerSize", "type": "uint256"},
+                            {"internalType": "uint256", "name": "increasedAtBlock", "type": "uint256"},
+                            {"internalType": "uint256", "name": "decreasedAtBlock", "type": "uint256"},
+                        ],
+                        "internalType": "struct Position.Numbers",
+                        "name": "numbers",
+                        "type": "tuple",
+                    },
+                    {
+                        "components": [
+                            {"internalType": "bool", "name": "isLong", "type": "bool"},
+                        ],
+                        "internalType": "struct Position.Flags",
+                        "name": "flags",
+                        "type": "tuple",
+                    },
+                ],
+                "internalType": "struct Position.Props[]",
+                "name": "",
+                "type": "tuple[]",
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "dataStore", "type": "address"},
+            {"internalType": "uint256", "name": "start", "type": "uint256"},
+            {"internalType": "uint256", "name": "end", "type": "uint256"},
+        ],
+        "name": "getMarkets",
+        "outputs": [
+            {
+                "components": [
+                    {"internalType": "address", "name": "marketToken", "type": "address"},
+                    {"internalType": "address", "name": "indexToken", "type": "address"},
+                    {"internalType": "address", "name": "longToken", "type": "address"},
+                    {"internalType": "address", "name": "shortToken", "type": "address"},
+                ],
+                "internalType": "struct Market.Props[]",
+                "name": "",
+                "type": "tuple[]",
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+GMX_EXCHANGE_ROUTER_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "receiver", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"},
+        ],
+        "name": "sendWnt",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {
+                "components": [
+                    {
+                        "components": [
+                            {"internalType": "address", "name": "receiver", "type": "address"},
+                            {"internalType": "address", "name": "callbackContract", "type": "address"},
+                            {"internalType": "address", "name": "uiFeeReceiver", "type": "address"},
+                            {"internalType": "address", "name": "market", "type": "address"},
+                            {"internalType": "address", "name": "initialCollateralToken", "type": "address"},
+                            {"internalType": "address[]", "name": "swapPath", "type": "address[]"},
+                        ],
+                        "internalType": "struct IBaseOrderUtils.CreateOrderParamsAddresses",
+                        "name": "addresses",
+                        "type": "tuple",
+                    },
+                    {
+                        "components": [
+                            {"internalType": "uint256", "name": "sizeDeltaUsd", "type": "uint256"},
+                            {"internalType": "uint256", "name": "initialCollateralDeltaAmount", "type": "uint256"},
+                            {"internalType": "uint256", "name": "triggerPrice", "type": "uint256"},
+                            {"internalType": "uint256", "name": "acceptablePrice", "type": "uint256"},
+                            {"internalType": "uint256", "name": "executionFee", "type": "uint256"},
+                            {"internalType": "uint256", "name": "callbackGasLimit", "type": "uint256"},
+                            {"internalType": "uint256", "name": "minOutputAmount", "type": "uint256"},
+                        ],
+                        "internalType": "struct IBaseOrderUtils.CreateOrderParamsNumbers",
+                        "name": "numbers",
+                        "type": "tuple",
+                    },
+                    {"internalType": "enum Order.OrderType", "name": "orderType", "type": "uint8"},
+                    {"internalType": "enum Order.DecreasePositionSwapType", "name": "decreasePositionSwapType", "type": "uint8"},
+                    {"internalType": "bool", "name": "isLong", "type": "bool"},
+                    {"internalType": "bool", "name": "shouldUnwrapNativeToken", "type": "bool"},
+                    {"internalType": "bytes32", "name": "referralCode", "type": "bytes32"},
+                ],
+                "internalType": "struct IBaseOrderUtils.CreateOrderParams",
+                "name": "params",
+                "type": "tuple",
+            }
+        ],
+        "name": "createOrder",
+        "outputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "bytes[]", "name": "data", "type": "bytes[]"},
+        ],
+        "name": "multicall",
+        "outputs": [{"internalType": "bytes[]", "name": "results", "type": "bytes[]"}],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+]
+
+GMX_ERC20_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "spender", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"},
+        ],
+        "name": "approve",
+        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "owner", "type": "address"},
+            {"internalType": "address", "name": "spender", "type": "address"},
+        ],
+        "name": "allowance",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 # ---------------------------------------------------------------------------
