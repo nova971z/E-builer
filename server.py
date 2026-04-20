@@ -1509,6 +1509,66 @@ class RiskEngine:
         except Exception:
             return 0
 
+    # -------------------------------------------------------------------
+    # GMX-Specific Risk Checks
+    # -------------------------------------------------------------------
+
+    def check_gmx(self, signal, leverage, collateral_usd, balance_usdt, portfolio_state=None):
+        """Extended risk check with GMX high-leverage-specific vetoes."""
+        base_result = self.check(signal, portfolio_state)
+        gmx_vetoes = []
+        gmx_warnings = []
+
+        if leverage > GMX_MAX_LEVERAGE:
+            gmx_vetoes.append(f"Leverage {leverage}x exceeds GMX max {GMX_MAX_LEVERAGE}x")
+
+        if leverage > 30:
+            gmx_warnings.append(f"Extreme leverage {leverage}x — liquidation risk very high")
+        elif leverage > 20:
+            gmx_warnings.append(f"High leverage {leverage}x — exercise caution")
+
+        if balance_usdt > 0:
+            exposure_pct = (collateral_usd / balance_usdt) * 100
+            if exposure_pct > 10:
+                gmx_vetoes.append(f"Single position {exposure_pct:.1f}% of capital exceeds 10% GMX limit")
+            elif exposure_pct > 5:
+                gmx_warnings.append(f"Position is {exposure_pct:.1f}% of capital (recommended <5%)")
+
+        position_size_usd = collateral_usd * leverage
+        if position_size_usd > 50000:
+            gmx_warnings.append(f"Large position ${position_size_usd:,.0f} — check GMX OI caps")
+
+        all_vetoes = base_result["vetoes"] + gmx_vetoes
+        all_warnings = base_result["warnings"] + gmx_warnings
+
+        return {
+            "approved": len(all_vetoes) == 0,
+            "vetoed": len(all_vetoes) > 0,
+            "vetoes": all_vetoes,
+            "warnings": all_warnings,
+            "veto_count": len(all_vetoes),
+            "gmx_specific": {"leverage_ok": leverage <= GMX_MAX_LEVERAGE, "leverage": leverage},
+        }
+
+    def gmx_circuit_breaker(self, positions, threshold_pct=-30.0):
+        """Check if any GMX position has breached the circuit breaker threshold."""
+        alerts = []
+        for pos in positions:
+            if pos.get("exchange") != "GMX":
+                continue
+            pnl_pct = pos.get("pnl_pct", 0)
+            if pnl_pct <= threshold_pct:
+                alerts.append({
+                    "action": "EMERGENCY_CLOSE",
+                    "symbol": pos["symbol"],
+                    "side": pos["side"],
+                    "pnl_pct": round(pnl_pct, 2),
+                    "pnl_usd": round(pos.get("pnl", 0), 2),
+                    "threshold": threshold_pct,
+                    "reason": f"PnL {pnl_pct:.1f}% breached circuit breaker ({threshold_pct}%)",
+                })
+        return alerts
+
 
 risk_engine = RiskEngine()
 
@@ -4286,6 +4346,130 @@ def api_gmx_auto_scan():
         "interval": interval,
         "balance": balance,
         "timestamp": int(time.time()),
+    })
+
+
+@app.route("/api/gmx/health")
+def api_gmx_health():
+    """Full GMX V2 system health check: RPC, contracts, gas, account, circuit breaker."""
+    health = {
+        "status": "unknown",
+        "web3_installed": HAS_WEB3,
+        "checks": {},
+    }
+
+    if not HAS_WEB3:
+        health["status"] = "degraded"
+        health["error"] = "web3.py not installed"
+        return jsonify(health)
+
+    adapter = exchange_manager.get_adapter_by_type("gmx")
+    if not adapter:
+        health["status"] = "disconnected"
+        health["error"] = "No GMX adapter configured — add via Settings"
+        return jsonify(health)
+
+    # Check 1: RPC connectivity
+    try:
+        rpc_ok = adapter._ensure_connection()
+        health["checks"]["rpc"] = {
+            "ok": rpc_ok,
+            "url": adapter.rpc_url,
+            "chain_id": adapter._w3.eth.chain_id if rpc_ok else None,
+            "block": adapter._w3.eth.block_number if rpc_ok else None,
+        }
+    except Exception as e:
+        health["checks"]["rpc"] = {"ok": False, "error": str(e)}
+
+    # Check 2: Contracts loaded
+    contracts_ok = bool(adapter._contracts)
+    health["checks"]["contracts"] = {
+        "ok": contracts_ok,
+        "loaded": list(adapter._contracts.keys()) if contracts_ok else [],
+    }
+
+    # Check 3: Gas price
+    try:
+        gas_price = adapter._w3.eth.gas_price
+        gas_gwei = gas_price / 10**9
+        exec_fee_eth = adapter._estimate_execution_fee() / 10**18
+        gas_ok = gas_gwei < 5.0
+        health["checks"]["gas"] = {
+            "ok": gas_ok,
+            "gas_price_gwei": round(gas_gwei, 3),
+            "execution_fee_eth": round(exec_fee_eth, 6),
+            "warning": "Gas elevated" if not gas_ok else None,
+        }
+    except Exception as e:
+        health["checks"]["gas"] = {"ok": False, "error": str(e)}
+
+    # Check 4: Account
+    has_signer = adapter._has_signer()
+    health["checks"]["account"] = {
+        "ok": has_signer,
+        "address": adapter._account.address if has_signer else None,
+        "mode": "read-write" if has_signer else "read-only",
+    }
+
+    if has_signer:
+        try:
+            eth_bal = adapter._w3.eth.get_balance(adapter._account.address) / 10**18
+            health["checks"]["account"]["eth_balance"] = round(eth_bal, 6)
+            health["checks"]["account"]["has_gas"] = eth_bal > 0.001
+        except Exception:
+            health["checks"]["account"]["has_gas"] = False
+
+    # Check 5: Circuit breaker status
+    try:
+        positions = adapter.get_positions()
+        cb_alerts = risk_engine.gmx_circuit_breaker(positions)
+        health["checks"]["circuit_breaker"] = {
+            "ok": len(cb_alerts) == 0,
+            "positions_count": len(positions),
+            "alerts": cb_alerts,
+        }
+    except Exception as e:
+        health["checks"]["circuit_breaker"] = {"ok": True, "error": str(e)}
+
+    # Overall status
+    all_checks = health["checks"]
+    critical_ok = all_checks.get("rpc", {}).get("ok") and all_checks.get("contracts", {}).get("ok")
+    any_warning = not all_checks.get("gas", {}).get("ok") or not all_checks.get("account", {}).get("ok")
+
+    if not critical_ok:
+        health["status"] = "error"
+    elif any_warning:
+        health["status"] = "warning"
+    elif all_checks.get("circuit_breaker", {}).get("alerts"):
+        health["status"] = "circuit_breaker_triggered"
+    else:
+        health["status"] = "healthy"
+
+    return jsonify(health)
+
+
+@app.route("/api/gmx/circuit-breaker", methods=["POST"])
+def api_gmx_circuit_breaker():
+    """Manually trigger circuit breaker — close all GMX positions."""
+    adapter = exchange_manager.get_adapter_by_type("gmx")
+    if not adapter or not adapter._initialized:
+        return jsonify({"error": "GMX adapter not connected"}), 400
+
+    positions = adapter.get_positions()
+    if not positions:
+        return jsonify({"message": "No positions to close", "closed": 0})
+
+    results = []
+    for pos in positions:
+        result = adapter.close_position(pos["symbol"])
+        results.append({"symbol": pos["symbol"], "result": result})
+
+    closed = sum(1 for r in results if r["result"].get("success"))
+    return jsonify({
+        "message": f"Circuit breaker executed: {closed}/{len(positions)} positions closed",
+        "closed": closed,
+        "total": len(positions),
+        "results": results,
     })
 
 
