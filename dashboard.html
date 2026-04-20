@@ -1194,6 +1194,10 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Sound toggle */
+.btn-sound { font-size: 14px; min-width: 32px; }
+.btn-sound.muted { opacity: 0.4; }
+
 /* Advanced order fields */
 .of-advanced { display: none; flex-direction: column; gap: 6px; padding: 6px 0; }
 .of-advanced.visible { display: flex; }
@@ -1479,6 +1483,7 @@ button:active { opacity: 0.7; }
     <div class="navbar-spacer"></div>
     <div class="navbar-actions">
         <button class="btn-nav btn-theme" id="btn-theme" onclick="toggleTheme()">&#9788;</button>
+        <button class="btn-nav btn-sound" id="btn-sound" onclick="toggleSound()">&#128266;</button>
         <button class="btn-nav" onclick="showAlertModal()">Alerts <span class="badge alert-badge" id="alert-badge" style="display:none">0</span></button>
         <button class="btn-nav" onclick="toggleJarvisChat()">AI</button>
         <button class="btn-nav" onclick="showSettings()">Settings</button>
@@ -1999,6 +2004,10 @@ let ema200Series = null;
 const indicatorState = {
     bb: false, ema9: false, ema21: false, ema50: false, ema200: false, vol: true
 };
+
+// Sound state
+let soundEnabled = localStorage.getItem('jarvis_sound') !== 'off';
+let audioCtx = null;
 
 // Drawing state
 let drawMode = 'cursor';
@@ -2842,6 +2851,7 @@ async function loadKillSwitchStatus() {
 
 // ========== BOTTOM PANEL TAB SWITCHING ==========
 function switchBPTab(tab) {
+    playClickSound();
     document.querySelectorAll('.bp-tabs button').forEach(function(b) { b.classList.remove('active'); });
     event.target.classList.add('active');
 
@@ -3136,10 +3146,12 @@ async function executeOrder(side) {
 
         if (data.error) {
             showToast(data.error, 'error');
+            playErrorSound();
             return;
         }
 
         showToast(side + ' ' + currentSymbol + ' executed — ' + (data.mode || 'paper'), 'success');
+        playOrderSound();
 
         // Clear form
         $('order-qty').value = '';
@@ -3173,6 +3185,7 @@ async function closePosition(posId) {
         }
 
         showToast('Position closed — PNL: ' + fmt(data.pnl || 0, 2), data.pnl >= 0 ? 'success' : 'error');
+        if (data.pnl >= 0) playTradeCloseSound();
         loadPositions();
         loadPaperStatus();
         loadWallet();
@@ -3185,6 +3198,7 @@ async function closePosition(posId) {
 // ========== TOAST NOTIFICATIONS ==========
 function showToast(msg, type) {
     type = type || 'success';
+    if (type === 'warning') playAlertSound();
     var stack = document.getElementById('toast-stack');
     if (!stack) {
         stack = document.createElement('div');
@@ -3277,6 +3291,7 @@ async function confirmKillSwitch() {
             body: JSON.stringify({ active: true, reason: 'Manual activation' }),
         });
         showToast('KILL SWITCH ACTIVATED', 'error');
+        playKillSound();
         loadKillSwitchStatus();
     } catch (err) {
         showToast('Kill switch error: ' + err.message, 'error');
@@ -3570,6 +3585,7 @@ async function loadDipTop(symbol) {
             if (data.wyckoff && data.wyckoff.type) signals.push(data.wyckoff.type);
 
             msgEl.textContent = 'DIP/TOP DETECTED — Score: ' + data.confluence_score + '/100 — ' + signals.join(', ');
+            if (!alertEl.classList.contains('visible')) playDipTopSound();
             alertEl.classList.add('visible');
         } else {
             alertEl.classList.remove('visible');
@@ -3589,6 +3605,137 @@ async function loadWhales(symbol) {
     } catch (err) {
         console.error('loadWhales error:', err);
     }
+}
+
+// ========== SOUND EFFECTS (Web Audio API) ==========
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+}
+
+function playOrderSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(1200, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.15);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.16);
+}
+
+function playErrorSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(200, ctx.currentTime);
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.21);
+}
+
+function playAlertSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    for (var i = 0; i < 2; i++) {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(660, ctx.currentTime + i * 0.18);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime + i * 0.18);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * 0.18 + 0.1);
+        osc.start(ctx.currentTime + i * 0.18);
+        osc.stop(ctx.currentTime + i * 0.18 + 0.11);
+    }
+}
+
+function playKillSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(440, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(220, ctx.currentTime + 0.5);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.51);
+}
+
+function playClickSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1000, ctx.currentTime);
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.03);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.04);
+}
+
+function playDipTopSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(400, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.31);
+}
+
+function playTradeCloseSound() {
+    if (!soundEnabled) return;
+    var ctx = initAudio();
+    var freqs = [523, 659, 784];
+    for (var i = 0; i < freqs.length; i++) {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freqs[i], ctx.currentTime);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.21);
+    }
+}
+
+function toggleSound() {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem('jarvis_sound', soundEnabled ? 'on' : 'off');
+    var btn = $('btn-sound');
+    if (btn) {
+        btn.textContent = soundEnabled ? '\u{1F50A}' : '\u{1F507}';
+        btn.classList.toggle('muted', !soundEnabled);
+    }
+    if (soundEnabled) playClickSound();
 }
 
 // ========== ADVANCED ORDERS ==========
@@ -4372,6 +4519,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     var themeBtn = $('btn-theme');
     if (themeBtn) themeBtn.textContent = currentTheme === 'dark' ? '\u263C' : '\u263E';
+    var soundBtn = $('btn-sound');
+    if (soundBtn) {
+        soundBtn.textContent = soundEnabled ? '\u{1F50A}' : '\u{1F507}';
+        soundBtn.classList.toggle('muted', !soundEnabled);
+    }
 
     // Init charts
     initMainChart();
