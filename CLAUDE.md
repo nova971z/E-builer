@@ -56,6 +56,18 @@ All routes follow this pattern:
 - Response: JSON with data fields or `{"error": "message"}`
 - Errors from external APIs return 502 with descriptive message
 
+## Roadmap & Navigation
+
+- **`PLAN.md`** — Roadmap complète des 10 étapes d'amélioration avec :
+  - Carte de navigation (numéros de ligne exacts de server.py et dashboard.html)
+  - 10 étapes détaillées avec sous-tâches numérotées et critères de validation
+  - Matrice de dépendances et ordre d'exécution optimal
+  - Tableau de suivi d'avancement (cocher après chaque étape)
+  - Checklist post-implémentation et protocoles de test
+  - Notes de reprise inter-session
+- **Toujours lire PLAN.md avant de commencer une étape**
+- **Toujours mettre à jour PLAN.md après chaque étape**
+
 ## Testing
 
 ```bash
@@ -81,6 +93,15 @@ python3 -m py_compile server.py
 2. Follow existing error handling pattern (try/except, return JSON)
 3. Add to health-check.sh route list
 
+### Starting a new enhancement step
+1. Read PLAN.md — find the next unchecked step in Section 4.1
+2. Read the step's detail section (search "### ÉTAPE X.0")
+3. Use text anchors (Section 6.2) to find insertion points — don't trust line numbers blindly
+4. Follow the sub-tasks in order
+5. Run the post-implementation checklist (Section 5.1)
+6. Update PLAN.md: check sub-tasks, update navigation map, mark step as done
+7. Commit with message: `feat: step XX — <description>`
+
 ### Adding a new exchange
 1. Create `class NewAdapter(ExchangeAdapter)` implementing all abstract methods
 2. Register in `ExchangeManager` constructor
@@ -95,3 +116,6 @@ python3 -m py_compile server.py
 - Do not commit jarvis.db, secret.key, or .env files
 - Do not use arrow functions in dashboard.html JS
 - Do not remove the 50-trade paper gate — it is a safety feature
+- Do not start coding an enhancement step without reading PLAN.md first
+- Do not skip the post-implementation checklist after completing a step
+- Do not trust PLAN.md line numbers after multiple steps — use text anchors
