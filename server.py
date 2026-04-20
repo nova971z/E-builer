@@ -3156,7 +3156,7 @@ def api_candles():
     all_klines = []
     remaining = limit
     end_time = None
-    for _ in range(10):
+    for _ in range(15):
         batch = min(remaining, 1000)
         params = {"symbol": symbol, "interval": interval, "limit": batch}
         if end_time is not None:
