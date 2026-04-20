@@ -2439,8 +2439,133 @@ class GMXAdapter(ExchangeAdapter):
         except Exception as e:
             log.warning("GMX %s order failed: %s", "TP" if is_tp else "SL", e)
 
-    def close_position(self, symbol, position_id=None):
-        return {"success": False, "error": "Not yet implemented (step 6)"}
+    def close_position(self, symbol, position_id=None, close_pct=100.0):
+        if not HAS_WEB3:
+            return {"success": False, "error": "web3.py not installed"}
+        if not self._ensure_connection():
+            return {"success": False, "error": "Cannot connect to Arbitrum RPC"}
+        if not self._has_signer():
+            return {"success": False, "error": "No private key — cannot sign transactions"}
+
+        positions = self.get_positions()
+        if not positions:
+            return {"success": False, "error": "No open positions found"}
+
+        target = None
+        if position_id:
+            for p in positions:
+                if p.get("market_address", "").lower() == position_id.lower():
+                    target = p
+                    break
+                if p.get("symbol") == position_id:
+                    target = p
+                    break
+        if not target and symbol:
+            normalized = symbol.upper().replace("/", "").replace("-", "")
+            if not normalized.endswith("USDT"):
+                normalized += "USDT"
+            for p in positions:
+                if p["symbol"] == normalized:
+                    target = p
+                    break
+        if not target and positions:
+            target = positions[0]
+
+        if not target:
+            return {"success": False, "error": f"No position found for {symbol}"}
+
+        market = gmx_symbol_to_market(target["symbol"])
+        if not market:
+            return {"success": False, "error": f"Cannot resolve market for {target['symbol']}"}
+
+        is_long = target["side"] == "long"
+        close_fraction = min(max(close_pct, 0.0), 100.0) / 100.0
+        size_to_close_usd = target["size_usd"] * close_fraction
+        size_delta = int(size_to_close_usd * 10**30)
+
+        current_price = self._get_index_price(target["symbol"])
+        if current_price <= 0:
+            current_price = target.get("current_price", 0)
+        if current_price <= 0:
+            return {"success": False, "error": "Cannot determine current price for close"}
+
+        slippage_mult = GMX_DEFAULT_SLIPPAGE_BPS / 10000
+        if is_long:
+            acceptable_price = int(current_price * (1 - slippage_mult) * 10**30)
+        else:
+            acceptable_price = int(current_price * (1 + slippage_mult) * 10**30)
+
+        execution_fee = self._estimate_execution_fee()
+
+        exchange_router = self._contracts.get("exchange_router")
+        order_vault = self._contracts.get("order_vault")
+        if not exchange_router or not order_vault:
+            return {"success": False, "error": "GMX contracts not loaded"}
+
+        collateral_delta = 0
+        if close_fraction >= 1.0:
+            collateral_delta = 0
+        else:
+            collateral_delta = int(target["collateral_usd"] * close_fraction * 10**6)
+
+        order_params = (
+            (
+                self._account.address,
+                "0x0000000000000000000000000000000000000000",
+                "0x0000000000000000000000000000000000000000",
+                Web3.to_checksum_address(market["market_token"]),
+                Web3.to_checksum_address(market["short_token"]),
+                [],
+            ),
+            (
+                size_delta,
+                collateral_delta,
+                0,
+                acceptable_price,
+                execution_fee,
+                GMX_CALLBACK_GAS_LIMIT,
+                0,
+            ),
+            GMX_ORDER_TYPE_MARKET_DECREASE,
+            GMX_DECREASE_POSITION_SWAP_TYPE,
+            is_long,
+            True,
+            GMX_REFERRAL_CODE,
+        )
+
+        try:
+            send_wnt_data = exchange_router.functions.sendWnt(
+                order_vault, execution_fee
+            ).build_transaction({"from": self._account.address})["data"]
+
+            create_data = exchange_router.functions.createOrder(
+                order_params
+            ).build_transaction({"from": self._account.address})["data"]
+
+            multicall_tx = exchange_router.functions.multicall(
+                [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
+            ).build_transaction(self._build_tx(value=execution_fee))
+
+            tx_hash = self._sign_and_send(multicall_tx)
+
+            return {
+                "success": True,
+                "tx_hash": tx_hash,
+                "closed": target["symbol"],
+                "side": target["side"],
+                "close_pct": round(close_fraction * 100, 1),
+                "size_closed_usd": round(size_to_close_usd, 2),
+                "collateral_released_usd": round(target["collateral_usd"] * close_fraction, 2),
+                "price": round(current_price, 4),
+                "acceptable_price": round(acceptable_price / 10**30, 4),
+                "pnl_at_close": round(target["pnl"] * close_fraction, 2),
+                "execution_fee_eth": round(execution_fee / 10**18, 6),
+                "exchange": "GMX",
+            }
+
+        except Exception as e:
+            log.error("GMX close_position failed: %s", e)
+            return {"success": False, "error": str(e)}
 
     def test_connection(self):
         if not HAS_WEB3:
