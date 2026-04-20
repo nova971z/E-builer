@@ -388,15 +388,18 @@ import gzip as _gzip
 @app.after_request
 def _compress(response):
     if (response.status_code < 200 or response.status_code >= 300
-        or response.content_length is not None and response.content_length < 512
         or 'Content-Encoding' in response.headers
-        or 'gzip' not in request.headers.get('Accept-Encoding', '')):
+        or 'gzip' not in request.headers.get('Accept-Encoding', '')
+        or response.direct_passthrough):
         return response
     ct = response.content_type or ''
-    if not (ct.startswith('application/json') or ct.startswith('text/')):
+    if not ct.startswith('application/json'):
         return response
-    data = response.get_data()
-    if len(data) < 512:
+    try:
+        data = response.get_data()
+    except Exception:
+        return response
+    if len(data) < 256:
         return response
     compressed = _gzip.compress(data, compresslevel=1)
     response.set_data(compressed)
