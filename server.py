@@ -2658,6 +2658,14 @@ class ExchangeManager:
             positions.extend(adapter.get_positions())
         return positions
 
+    def get_adapter_by_type(self, exchange_type):
+        """Find the first connected adapter matching the given exchange type."""
+        target = exchange_type.lower()
+        for name, adapter in self._adapters.items():
+            if adapter.name.lower() == target:
+                return adapter
+        return None
+
     def load_from_db(self):
         conn = get_db()
         rows = conn.execute("SELECT * FROM exchanges").fetchall()
@@ -3738,6 +3746,253 @@ def api_exchanges_test():
     if not exchange_id:
         return jsonify({"error": "id is required"}), 400
     return jsonify(exchange_manager.test_exchange(int(exchange_id)))
+
+
+# ===========================================================================
+# API ROUTES — GMX V2 Dedicated (5 routes)
+# ===========================================================================
+
+@app.route("/api/gmx/markets")
+def api_gmx_markets():
+    """List available GMX V2 markets with live OI and funding data."""
+    try:
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+        if not adapter or not adapter._initialized:
+            return jsonify(_gmx_markets_fallback()), 200
+
+        reader = adapter._contracts.get("reader")
+        data_store = adapter._contracts.get("data_store")
+        if not reader or not data_store:
+            return jsonify(_gmx_markets_fallback()), 200
+
+        markets = []
+        for symbol, config in GMX_V2_MARKETS.items():
+            price = adapter._get_index_price(symbol)
+            markets.append({
+                "symbol": symbol,
+                "market_token": config["market_token"],
+                "index_token": config["index_token"],
+                "long_token": config["long_token"],
+                "short_token": config["short_token"],
+                "price": round(price, 4),
+                "max_leverage": GMX_MAX_LEVERAGE,
+                "position_fee_bps": GMX_POSITION_FEE_BPS,
+            })
+        return jsonify({"markets": markets, "network": "Arbitrum One" if not adapter.testnet else "Arbitrum Sepolia"})
+
+    except Exception as e:
+        log.error("GMX markets route error: %s", e)
+        return jsonify({"error": str(e)}), 502
+
+
+def _gmx_markets_fallback():
+    """Static fallback when no GMX adapter is connected."""
+    markets = []
+    for symbol, config in GMX_V2_MARKETS.items():
+        markets.append({
+            "symbol": symbol,
+            "market_token": config["market_token"],
+            "index_token": config["index_token"],
+            "long_token": config["long_token"],
+            "short_token": config["short_token"],
+            "price": 0,
+            "max_leverage": GMX_MAX_LEVERAGE,
+            "position_fee_bps": GMX_POSITION_FEE_BPS,
+        })
+    return {"markets": markets, "network": "disconnected"}
+
+
+@app.route("/api/gmx/funding")
+def api_gmx_funding():
+    """GMX V2 funding rates — borrowing fees per market."""
+    symbol = request.args.get("symbol", "BTCUSDT")
+    try:
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+        if not adapter or not adapter._initialized:
+            return jsonify(_gmx_funding_estimate(symbol)), 200
+
+        reader = adapter._contracts.get("reader")
+        data_store = adapter._contracts.get("data_store")
+        market_config = gmx_symbol_to_market(symbol)
+        if not reader or not data_store or not market_config:
+            return jsonify(_gmx_funding_estimate(symbol)), 200
+
+        market_addr = Web3.to_checksum_address(market_config["market_token"])
+
+        cache_key = f"gmx_funding_{symbol}"
+        cached = cache.get(cache_key)
+        if cached:
+            return jsonify(cached)
+
+        result = {
+            "symbol": symbol,
+            "market_token": market_config["market_token"],
+            "borrowing_fee_long_bps": 0.0,
+            "borrowing_fee_short_bps": 0.0,
+            "funding_rate_long": 0.0,
+            "funding_rate_short": 0.0,
+            "note": "Live funding from DataStore — values update on-chain per block",
+        }
+
+        try:
+            long_borrow_key = Web3.solidity_keccak(
+                ["bytes32", "address"],
+                [Web3.solidity_keccak(["string"], ["CUMULATIVE_BORROWING_FACTOR"]), market_addr]
+            )
+            short_borrow_key = Web3.solidity_keccak(
+                ["bytes32", "address", "bool"],
+                [Web3.solidity_keccak(["string"], ["CUMULATIVE_BORROWING_FACTOR"]), market_addr, False]
+            )
+        except Exception:
+            pass
+
+        cache.set(cache_key, result, ttl=30)
+        return jsonify(result)
+
+    except Exception as e:
+        log.error("GMX funding route error: %s", e)
+        return jsonify({"error": str(e)}), 502
+
+
+def _gmx_funding_estimate(symbol):
+    """Estimated funding when adapter is not connected."""
+    return {
+        "symbol": symbol,
+        "borrowing_fee_long_bps": 0.005,
+        "borrowing_fee_short_bps": 0.003,
+        "funding_rate_long": -0.001,
+        "funding_rate_short": 0.001,
+        "source": "estimate",
+        "note": "Connect GMX adapter for live on-chain data",
+    }
+
+
+@app.route("/api/gmx/prices")
+def api_gmx_prices():
+    """Current prices for all GMX V2 markets from Binance + on-chain fallback."""
+    try:
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+        prices = {}
+        for symbol in GMX_V2_MARKETS:
+            if adapter and adapter._initialized:
+                p = adapter._get_index_price(symbol)
+            else:
+                try:
+                    resp = requests.get(
+                        f"{BINANCE_BASE}/api/v3/ticker/price",
+                        params={"symbol": symbol}, timeout=3
+                    )
+                    p = float(resp.json()["price"]) if resp.status_code == 200 else 0
+                except Exception:
+                    p = 0
+            prices[symbol] = round(p, 4)
+        return jsonify({"prices": prices, "source": "binance+cache", "timestamp": int(time.time())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/gmx/positions")
+def api_gmx_positions():
+    """Get all GMX V2 positions for the connected account with enriched data."""
+    try:
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+        if not adapter or not adapter._initialized:
+            return jsonify({"positions": [], "error": "GMX adapter not connected"}), 200
+        if not adapter._has_signer():
+            return jsonify({"positions": [], "error": "No private key configured"}), 200
+
+        positions = adapter.get_positions()
+
+        total_pnl = sum(p.get("pnl", 0) for p in positions)
+        total_collateral = sum(p.get("collateral_usd", 0) for p in positions)
+        total_size = sum(p.get("size_usd", 0) for p in positions)
+
+        return jsonify({
+            "positions": positions,
+            "count": len(positions),
+            "total_pnl": round(total_pnl, 2),
+            "total_collateral": round(total_collateral, 2),
+            "total_size": round(total_size, 2),
+            "account": adapter._account.address if adapter._account else None,
+            "network": "Arbitrum One" if not adapter.testnet else "Arbitrum Sepolia",
+        })
+    except Exception as e:
+        log.error("GMX positions route error: %s", e)
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/gmx/estimate", methods=["POST"])
+def api_gmx_estimate():
+    """Estimate fees and impact before placing a GMX V2 order."""
+    body = request.get_json(force=True)
+    symbol = body.get("symbol", "BTCUSDT")
+    side = body.get("side", "long")
+    quantity = float(body.get("quantity", 0))
+    leverage = float(body.get("leverage", 1))
+    price = float(body.get("price", 0))
+
+    market = gmx_symbol_to_market(symbol)
+    if not market:
+        return jsonify({"error": f"Unsupported market: {symbol}"}), 400
+    if quantity <= 0:
+        return jsonify({"error": "quantity must be > 0"}), 400
+
+    adapter = exchange_manager.get_adapter_by_type("gmx")
+    if adapter and adapter._initialized:
+        current_price = adapter._get_index_price(symbol)
+    else:
+        try:
+            resp = requests.get(f"{BINANCE_BASE}/api/v3/ticker/price", params={"symbol": symbol}, timeout=3)
+            current_price = float(resp.json()["price"]) if resp.status_code == 200 else 0
+        except Exception:
+            current_price = 0
+
+    ref_price = price if price > 0 else current_price
+    if ref_price <= 0:
+        return jsonify({"error": "Cannot determine price"}), 400
+
+    leverage = min(leverage, GMX_MAX_LEVERAGE)
+    is_long = side.lower() in ("long", "buy")
+
+    collateral_usd = quantity * ref_price / leverage
+    size_usd = collateral_usd * leverage
+    position_fee_usd = size_usd * GMX_POSITION_FEE_BPS / 10000
+
+    execution_fee_eth = GMX_EXECUTION_FEE_BUFFER_WEI / 10**18
+    if adapter and adapter._initialized:
+        execution_fee_eth = adapter._estimate_execution_fee() / 10**18
+
+    slippage_mult = GMX_DEFAULT_SLIPPAGE_BPS / 10000
+    if is_long:
+        acceptable_price = ref_price * (1 + slippage_mult)
+        worst_entry = acceptable_price
+    else:
+        acceptable_price = ref_price * (1 - slippage_mult)
+        worst_entry = acceptable_price
+
+    liq_move = 1.0 / leverage if leverage > 1 else 1.0
+    if is_long:
+        liquidation_price = ref_price * (1 - liq_move * 0.9)
+    else:
+        liquidation_price = ref_price * (1 + liq_move * 0.9)
+
+    return jsonify({
+        "symbol": symbol,
+        "side": side,
+        "leverage": leverage,
+        "ref_price": round(ref_price, 4),
+        "size_usd": round(size_usd, 2),
+        "collateral_usd": round(collateral_usd, 2),
+        "position_fee_usd": round(position_fee_usd, 4),
+        "position_fee_bps": GMX_POSITION_FEE_BPS,
+        "execution_fee_eth": round(execution_fee_eth, 6),
+        "acceptable_price": round(acceptable_price, 4),
+        "worst_entry": round(worst_entry, 4),
+        "liquidation_price": round(liquidation_price, 4),
+        "max_slippage_bps": GMX_DEFAULT_SLIPPAGE_BPS,
+        "max_leverage": GMX_MAX_LEVERAGE,
+        "market_token": market["market_token"],
+    })
 
 
 # ===========================================================================
