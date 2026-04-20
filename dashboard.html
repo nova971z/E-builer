@@ -276,13 +276,7 @@ button:active { opacity: 0.7; }
     display: flex;
     flex-direction: column;
     min-height: calc(100vh - 96px);
-    padding: 0;
-}
-
-.chart-section {
-    display: flex;
-    gap: 0;
-    min-height: 0;
+    padding-bottom: 36px;
 }
 
 .chart-area {
@@ -290,7 +284,7 @@ button:active { opacity: 0.7; }
     display: flex;
     flex-direction: column;
     min-width: 0;
-    border-right: 1px solid var(--border);
+    position: relative;
 }
 
 /* ========== CHART TABS ========== */
@@ -450,17 +444,8 @@ button:active { opacity: 0.7; }
 }
 .draw-toolbar button:hover { color: var(--text); background: var(--surface-2); }
 
-/* ========== RIGHT PANEL (orderbook only — order form is now floating) ========== */
-.right-panel {
-    width: 300px;
-    min-width: 300px;
-    display: flex;
-    flex-direction: column;
-    background: var(--surface);
-    backdrop-filter: var(--blur);
-    -webkit-backdrop-filter: var(--blur);
-    overflow: hidden;
-}
+/* ========== RIGHT PANEL — HIDDEN (replaced by slide drawer) ========== */
+.right-panel { display: none; }
 
 /* ========== ORDER BOOK ========== */
 .orderbook {
@@ -582,92 +567,161 @@ button:active { opacity: 0.7; }
 .ob-ratio-bar .buy-bar { background: var(--green); height: 100%; }
 .ob-ratio-bar .sell-bar { background: var(--red); height: 100%; }
 
-/* ========== FLOATING ORDER WIDGET ========== */
-.order-widget {
+/* ========== SLIDE DRAWER (right edge) ========== */
+.slide-drawer {
     position: fixed;
-    bottom: 40px;
-    right: 16px;
-    width: 320px;
-    max-height: 80vh;
-    z-index: 300;
-    display: none;
-    flex-direction: column;
-    background: var(--surface);
+    top: 96px;
+    right: 0;
+    width: 340px;
+    height: calc(100vh - 96px - 32px);
+    background: rgba(16,20,26,0.82);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-lg);
-    overflow: hidden;
-    transition: transform 0.3s cubic-bezier(0.32,0.72,0,1), opacity 0.3s ease;
-    transform: translateY(20px);
-    opacity: 0;
-}
-.order-widget.open {
+    border-left: 1px solid rgba(255,255,255,0.08);
+    box-shadow: -12px 0 40px rgba(0,0,0,0.45);
+    z-index: 250;
     display: flex;
-    transform: translateY(0);
-    opacity: 1;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.35s cubic-bezier(0.32,0.72,0,1);
+    overflow: hidden;
 }
-.order-widget-header {
+.slide-drawer.open { transform: translateX(0); }
+
+.slide-drawer .sd-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
-    cursor: grab;
-    user-select: none;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
 }
-.order-widget-header:active { cursor: grabbing; }
-.order-widget-header .ow-title {
-    font-size: 13px;
+.sd-header .sd-title {
+    font-size: 14px;
     font-weight: 600;
     color: var(--text);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
 }
-.order-widget-header .ow-title .ow-dot {
-    width: 6px;
-    height: 6px;
+.sd-header .sd-title .sd-dot {
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--green);
+    box-shadow: 0 0 6px var(--green);
 }
-.order-widget-header .ow-close {
-    width: 24px;
-    height: 24px;
+.sd-header .sd-close {
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    background: var(--surface-2);
+    background: rgba(255,255,255,0.06);
     color: var(--text-dim);
-    font-size: 14px;
-    transition: all var(--transition);
-}
-.order-widget-header .ow-close:hover { background: var(--red-bg); color: var(--red); }
-.order-widget-body { padding: 10px 14px; overflow-y: auto; max-height: 60vh; }
-
-.btn-trade-toggle {
-    position: fixed;
-    bottom: 40px;
-    right: 16px;
-    width: 52px;
-    height: 52px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent), #0066cc);
-    color: white;
-    font-size: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 4px 20px rgba(56,189,248,0.4);
-    z-index: 299;
+    font-size: 16px;
     border: none;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all var(--transition);
 }
-.btn-trade-toggle:hover { transform: scale(1.1); box-shadow: 0 6px 28px rgba(56,189,248,0.5); }
-.btn-trade-toggle.hidden { display: none; }
+.sd-header .sd-close:hover { background: var(--red-bg); color: var(--red); }
+
+.sd-tabs {
+    display: flex;
+    padding: 8px 16px 0;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.sd-tabs button {
+    flex: 1;
+    padding: 7px 0;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.sd-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.sd-tabs button:hover { color: var(--text-dim); }
+
+.sd-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 16px;
+}
+
+.sd-section { margin-bottom: 16px; }
+.sd-section-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+}
+
+.sd-quick-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+.sd-quick-btn {
+    padding: 10px 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.sd-quick-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); border-color: rgba(255,255,255,0.12); }
+.sd-quick-btn .sd-icon { font-size: 18px; }
+
+/* Handle tab on chart edge */
+.drawer-handle {
+    position: fixed;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 60px;
+    background: rgba(56,189,248,0.15);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(56,189,248,0.25);
+    border-right: none;
+    border-radius: 8px 0 0 8px;
+    cursor: pointer;
+    z-index: 249;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s ease;
+}
+.drawer-handle:hover {
+    width: 28px;
+    background: rgba(56,189,248,0.3);
+    box-shadow: -4px 0 16px rgba(56,189,248,0.2);
+}
+.drawer-handle .handle-arrow {
+    color: var(--accent);
+    font-size: 12px;
+    transition: transform 0.3s;
+}
+.drawer-handle.open .handle-arrow { transform: rotate(180deg); }
+.drawer-handle.open {
+    right: 340px;
+}
 
 .order-form {
     display: flex;
@@ -2445,60 +2499,6 @@ button:active { opacity: 0.7; }
 
     </div>
 
-    <!-- RIGHT PANEL -->
-    <div class="right-panel">
-        <!-- Order Book -->
-        <div class="orderbook">
-            <div class="orderbook-header">
-                <span>Order Book</span>
-                <div class="ob-mode-btns">
-                    <button class="active" title="Both">&#9776;</button>
-                    <button title="Bids only">&#9650;</button>
-                    <button title="Asks only">&#9660;</button>
-                </div>
-                <div class="ob-precision">
-                    <button class="active">0.1</button>
-                    <button>1</button>
-                    <button>10</button>
-                </div>
-            </div>
-            <div class="orderbook-cols">
-                <span>Price(USDT)</span>
-                <span>Qty</span>
-                <span>Total</span>
-            </div>
-            <div class="ob-rows" id="ob-asks"></div>
-            <div class="ob-spread" id="ob-spread">
-                <span class="spread-arrow up">&#9650;</span>
-                <span id="spread-price">--</span>
-                <span class="spread-pct" id="spread-pct">--</span>
-            </div>
-            <div class="ob-rows" id="ob-bids"></div>
-            <div class="ob-ratio-bar">
-                <div class="buy-bar" id="ratio-buy" style="width:50%"></div>
-                <div class="sell-bar" id="ratio-sell" style="width:50%"></div>
-            </div>
-        </div>
-
-        <!-- Wallet Summary -->
-        <div class="wallet-section">
-            <div class="wallet-row"><span class="wlabel">Balance</span><span class="wvalue" id="w-balance">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Equity</span><span class="wvalue" id="w-equity">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Available</span><span class="wvalue" id="w-available">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Unrealized PNL</span><span class="wvalue" id="w-pnl">--</span></div>
-        </div>
-        <!-- Recent Trades -->
-        <div class="orderbook" style="max-height:180px;border-top:1px solid var(--border)">
-            <div class="orderbook-header"><span>Recent Trades</span></div>
-            <div class="orderbook-cols">
-                <span>Price</span>
-                <span>Qty</span>
-                <span>Time</span>
-            </div>
-            <div class="trades-list" id="trades-list"></div>
-        </div>
-    </div>
-
 </div><!-- /chart-section -->
 
     <!-- Bottom Panel (positions) -->
@@ -2518,65 +2518,135 @@ button:active { opacity: 0.7; }
 
 </div><!-- /main-layout -->
 
-<!-- FLOATING ORDER WIDGET -->
-<button class="btn-trade-toggle" id="btn-trade-toggle" onclick="toggleOrderWidget()">&#9654;</button>
-<div class="order-widget" id="order-widget">
-    <div class="order-widget-header" id="ow-header">
-        <span class="ow-title"><span class="ow-dot"></span>Trade</span>
-        <button class="ow-close" onclick="toggleOrderWidget()">&times;</button>
+<!-- SLIDE DRAWER (Smart Trading Tablet) -->
+<div class="drawer-handle" id="drawer-handle" onclick="toggleDrawer()">
+    <span class="handle-arrow">&#9664;</span>
+</div>
+<div class="slide-drawer" id="slide-drawer">
+    <div class="sd-header">
+        <span class="sd-title"><span class="sd-dot"></span>Smart Trade</span>
+        <button class="sd-close" onclick="toggleDrawer()">&times;</button>
     </div>
-    <div class="order-widget-body">
-        <div class="order-form">
-            <div class="of-tabs">
-                <button class="active" onclick="switchOrderTab('open')">Open</button>
-                <button onclick="switchOrderTab('close')">Close</button>
+    <div class="sd-tabs">
+        <button class="active" onclick="switchDrawerTab('trade')">Trade</button>
+        <button onclick="switchDrawerTab('bot')">Bot</button>
+        <button onclick="switchDrawerTab('info')">Info</button>
+    </div>
+    <div class="sd-body">
+        <!-- TRADE TAB -->
+        <div class="sd-tab-content" id="sd-tab-trade">
+            <div class="sd-quick-actions">
+                <button class="sd-quick-btn" onclick="executeOrder('LONG')"><span class="sd-icon">&#9650;</span>Quick Long</button>
+                <button class="sd-quick-btn" onclick="executeOrder('SHORT')"><span class="sd-icon">&#9660;</span>Quick Short</button>
+                <button class="sd-quick-btn" onclick="closeAllPositions()"><span class="sd-icon">&#10006;</span>Close All</button>
+                <button class="sd-quick-btn" onclick="toggleKillSwitch()"><span class="sd-icon">&#9888;</span>Kill Switch</button>
             </div>
-            <div class="of-margin-mode">
-                <button class="active" id="btn-isolated">Isolated</button>
-                <button id="btn-cross">Cross</button>
-                <div style="flex:1"></div>
-                <div class="of-leverage">
-                    <label>Leverage</label>
-                    <input type="range" id="leverage-slider" min="1" max="200" value="10" oninput="updateLeverage(this.value)">
-                    <span class="lev-val" id="lev-display">10x</span>
+            <div class="sd-section">
+                <div class="sd-section-title">Order</div>
+                <div class="order-form">
+                    <div class="of-tabs">
+                        <button class="active" onclick="switchOrderTab('open')">Open</button>
+                        <button onclick="switchOrderTab('close')">Close</button>
+                    </div>
+                    <div class="of-margin-mode">
+                        <button class="active" id="btn-isolated">Isolated</button>
+                        <button id="btn-cross">Cross</button>
+                        <div style="flex:1"></div>
+                        <div class="of-leverage">
+                            <label>Lev</label>
+                            <input type="range" id="leverage-slider" min="1" max="200" value="10" oninput="updateLeverage(this.value)">
+                            <span class="lev-val" id="lev-display">10x</span>
+                        </div>
+                    </div>
+                    <div class="of-type-tabs">
+                        <button class="active" onclick="switchOrderType('limit')">Limit</button>
+                        <button onclick="switchOrderType('market')">Market</button>
+                    </div>
+                    <div class="of-field">
+                        <label>Price</label>
+                        <button onclick="adjustField('price',-1)">&#8722;</button>
+                        <input type="text" id="order-price" placeholder="0.00">
+                        <button onclick="adjustField('price',1)">+</button>
+                        <span class="unit">USDT</span>
+                    </div>
+                    <div class="of-field">
+                        <label>Qty</label>
+                        <button onclick="adjustField('qty',-1)">&#8722;</button>
+                        <input type="text" id="order-qty" placeholder="0.000">
+                        <button onclick="adjustField('qty',1)">+</button>
+                        <span class="unit" id="qty-unit">BTC</span>
+                    </div>
+                    <div class="of-pct-btns">
+                        <button onclick="setQtyPct(10)">10%</button>
+                        <button onclick="setQtyPct(25)">25%</button>
+                        <button onclick="setQtyPct(50)">50%</button>
+                        <button onclick="setQtyPct(75)">75%</button>
+                        <button onclick="setQtyPct(100)">100%</button>
+                    </div>
+                    <div class="of-tpsl">
+                        <div class="of-field"><label>TP</label><input type="text" id="order-tp" placeholder="--"></div>
+                        <div class="of-field"><label>SL</label><input type="text" id="order-sl" placeholder="--"></div>
+                    </div>
+                    <div class="of-info">
+                        <span>Cost: <span id="order-cost">--</span></span>
+                        <span>Fee: <span id="order-fee">--</span></span>
+                    </div>
+                    <div class="of-actions">
+                        <button class="btn-long" onclick="executeOrder('LONG')">Long</button>
+                        <button class="btn-short" onclick="executeOrder('SHORT')">Short</button>
+                    </div>
                 </div>
             </div>
-            <div class="of-type-tabs">
-                <button class="active" onclick="switchOrderType('limit')">Limit</button>
-                <button onclick="switchOrderType('market')">Market</button>
+        </div>
+        <!-- BOT TAB -->
+        <div class="sd-tab-content" id="sd-tab-bot" style="display:none">
+            <div class="sd-quick-actions">
+                <button class="sd-quick-btn" onclick="sendBotCommand('start')"><span class="sd-icon">&#9654;</span>Start Bot</button>
+                <button class="sd-quick-btn" onclick="sendBotCommand('stop')"><span class="sd-icon">&#9632;</span>Stop Bot</button>
+                <button class="sd-quick-btn" onclick="sendBotCommand('aggressive')"><span class="sd-icon">&#9889;</span>Aggressive</button>
+                <button class="sd-quick-btn" onclick="sendBotCommand('conservative')"><span class="sd-icon">&#9728;</span>Conservative</button>
             </div>
-            <div class="of-field">
-                <label>Price</label>
-                <button onclick="adjustField('price',-1)">&#8722;</button>
-                <input type="text" id="order-price" placeholder="0.00">
-                <button onclick="adjustField('price',1)">+</button>
-                <span class="unit">USDT</span>
+            <div class="sd-section">
+                <div class="sd-section-title">Bot Status</div>
+                <div class="wallet-section" style="border:none;padding:0;margin:0">
+                    <div class="wallet-row"><span class="wlabel">Mode</span><span class="wvalue" id="sd-bot-mode">Paper</span></div>
+                    <div class="wallet-row"><span class="wlabel">Win Rate</span><span class="wvalue" id="sd-bot-wr">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Trades Today</span><span class="wvalue" id="sd-bot-trades">0</span></div>
+                    <div class="wallet-row"><span class="wlabel">PNL Today</span><span class="wvalue" id="sd-bot-pnl">--</span></div>
+                </div>
             </div>
-            <div class="of-field">
-                <label>Qty</label>
-                <button onclick="adjustField('qty',-1)">&#8722;</button>
-                <input type="text" id="order-qty" placeholder="0.000">
-                <button onclick="adjustField('qty',1)">+</button>
-                <span class="unit" id="qty-unit">BTC</span>
+            <div class="sd-section">
+                <div class="sd-section-title">Ask JARVIS</div>
+                <div style="display:flex;gap:6px">
+                    <input type="text" id="sd-jarvis-input" placeholder="Ask anything..." style="flex:1;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:var(--radius-sm);color:var(--text);font-size:12px;outline:none">
+                    <button onclick="sendDrawerJarvis()" style="padding:8px 12px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#000;font-weight:600;font-size:12px;cursor:pointer">Go</button>
+                </div>
+                <div id="sd-jarvis-reply" style="margin-top:8px;font-size:11px;color:var(--text-dim);max-height:150px;overflow-y:auto"></div>
             </div>
-            <div class="of-pct-btns">
-                <button onclick="setQtyPct(10)">10%</button>
-                <button onclick="setQtyPct(25)">25%</button>
-                <button onclick="setQtyPct(50)">50%</button>
-                <button onclick="setQtyPct(75)">75%</button>
-                <button onclick="setQtyPct(100)">100%</button>
+        </div>
+        <!-- INFO TAB -->
+        <div class="sd-tab-content" id="sd-tab-info" style="display:none">
+            <div class="sd-section">
+                <div class="sd-section-title">Account</div>
+                <div class="wallet-section" style="border:none;padding:0;margin:0">
+                    <div class="wallet-row"><span class="wlabel">Balance</span><span class="wvalue" id="w-balance">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Equity</span><span class="wvalue" id="w-equity">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Available</span><span class="wvalue" id="w-available">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Unrealized PNL</span><span class="wvalue" id="w-pnl">--</span></div>
+                </div>
             </div>
-            <div class="of-tpsl">
-                <div class="of-field"><label>TP</label><input type="text" id="order-tp" placeholder="--"></div>
-                <div class="of-field"><label>SL</label><input type="text" id="order-sl" placeholder="--"></div>
+            <div class="sd-section">
+                <div class="sd-section-title">Market Info</div>
+                <div class="wallet-section" style="border:none;padding:0;margin:0">
+                    <div class="wallet-row"><span class="wlabel">Regime</span><span class="wvalue" id="sd-regime">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Signal</span><span class="wvalue" id="sd-signal">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Fear &amp; Greed</span><span class="wvalue" id="sd-fg">--</span></div>
+                    <div class="wallet-row"><span class="wlabel">Funding</span><span class="wvalue" id="sd-funding">--</span></div>
+                </div>
             </div>
-            <div class="of-info">
-                <span>Cost: <span id="order-cost">--</span></span>
-                <span>Fee: <span id="order-fee">--</span></span>
-            </div>
-            <div class="of-actions">
-                <button class="btn-long" onclick="executeOrder('LONG')">Long</button>
-                <button class="btn-short" onclick="executeOrder('SHORT')">Short</button>
+            <div class="sd-section">
+                <div class="sd-section-title">Positions</div>
+                <div id="sd-positions-list" style="font-size:11px;color:var(--text-dim)">No open positions</div>
             </div>
         </div>
     </div>
@@ -3497,8 +3567,7 @@ function changeSymbol(sym) {
     loadMTF();
     checkAlerts();
     loadDrawings();
-    var panel = document.querySelector('.right-panel');
-    if (panel && panel.classList.contains('open')) toggleMobilePanel();
+    if (drawerOpen && window.innerWidth <= 768) toggleDrawer();
 }
 
 function changeTF(tf) {
@@ -3572,6 +3641,7 @@ async function loadOrderBook(symbol) {
 
         // Asks (sells)
         const asksEl = $('ob-asks');
+        if (!asksEl) return;
         let asksHtml = '';
         let cumAsk = 0;
         for (let i = 0; i < asks.length; i++) {
@@ -3650,6 +3720,7 @@ async function loadTrades(symbol) {
         const trades = data.trades || [];
 
         const el = $('trades-list');
+        if (!el) return;
         let html = '';
         for (let i = 0; i < trades.length; i++) {
             const t = trades[i];
@@ -4241,6 +4312,22 @@ async function closePosition(posId) {
     }
 }
 
+async function closeAllPositions() {
+    try {
+        var resp = await fetch(API + '/api/positions');
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var positions = data.positions || [];
+        if (!positions.length) { showToast('No open positions', 'info'); return; }
+        for (var i = 0; i < positions.length; i++) {
+            await closePosition(positions[i].id);
+        }
+        showToast('All positions closed', 'success');
+    } catch (e) {
+        showToast('Close all failed', 'error');
+    }
+}
+
 // ========== TOAST NOTIFICATIONS ==========
 function showToast(msg, type) {
     type = type || 'success';
@@ -4655,22 +4742,16 @@ async function loadWhales(symbol) {
 
 // ========== RESPONSIVE MOBILE ==========
 function toggleMobilePanel() {
-    var panel = document.querySelector('.right-panel');
-    var overlay = $('mobile-overlay');
-    if (!panel) return;
-    var isOpen = panel.classList.contains('open');
-    panel.classList.toggle('open');
-    if (overlay) overlay.classList.toggle('visible');
-    document.body.style.overflow = isOpen ? '' : 'hidden';
+    toggleDrawer();
 }
 
 window.addEventListener('resize', function() {
-    if (window.innerWidth > 768) {
-        var panel = document.querySelector('.right-panel');
-        var overlay = $('mobile-overlay');
-        if (panel) panel.classList.remove('open');
-        if (overlay) overlay.classList.remove('visible');
-        document.body.style.overflow = '';
+    if (window.innerWidth > 768 && drawerOpen) {
+        var drawer = $('slide-drawer');
+        var handle = $('drawer-handle');
+        if (drawer) drawer.classList.remove('open');
+        if (handle) handle.classList.remove('open');
+        drawerOpen = false;
     }
 });
 
@@ -5875,19 +5956,110 @@ document.addEventListener('keydown', function(e) {
     if (tfMap[e.key]) { changeTF(tfMap[e.key]); e.preventDefault(); return; }
 });
 
-// ========== ORDER WIDGET TOGGLE ==========
-function toggleOrderWidget() {
-    var widget = $('order-widget');
-    var btn = $('btn-trade-toggle');
-    if (!widget) return;
-    if (widget.classList.contains('open')) {
-        widget.classList.remove('open');
-        if (btn) btn.classList.remove('hidden');
+// ========== SLIDE DRAWER ==========
+var drawerOpen = false;
+
+function toggleDrawer() {
+    var drawer = $('slide-drawer');
+    var handle = $('drawer-handle');
+    if (!drawer) return;
+    drawerOpen = !drawerOpen;
+    if (drawerOpen) {
+        drawer.classList.add('open');
+        if (handle) handle.classList.add('open');
     } else {
-        widget.classList.add('open');
-        if (btn) btn.classList.add('hidden');
+        drawer.classList.remove('open');
+        if (handle) handle.classList.remove('open');
     }
 }
+
+function switchDrawerTab(tab) {
+    var tabs = document.querySelectorAll('.sd-tabs button');
+    tabs.forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+    var contents = document.querySelectorAll('.sd-tab-content');
+    contents.forEach(function(c) { c.style.display = 'none'; });
+    var target = $('sd-tab-' + tab);
+    if (target) target.style.display = '';
+}
+
+function sendBotCommand(cmd) {
+    fetch(API + '/api/jarvis', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: 'Bot command: ' + cmd})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        showToast(cmd + ' command sent', 'info');
+    }).catch(function() { showToast('Command failed', 'error'); });
+}
+
+function sendDrawerJarvis() {
+    var input = $('sd-jarvis-input');
+    var reply = $('sd-jarvis-reply');
+    if (!input || !input.value.trim()) return;
+    var msg = input.value.trim();
+    input.value = '';
+    if (reply) reply.innerHTML = '<span style="color:var(--accent)">Thinking...</span>';
+    fetch(API + '/api/jarvis', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: msg})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (reply) reply.textContent = d.response || d.error || 'No response';
+    }).catch(function() {
+        if (reply) reply.textContent = 'Error connecting to JARVIS';
+    });
+}
+
+// Right-edge hover trigger
+(function() {
+    var hoverTimeout = null;
+    document.addEventListener('mousemove', function(e) {
+        if (drawerOpen) return;
+        if (e.clientX >= window.innerWidth - 8) {
+            if (!hoverTimeout) {
+                hoverTimeout = setTimeout(function() {
+                    toggleDrawer();
+                    hoverTimeout = null;
+                }, 300);
+            }
+        } else {
+            if (hoverTimeout) { clearTimeout(hoverTimeout); hoverTimeout = null; }
+        }
+    });
+})();
+
+// Drawer resize (drag left edge)
+(function() {
+    var drawer = null;
+    var handle = null;
+    var resizing = false;
+    var startX = 0;
+    var startW = 340;
+
+    document.addEventListener('mousedown', function(e) {
+        drawer = $('slide-drawer');
+        handle = $('drawer-handle');
+        if (!drawer || !drawerOpen) return;
+        var rect = drawer.getBoundingClientRect();
+        if (Math.abs(e.clientX - rect.left) < 6) {
+            resizing = true;
+            startX = e.clientX;
+            startW = rect.width;
+            e.preventDefault();
+        }
+    });
+    document.addEventListener('mousemove', function(e) {
+        if (!resizing) return;
+        var diff = startX - e.clientX;
+        var newW = Math.min(Math.max(startW + diff, 260), 600);
+        drawer.style.width = newW + 'px';
+        if (handle) handle.style.right = newW + 'px';
+    });
+    document.addEventListener('mouseup', function() {
+        resizing = false;
+    });
+})();
 
 // ========== VIEW SWITCHING (Trade / Markets) ==========
 function switchView(view) {
