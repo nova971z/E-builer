@@ -2105,8 +2105,126 @@ class GMXAdapter(ExchangeAdapter):
             "total_usdt": round(total_usdt, 2),
         }
 
+    def _resolve_symbol_from_market(self, market_address):
+        """Reverse-lookup: market token address → symbol string."""
+        market_lower = market_address.lower()
+        for symbol, config in GMX_V2_MARKETS.items():
+            if config["market_token"].lower() == market_lower:
+                return symbol
+        return market_address[:10] + "..."
+
+    def _get_index_price(self, symbol):
+        """Fetch current index price from Binance for PnL calculation."""
+        try:
+            key = f"gmx_price_{symbol}"
+            cached = cache.get(key)
+            if cached:
+                return cached
+            resp = requests.get(
+                f"{BINANCE_BASE}/api/v3/ticker/price",
+                params={"symbol": symbol}, timeout=3
+            )
+            if resp.status_code == 200:
+                price = float(resp.json()["price"])
+                cache.set(key, price, ttl=5)
+                return price
+        except Exception:
+            pass
+        return 0.0
+
     def get_positions(self):
-        return []
+        if not HAS_WEB3:
+            return []
+        if not self._ensure_connection():
+            return []
+        if not self._has_signer():
+            return []
+
+        reader = self._contracts.get("reader")
+        data_store = self._contracts.get("data_store")
+        if not reader or not data_store:
+            return []
+
+        try:
+            raw_positions = reader.functions.getAccountPositions(
+                data_store, self._account.address, 0, 50
+            ).call()
+        except Exception as e:
+            log.error("GMX get_positions Reader call failed: %s", e)
+            return []
+
+        positions = []
+        for pos in raw_positions:
+            try:
+                addresses = pos[0]
+                numbers = pos[1]
+                flags = pos[2]
+
+                market_address = addresses[1]
+                collateral_token = addresses[2]
+                is_long = flags[0]
+
+                size_in_usd = numbers[0] / 10**30
+                size_in_tokens = numbers[1] / 10**30
+                collateral_amount_raw = numbers[2]
+                borrowing_factor = numbers[3] / 10**30
+                funding_fee_per_size = numbers[4] / 10**30
+
+                is_usdc_collateral = collateral_token.lower() == GMX_V2_TOKENS["USDC"].lower()
+                collateral_decimals = 6 if is_usdc_collateral else 18
+                collateral_usd = collateral_amount_raw / (10 ** collateral_decimals)
+
+                symbol = self._resolve_symbol_from_market(market_address)
+                current_price = self._get_index_price(symbol)
+
+                if size_in_tokens > 0:
+                    entry_price = size_in_usd / size_in_tokens
+                else:
+                    entry_price = 0.0
+
+                leverage_effective = size_in_usd / collateral_usd if collateral_usd > 0 else 0.0
+
+                pnl = 0.0
+                pnl_pct = 0.0
+                if current_price > 0 and entry_price > 0:
+                    if is_long:
+                        pnl = (current_price - entry_price) * size_in_tokens
+                    else:
+                        pnl = (entry_price - current_price) * size_in_tokens
+                    pnl_pct = (pnl / collateral_usd * 100) if collateral_usd > 0 else 0.0
+
+                liq_price = 0.0
+                if leverage_effective > 1 and entry_price > 0:
+                    margin_fraction = 1.0 / leverage_effective
+                    if is_long:
+                        liq_price = entry_price * (1 - margin_fraction * 0.9)
+                    else:
+                        liq_price = entry_price * (1 + margin_fraction * 0.9)
+
+                positions.append({
+                    "symbol": symbol,
+                    "side": "long" if is_long else "short",
+                    "quantity": round(size_in_tokens, 8),
+                    "size_usd": round(size_in_usd, 2),
+                    "entry_price": round(entry_price, 4),
+                    "current_price": round(current_price, 4),
+                    "leverage": round(leverage_effective, 1),
+                    "collateral_usd": round(collateral_usd, 2),
+                    "collateral_token": "USDC" if is_usdc_collateral else "WETH",
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "liquidation_price": round(liq_price, 4),
+                    "borrowing_factor": round(borrowing_factor, 6),
+                    "funding_fee_per_size": round(funding_fee_per_size, 6),
+                    "market_address": market_address,
+                    "exchange": "GMX",
+                    "type": "perpetual",
+                })
+            except Exception as e:
+                log.warning("GMX position parse error: %s", e)
+                continue
+
+        return positions
 
     def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
         return {"success": False, "error": "Not yet implemented (step 5)", "exchange": "GMX"}
