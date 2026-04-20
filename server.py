@@ -3145,19 +3145,16 @@ def api_candles():
     if interval not in INTERVALS:
         return jsonify({"error": f"Invalid interval: {interval}"}), 400
 
-    # Cap paginated requests to avoid timeouts
-    max_limit = min(limit, 10000)
-
-    if max_limit <= 1000:
-        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": max_limit}, ttl=10)
+    if limit <= 1000:
+        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
         if raw is None:
             return jsonify({"error": "Failed to fetch candles from Binance"}), 502
         return jsonify({"candles": transform_klines(raw)})
 
     all_klines = []
-    remaining = max_limit
+    remaining = limit
     end_time = None
-    for _ in range(10):
+    for _ in range(60):
         batch = min(remaining, 1000)
         params = {"symbol": symbol, "interval": interval, "limit": batch}
         if end_time is not None:
