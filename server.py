@@ -2782,6 +2782,17 @@ def api_status():
     })
 
 
+@app.route("/api/sparklines")
+def api_sparklines():
+    pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+    result = {}
+    for pair in pairs:
+        raw = fetch_binance("/api/v3/klines", {"symbol": pair, "interval": "15m", "limit": 20}, ttl=30)
+        if raw and isinstance(raw, list):
+            result[pair] = [float(k[4]) for k in raw]
+    return jsonify(result)
+
+
 @app.route("/")
 def serve_dashboard():
     return send_from_directory(str(BASE_DIR), "dashboard.html")

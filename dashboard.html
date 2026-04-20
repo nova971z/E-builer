@@ -1194,6 +1194,19 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Sparkline mini-charts */
+.sparkline { display: inline-block; vertical-align: middle; line-height: 0; }
+.sparkline svg { display: block; }
+.ft-ticker-item .sparkline { margin-left: 4px; opacity: 0.85; }
+.asset-sparkline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    min-width: 80px;
+}
+.asset-sparkline svg { display: block; }
+
 </style>
 </head>
 <body>
@@ -1258,6 +1271,7 @@ button:active { opacity: 0.7; }
     <div class="asset-stat"><span class="asset-stat-label">24h Volume</span><span class="asset-stat-value" id="stat-vol">--</span></div>
     <div class="asset-stat"><span class="asset-stat-label">Funding</span><span class="asset-stat-value" id="stat-funding">--</span></div>
     <div class="asset-stat"><span class="asset-stat-label">Open Interest</span><span class="asset-stat-value" id="stat-oi">--</span></div>
+    <div class="asset-sparkline" id="asset-sparkline"></div>
     <div class="asset-shortcuts">
         <button onclick="changeSymbol('BTCUSDT')">BTC</button>
         <button onclick="changeSymbol('ETHUSDT')">ETH</button>
@@ -1636,6 +1650,7 @@ const indicatorState = {
     bb: false, ema9: false, ema21: false, ema50: false, ema200: false, vol: true
 };
 
+let sparklineData = {};
 let currentTheme = localStorage.getItem('jarvis_theme') || 'dark';
 
 var CHART_THEMES = {
@@ -2064,6 +2079,7 @@ function changeSymbol(sym) {
     removeEMA('ema200');
 
     loadCandles(sym, currentInterval);
+    updateAssetSparkline();
 }
 
 function changeTF(tf) {
@@ -2248,9 +2264,16 @@ async function loadTicker() {
                     const t = tickers[i];
                     const cls = parseFloat(t.change_pct) >= 0 ? 'up' : 'down';
                     const sign = parseFloat(t.change_pct) >= 0 ? '+' : '';
+                    var spark = '';
+                    var sparkPrices = sparklineData[t.symbol];
+                    if (sparkPrices && sparkPrices.length >= 2) {
+                        var sparkColor = cls === 'up' ? 'var(--green)' : 'var(--red)';
+                        spark = buildSparklineSVG(sparkPrices, 40, 14, sparkColor);
+                    }
                     html += '<span class="ft-ticker-item">'
                         + '<span class="sym">' + t.symbol + '</span>'
                         + '<span class="val ' + cls + '">' + fmt(parseFloat(t.price)) + ' ' + sign + parseFloat(t.change_pct).toFixed(2) + '%</span>'
+                        + spark
                         + '</span>';
                 }
             }
@@ -2297,10 +2320,57 @@ async function loadPriceData(symbol) {
         if (data.high) $('stat-high').textContent = fmt(data.high);
         if (data.low) $('stat-low').textContent = fmt(data.low);
         if (data.volume) $('stat-vol').textContent = fmtK(data.volume);
+        updateAssetSparkline();
 
     } catch (err) {
         console.error('loadPriceData error:', err);
     }
+}
+
+// ========== SPARKLINE MINI-CHARTS ==========
+function buildSparklineSVG(prices, width, height, color) {
+    if (!prices || prices.length < 2) return '';
+    var min = prices[0], max = prices[0];
+    for (var i = 1; i < prices.length; i++) {
+        if (prices[i] < min) min = prices[i];
+        if (prices[i] > max) max = prices[i];
+    }
+    var range = max - min || 1;
+    var step = width / (prices.length - 1);
+    var pad = 1;
+    var pts = '';
+    for (var j = 0; j < prices.length; j++) {
+        var x = (j * step).toFixed(1);
+        var y = (height - pad - ((prices[j] - min) / range) * (height - pad * 2)).toFixed(1);
+        pts += x + ',' + y + ' ';
+    }
+    return '<svg class="sparkline" width="' + width + '" height="' + height
+        + '" viewBox="0 0 ' + width + ' ' + height + '">'
+        + '<polyline fill="none" stroke="' + color + '" stroke-width="1.2" '
+        + 'stroke-linecap="round" stroke-linejoin="round" points="' + pts.trim() + '"/>'
+        + '</svg>';
+}
+
+async function loadSparklines() {
+    try {
+        var resp = await fetch(API + '/api/sparklines');
+        if (!resp.ok) return;
+        var data = await resp.json();
+        sparklineData = data;
+    } catch (err) {
+        console.error('loadSparklines error:', err);
+    }
+}
+
+function updateAssetSparkline() {
+    var el = $('asset-sparkline');
+    if (!el) return;
+    var prices = sparklineData[currentSymbol];
+    if (!prices || prices.length < 2) { el.innerHTML = ''; return; }
+    var color = prices[prices.length - 1] >= prices[0]
+        ? getComputedStyle(document.documentElement).getPropertyValue('--green').trim()
+        : getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+    el.innerHTML = buildSparklineSVG(prices, 80, 24, color);
 }
 
 // ========== FUNDING + SENTIMENT (asset bar) ==========
@@ -3119,8 +3189,8 @@ function startAutoRefresh() {
     // Medium: 10s — ticker
     refreshTimers.push(setInterval(function() { loadTicker(); }, 10000));
 
-    // Moderate: 30s — candles + indicators
-    refreshTimers.push(setInterval(function() { loadCandles(); }, 30000));
+    // Moderate: 30s — candles + indicators + sparklines
+    refreshTimers.push(setInterval(function() { loadCandles(); loadSparklines().then(updateAssetSparkline); }, 30000));
 
     // Slow: 60s — positions, wallet, paper status, kill switch, funding, sentiment
     refreshTimers.push(setInterval(function() {
@@ -3224,6 +3294,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadCalendar();
     loadDipTop();
     loadWhales();
+    loadSparklines().then(updateAssetSparkline);
 
     // Start auto-refresh
     startAutoRefresh();
