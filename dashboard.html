@@ -1561,6 +1561,202 @@ button:active { opacity: 0.7; }
 }
 .asset-sparkline svg { display: block; }
 
+/* GMX V2 Trading Panel */
+.gmx-panel {
+    position: fixed;
+    top: 48px;
+    right: 0;
+    width: 380px;
+    height: calc(100vh - 48px - 28px);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: none;
+    flex-direction: column;
+    z-index: 800;
+    overflow-y: auto;
+}
+.gmx-panel.open { display: flex; }
+.gmx-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+}
+.gmx-panel-header h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.gmx-panel-header h3::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+}
+.gmx-panel-header.disconnected h3::before { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.gmx-section {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+}
+.gmx-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+}
+.gmx-wallet-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    padding: 3px 0;
+}
+.gmx-wallet-row .label { color: var(--text-dim); }
+.gmx-wallet-row .value { color: var(--text); font-weight: 500; }
+.gmx-market-select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+.gmx-leverage-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+}
+.gmx-leverage-wrap input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+}
+.gmx-leverage-wrap .lev-val {
+    min-width: 40px;
+    text-align: center;
+    font-weight: 700;
+    color: var(--yellow);
+    font-size: 13px;
+}
+.gmx-form-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.gmx-form-row input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+.gmx-form-row input:focus { border-color: var(--accent); outline: none; }
+.gmx-btn-long, .gmx-btn-short {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.gmx-btn-long { background: var(--green); color: #000; }
+.gmx-btn-short { background: var(--red); color: #fff; }
+.gmx-btn-long:hover, .gmx-btn-short:hover { opacity: 0.85; }
+.gmx-positions-table {
+    width: 100%;
+    font-size: 11px;
+    border-collapse: collapse;
+}
+.gmx-positions-table th {
+    text-align: left;
+    padding: 4px 6px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+}
+.gmx-positions-table td {
+    padding: 5px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.gmx-positions-table .pnl-pos { color: var(--green); }
+.gmx-positions-table .pnl-neg { color: var(--red); }
+.gmx-entry-alert {
+    background: linear-gradient(135deg, rgba(0,200,255,0.08), rgba(0,255,136,0.08));
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 8px;
+}
+.gmx-entry-alert .alert-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.gmx-entry-alert .alert-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+}
+.gmx-entry-alert .alert-score {
+    font-size: 11px;
+    background: var(--accent);
+    color: #000;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+}
+.gmx-entry-alert .alert-details {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+.gmx-entry-alert .btn-execute {
+    width: 100%;
+    padding: 8px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+}
+.gmx-entry-alert .btn-execute:hover { opacity: 0.85; }
+.gmx-gas-bar {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 4px 0;
+}
+.gmx-scan-btn {
+    width: 100%;
+    padding: 7px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-top: 6px;
+    font-weight: 600;
+}
+.gmx-scan-btn:hover { background: var(--border); }
+
 </style>
 </head>
 <body>
@@ -1584,6 +1780,7 @@ button:active { opacity: 0.7; }
         <button class="btn-nav btn-sound" id="btn-sound" onclick="toggleSound()">&#128266;</button>
         <button class="btn-nav" onclick="showAlertModal()">Alerts <span class="badge alert-badge" id="alert-badge" style="display:none">0</span></button>
         <button class="btn-nav" onclick="toggleJarvisChat()">AI</button>
+        <button class="btn-nav" onclick="toggleGMXPanel()" style="color:var(--accent)">GMX</button>
         <button class="btn-nav" onclick="showSettings()">Settings</button>
         <button class="btn-nav btn-kill" id="btn-killswitch" onclick="toggleKillSwitch()">KILL</button>
     </div>
@@ -1882,6 +2079,74 @@ button:active { opacity: 0.7; }
     </div>
     <div class="mtf-grid" id="mtf-grid"></div>
     <div class="mtf-confluence" id="mtf-confluence">Confluence: --</div>
+</div>
+
+<!-- GMX V2 TRADING PANEL -->
+<div class="gmx-panel" id="gmx-panel">
+    <div class="gmx-panel-header disconnected" id="gmx-header">
+        <h3>GMX V2 Perpetuals</h3>
+        <button onclick="toggleGMXPanel()" style="background:none;border:none;color:var(--text-dim);font-size:16px;cursor:pointer">&times;</button>
+    </div>
+
+    <div class="gmx-section">
+        <div class="gmx-section-title">Wallet</div>
+        <div id="gmx-wallet-info">
+            <div class="gmx-wallet-row"><span class="label">Account</span><span class="value" id="gmx-account">Not connected</span></div>
+            <div class="gmx-wallet-row"><span class="label">ETH</span><span class="value" id="gmx-eth-bal">--</span></div>
+            <div class="gmx-wallet-row"><span class="label">USDC</span><span class="value" id="gmx-usdc-bal">--</span></div>
+            <div class="gmx-wallet-row"><span class="label">Collateral Locked</span><span class="value" id="gmx-collateral">--</span></div>
+        </div>
+        <div class="gmx-gas-bar">
+            <span>Network: <span id="gmx-network">Arbitrum</span></span>
+            <span>Block: <span id="gmx-block">--</span></span>
+        </div>
+    </div>
+
+    <div class="gmx-section">
+        <div class="gmx-section-title">Trade</div>
+        <select class="gmx-market-select" id="gmx-market" onchange="onGMXMarketChange()">
+            <option value="BTCUSDT">BTC/USD</option>
+            <option value="ETHUSDT">ETH/USD</option>
+            <option value="SOLUSDT">SOL/USD</option>
+            <option value="ARBUSDT">ARB/USD</option>
+            <option value="DOGEUSDT">DOGE/USD</option>
+        </select>
+        <div class="gmx-leverage-wrap">
+            <span style="font-size:11px;color:var(--text-dim)">Leverage:</span>
+            <input type="range" id="gmx-leverage" min="1" max="50" value="5" oninput="updateGMXLevLabel()">
+            <span class="lev-val" id="gmx-lev-label">5x</span>
+        </div>
+        <div class="gmx-form-row">
+            <input type="number" id="gmx-collateral-input" placeholder="Collateral (USDC)" step="0.01" min="1">
+            <input type="number" id="gmx-price-input" placeholder="Price (market)" step="0.01">
+        </div>
+        <div class="gmx-form-row">
+            <input type="number" id="gmx-tp-input" placeholder="Take Profit" step="0.01">
+            <input type="number" id="gmx-sl-input" placeholder="Stop Loss" step="0.01">
+        </div>
+        <div id="gmx-estimate-info" style="font-size:10px;color:var(--text-dim);padding:2px 0">
+            Size: -- | Fee: -- | Liq: --
+        </div>
+        <div class="gmx-form-row">
+            <button class="gmx-btn-long" onclick="executeGMXOrder('long')">LONG</button>
+            <button class="gmx-btn-short" onclick="executeGMXOrder('short')">SHORT</button>
+        </div>
+    </div>
+
+    <div class="gmx-section">
+        <div class="gmx-section-title">Positions <span id="gmx-pos-count">(0)</span></div>
+        <table class="gmx-positions-table">
+            <thead><tr><th>Market</th><th>Side</th><th>Size</th><th>Lev</th><th>PnL</th><th></th></tr></thead>
+            <tbody id="gmx-positions-body"></tbody>
+        </table>
+        <div id="gmx-pos-totals" style="font-size:11px;color:var(--text-dim);padding:4px 0;text-align:right">Total PnL: --</div>
+    </div>
+
+    <div class="gmx-section">
+        <div class="gmx-section-title">Dip/Top Hunter</div>
+        <div id="gmx-entry-alert-container"></div>
+        <button class="gmx-scan-btn" onclick="runGMXAutoScan()">&#128269; Scan All Markets</button>
+    </div>
 </div>
 
 <!-- JARVIS CHAT -->
@@ -4553,6 +4818,307 @@ function renderHeatmap(tickers) {
 // ========== AUTO-REFRESH INTERVALS ==========
 const refreshTimers = [];
 
+// =========================================================================
+// GMX V2 Panel — Functions
+// =========================================================================
+
+var gmxPanelOpen = false;
+
+function toggleGMXPanel() {
+    var panel = $('gmx-panel');
+    gmxPanelOpen = !gmxPanelOpen;
+    if (gmxPanelOpen) {
+        panel.classList.add('open');
+        loadGMXWallet();
+        loadGMXPositions();
+        loadGMXEntryPlan();
+        updateGMXEstimate();
+    } else {
+        panel.classList.remove('open');
+    }
+}
+
+function updateGMXLevLabel() {
+    var val = $('gmx-leverage').value;
+    $('gmx-lev-label').textContent = val + 'x';
+    updateGMXEstimate();
+}
+
+function onGMXMarketChange() {
+    updateGMXEstimate();
+    loadGMXEntryPlan();
+}
+
+function loadGMXWallet() {
+    fetch('/api/gmx/positions').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.account) {
+            $('gmx-account').textContent = data.account.substring(0, 6) + '...' + data.account.substring(38);
+            $('gmx-header').classList.remove('disconnected');
+        } else {
+            $('gmx-account').textContent = data.error || 'Not connected';
+            $('gmx-header').classList.add('disconnected');
+        }
+    }).catch(function() {
+        $('gmx-account').textContent = 'Not connected';
+    });
+
+    fetch('/api/balance').then(function(r) { return r.json(); }).then(function(data) {
+        var balances = data.balances || [];
+        for (var i = 0; i < balances.length; i++) {
+            if (balances[i].exchange === 'GMX') {
+                var assets = balances[i].assets || {};
+                $('gmx-eth-bal').textContent = assets.ETH ? assets.ETH.total.toFixed(4) : '0.0000';
+                $('gmx-usdc-bal').textContent = assets.USDC ? '$' + fmt(assets.USDC.total) : '$0.00';
+                var coll = assets.GMX_COLLATERAL;
+                $('gmx-collateral').textContent = coll ? '$' + fmt(coll.used) : '$0.00';
+                return;
+            }
+        }
+    }).catch(function() {});
+
+    fetch('/api/gmx/prices').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.timestamp) {
+            $('gmx-network').textContent = 'Arbitrum';
+        }
+    }).catch(function() {});
+}
+
+function loadGMXPositions() {
+    fetch('/api/gmx/positions').then(function(r) { return r.json(); }).then(function(data) {
+        var body = $('gmx-positions-body');
+        var positions = data.positions || [];
+        $('gmx-pos-count').textContent = '(' + positions.length + ')';
+
+        if (positions.length === 0) {
+            body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:12px">No open positions</td></tr>';
+            $('gmx-pos-totals').textContent = 'Total PnL: $0.00';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < positions.length; i++) {
+            var p = positions[i];
+            var pnlClass = p.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+            var pnlSign = p.pnl >= 0 ? '+' : '';
+            var sym = p.symbol.replace('USDT', '');
+            html += '<tr>'
+                + '<td>' + sym + '</td>'
+                + '<td style="color:' + (p.side === 'long' ? 'var(--green)' : 'var(--red)') + '">' + p.side.toUpperCase() + '</td>'
+                + '<td>$' + fmtK(p.size_usd) + '</td>'
+                + '<td>' + p.leverage.toFixed(0) + 'x</td>'
+                + '<td class="' + pnlClass + '">' + pnlSign + '$' + p.pnl.toFixed(2) + '</td>'
+                + '<td><button onclick="closeGMXPosition(\'' + p.symbol + '\')" style="background:var(--red);color:#fff;border:none;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:10px">Close</button></td>'
+                + '</tr>';
+        }
+        body.innerHTML = html;
+
+        var totalPnl = data.total_pnl || 0;
+        var pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        $('gmx-pos-totals').innerHTML = 'Total PnL: <span style="color:' + pnlColor + '">' + (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2) + '</span> | Size: $' + fmtK(data.total_size || 0);
+    }).catch(function(err) {
+        $('gmx-positions-body').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red);padding:8px">Load error</td></tr>';
+    });
+}
+
+function updateGMXEstimate() {
+    var symbol = $('gmx-market').value;
+    var leverage = parseInt($('gmx-leverage').value);
+    var collateral = parseFloat($('gmx-collateral-input').value) || 10;
+    var price = parseFloat($('gmx-price-input').value) || 0;
+
+    var quantity = price > 0 ? (collateral * leverage / price) : (collateral / 1);
+
+    fetch('/api/gmx/estimate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({symbol: symbol, side: 'long', quantity: quantity, leverage: leverage, price: price})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+            $('gmx-estimate-info').textContent = 'Size: -- | Fee: -- | Liq: --';
+            return;
+        }
+        $('gmx-estimate-info').textContent = 'Size: $' + fmtK(data.size_usd)
+            + ' | Fee: $' + data.position_fee_usd.toFixed(2)
+            + ' + ' + data.execution_fee_eth.toFixed(4) + ' ETH'
+            + ' | Liq: $' + fmt(data.liquidation_price);
+    }).catch(function() {
+        $('gmx-estimate-info').textContent = 'Size: -- | Fee: -- | Liq: --';
+    });
+}
+
+function executeGMXOrder(side) {
+    var symbol = $('gmx-market').value;
+    var leverage = parseInt($('gmx-leverage').value);
+    var collateral = parseFloat($('gmx-collateral-input').value);
+    var price = parseFloat($('gmx-price-input').value) || 0;
+    var tp = parseFloat($('gmx-tp-input').value) || 0;
+    var sl = parseFloat($('gmx-sl-input').value) || 0;
+
+    if (!collateral || collateral <= 0) {
+        showToast('Enter collateral amount', 'error');
+        return;
+    }
+
+    if (leverage > 20 && !confirm('Leverage ' + leverage + 'x exceeds recommended 20x. Proceed?')) {
+        return;
+    }
+
+    var refPrice = price || 0;
+    if (refPrice <= 0) {
+        showToast('Fetching market price...', 'info');
+    }
+
+    var quantity = refPrice > 0 ? (collateral / refPrice) : collateral;
+
+    fetch('/api/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            symbol: symbol,
+            side: side,
+            type: price > 0 ? 'limit' : 'market',
+            quantity: quantity,
+            price: price > 0 ? price : undefined,
+            leverage: leverage,
+            tp: tp > 0 ? tp : undefined,
+            sl: sl > 0 ? sl : undefined,
+            exchange: 'gmx'
+        })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.success || data.order_id) {
+            showToast('GMX ' + side.toUpperCase() + ' order sent! TX: ' + (data.tx_hash || data.order_id || '').substring(0, 10) + '...', 'success');
+            playSound('order');
+            setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
+        } else {
+            showToast('GMX order failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    }).catch(function(err) {
+        showToast('GMX order error: ' + err.message, 'error');
+    });
+}
+
+function closeGMXPosition(symbol) {
+    if (!confirm('Close GMX position: ' + symbol + '?')) return;
+
+    fetch('/api/close', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({symbol: symbol, exchange: 'gmx'})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.success) {
+            showToast('Position closed: ' + symbol + ' | PnL: $' + (data.pnl_at_close || 0).toFixed(2), 'success');
+            playSound('close');
+            setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
+        } else {
+            showToast('Close failed: ' + (data.error || 'Unknown'), 'error');
+        }
+    }).catch(function(err) {
+        showToast('Close error: ' + err.message, 'error');
+    });
+}
+
+function loadGMXEntryPlan() {
+    var symbol = $('gmx-market').value;
+    var container = $('gmx-entry-alert-container');
+
+    fetch('/api/gmx/entry-plan?symbol=' + symbol + '&interval=15m&balance=100').then(function(r) { return r.json(); }).then(function(plan) {
+        if (!plan.actionable) {
+            container.innerHTML = '<div style="font-size:11px;color:var(--text-dim);padding:6px 0">No entry signal for ' + symbol.replace('USDT', '/USD') + ' (score: ' + (plan.score || 0) + ')</div>';
+            return;
+        }
+
+        var dirColor = plan.direction === 'long' ? 'var(--green)' : 'var(--red)';
+        var signals = (plan.signals || []).slice(0, 4).join('<br>');
+
+        container.innerHTML = '<div class="gmx-entry-alert">'
+            + '<div class="alert-header">'
+            + '<span class="alert-title" style="color:' + dirColor + '">' + plan.direction.toUpperCase() + ' ' + symbol.replace('USDT', '') + '</span>'
+            + '<span class="alert-score">Score: ' + plan.score + '</span>'
+            + '</div>'
+            + '<div class="alert-details">'
+            + plan.leverage + 'x | Entry: $' + fmt(plan.entry_price) + ' | TP: $' + fmt(plan.take_profit) + ' | SL: $' + fmt(plan.stop_loss)
+            + '<br>Size: $' + fmtK(plan.size_usd) + ' | R:R ' + plan.risk_reward_ratio.toFixed(1) + ' | Max Loss: $' + plan.max_loss_usd.toFixed(2)
+            + '<br><span style="font-size:10px">' + signals + '</span>'
+            + '</div>'
+            + '<button class="btn-execute" onclick="executeGMXEntryPlan()">&#9889; Execute ' + plan.direction.toUpperCase() + ' ' + plan.leverage + 'x</button>'
+            + '</div>';
+
+        window._gmxPendingPlan = plan;
+    }).catch(function() {
+        container.innerHTML = '<div style="font-size:11px;color:var(--text-dim);padding:6px 0">Scan error</div>';
+    });
+}
+
+function executeGMXEntryPlan() {
+    var plan = window._gmxPendingPlan;
+    if (!plan || !plan.actionable) {
+        showToast('No active entry plan', 'error');
+        return;
+    }
+
+    if (!confirm('Execute GMX ' + plan.direction.toUpperCase() + ' ' + plan.symbol + ' @ ' + plan.leverage + 'x?\nSize: $' + plan.size_usd.toFixed(2) + ' | TP: $' + plan.take_profit.toFixed(2) + ' | SL: $' + plan.stop_loss.toFixed(2))) {
+        return;
+    }
+
+    $('gmx-market').value = plan.symbol;
+    $('gmx-leverage').value = plan.leverage;
+    updateGMXLevLabel();
+    $('gmx-collateral-input').value = plan.collateral_usd.toFixed(2);
+    $('gmx-tp-input').value = plan.take_profit.toFixed(2);
+    $('gmx-sl-input').value = plan.stop_loss.toFixed(2);
+
+    executeGMXOrder(plan.direction);
+}
+
+function runGMXAutoScan() {
+    var container = $('gmx-entry-alert-container');
+    container.innerHTML = '<div style="font-size:11px;color:var(--accent);padding:8px 0;text-align:center">&#8987; Scanning all markets...</div>';
+
+    fetch('/api/gmx/auto-scan?interval=15m&balance=100').then(function(r) { return r.json(); }).then(function(data) {
+        var opps = data.opportunities || [];
+
+        if (opps.length === 0) {
+            container.innerHTML = '<div style="font-size:11px;color:var(--text-dim);padding:8px 0">No opportunities found across ' + data.markets_scanned + ' markets</div>';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < opps.length; i++) {
+            var o = opps[i];
+            var dc = o.direction === 'long' ? 'var(--green)' : 'var(--red)';
+            html += '<div class="gmx-entry-alert" style="margin-bottom:6px">'
+                + '<div class="alert-header">'
+                + '<span class="alert-title" style="color:' + dc + '">' + o.direction.toUpperCase() + ' ' + o.symbol.replace('USDT', '') + '</span>'
+                + '<span class="alert-score">Score: ' + o.score + '</span>'
+                + '</div>'
+                + '<div class="alert-details">'
+                + o.leverage + 'x | R:R ' + o.risk_reward_ratio.toFixed(1) + ' | Size: $' + fmtK(o.size_usd)
+                + '</div>'
+                + '<button class="btn-execute" onclick="applyScanResult(' + i + ')">&#9889; Select</button>'
+                + '</div>';
+        }
+        container.innerHTML = html;
+        window._gmxScanResults = opps;
+    }).catch(function(err) {
+        container.innerHTML = '<div style="font-size:11px;color:var(--red);padding:8px 0">Scan error: ' + err.message + '</div>';
+    });
+}
+
+function applyScanResult(idx) {
+    var opps = window._gmxScanResults || [];
+    if (idx >= opps.length) return;
+    var o = opps[idx];
+    window._gmxPendingPlan = o;
+    $('gmx-market').value = o.symbol;
+    $('gmx-leverage').value = o.leverage;
+    updateGMXLevLabel();
+    $('gmx-collateral-input').value = o.collateral_usd.toFixed(2);
+    $('gmx-tp-input').value = o.take_profit.toFixed(2);
+    $('gmx-sl-input').value = o.stop_loss.toFixed(2);
+    updateGMXEstimate();
+    showToast('Loaded ' + o.direction.toUpperCase() + ' ' + o.symbol + ' @ ' + o.leverage + 'x', 'info');
+}
+
 function startAutoRefresh() {
     // Fast: 2s — order book
     refreshTimers.push(setInterval(function() { loadOrderBook(); }, 2000));
@@ -4576,6 +5142,11 @@ function startAutoRefresh() {
         loadSentiment();
         loadMTF();
     }, 60000));
+
+    // GMX: 30s — positions + entry plan (only if panel open)
+    refreshTimers.push(setInterval(function() {
+        if (gmxPanelOpen) { loadGMXPositions(); loadGMXEntryPlan(); }
+    }, 30000));
 
     // Very slow: 120s — fear & greed, drawdown, dip/top
     refreshTimers.push(setInterval(function() {
