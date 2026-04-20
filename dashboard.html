@@ -7,66 +7,79 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b0e11' stroke='%2300d4ff' stroke-width='2'/><circle cx='16' cy='16' r='6' fill='%2300d4ff' opacity='0.8'/><circle cx='16' cy='16' r='2' fill='white'/></svg>">
 <style>
 :root {
-    --bg: #0b0e11;
-    --surface: #1e2329;
-    --surface-2: #2b3139;
-    --surface-3: #363c45;
-    --border: #2b3139;
-    --text: #eaecef;
-    --text-dim: #848e9c;
-    --text-muted: #5e6673;
-    --green: #0ecb81;
-    --green-bg: rgba(14,203,129,0.1);
-    --red: #f6465d;
-    --red-bg: rgba(246,70,93,0.1);
-    --accent: #00d4ff;
-    --accent-bg: rgba(0,212,255,0.1);
-    --yellow: #f0b90b;
-    --yellow-bg: rgba(240,185,11,0.1);
-    --orange: #ff8c00;
-    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-    --radius: 4px;
-    --transition: 0.15s ease;
+    --bg: #0a0d10;
+    --surface: rgba(22,27,34,0.75);
+    --surface-solid: #161b22;
+    --surface-2: rgba(40,48,58,0.65);
+    --surface-3: rgba(55,63,75,0.6);
+    --border: rgba(255,255,255,0.06);
+    --text: #f0f2f5;
+    --text-dim: #8b95a5;
+    --text-muted: #555f6d;
+    --green: #34d399;
+    --green-bg: rgba(52,211,153,0.1);
+    --red: #f87171;
+    --red-bg: rgba(248,113,113,0.1);
+    --accent: #38bdf8;
+    --accent-bg: rgba(56,189,248,0.08);
+    --yellow: #fbbf24;
+    --yellow-bg: rgba(251,191,36,0.1);
+    --orange: #fb923c;
+    --font: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --transition: 0.2s ease;
+    --blur: blur(20px);
+    --shadow: 0 8px 32px rgba(0,0,0,0.4);
+    --shadow-lg: 0 16px 48px rgba(0,0,0,0.5);
 }
 
 [data-theme="light"] {
-    --bg: #f5f5f5;
-    --surface: #ffffff;
-    --surface-2: #f0f0f0;
-    --surface-3: #e0e0e0;
-    --border: #d9d9d9;
-    --text: #1a1a1a;
-    --text-dim: #555555;
-    --text-muted: #999999;
-    --green: #0a9e6a;
-    --green-bg: rgba(10,158,106,0.1);
-    --red: #d63a4a;
-    --red-bg: rgba(214,58,74,0.1);
-    --accent: #0090b3;
-    --accent-bg: rgba(0,144,179,0.1);
-    --yellow: #c99400;
-    --yellow-bg: rgba(201,148,0,0.1);
-    --orange: #cc7000;
+    --bg: #f2f4f7;
+    --surface: rgba(255,255,255,0.72);
+    --surface-solid: #ffffff;
+    --surface-2: rgba(240,242,245,0.7);
+    --surface-3: rgba(225,228,232,0.65);
+    --border: rgba(0,0,0,0.06);
+    --text: #1a1a2e;
+    --text-dim: #555566;
+    --text-muted: #999aaa;
+    --green: #059669;
+    --green-bg: rgba(5,150,105,0.08);
+    --red: #dc2626;
+    --red-bg: rgba(220,38,38,0.08);
+    --accent: #0284c7;
+    --accent-bg: rgba(2,132,199,0.08);
+    --yellow: #d97706;
+    --yellow-bg: rgba(217,119,6,0.08);
+    --orange: #ea580c;
 }
 
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-html, body {
+html {
     height: 100%;
     background: var(--bg);
     color: var(--text);
     font-family: var(--font);
     font-size: 12px;
-    line-height: 1.4;
-    overflow: hidden;
-    user-select: none;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+body {
+    min-height: 100%;
+    background: var(--bg);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
 input, select, button, textarea {
     font-family: var(--font);
@@ -84,12 +97,16 @@ button:active { opacity: 0.7; }
 .navbar {
     display: flex;
     align-items: center;
-    height: 48px;
+    height: 52px;
     background: var(--surface);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     border-bottom: 1px solid var(--border);
-    padding: 0 12px;
+    padding: 0 16px;
     gap: 8px;
     z-index: 100;
+    position: sticky;
+    top: 0;
 }
 
 .navbar-logo {
@@ -126,16 +143,17 @@ button:active { opacity: 0.7; }
 }
 
 .navbar-menu a {
-    padding: 6px 12px;
+    padding: 6px 14px;
     color: var(--text-dim);
     text-decoration: none;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     font-size: 13px;
+    font-weight: 500;
     transition: all var(--transition);
 }
 
 .navbar-menu a:hover { color: var(--text); background: var(--surface-2); }
-.navbar-menu a.active { color: var(--yellow); }
+.navbar-menu a.active { color: var(--accent); background: var(--accent-bg); }
 
 .navbar-spacer { flex: 1; }
 
@@ -146,18 +164,21 @@ button:active { opacity: 0.7; }
 }
 
 .btn-nav {
-    padding: 5px 10px;
+    padding: 6px 12px;
     background: var(--surface-2);
+    backdrop-filter: var(--blur);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     color: var(--text-dim);
     font-size: 11px;
+    font-weight: 500;
     display: flex;
     align-items: center;
     gap: 4px;
+    transition: all var(--transition);
 }
 
-.btn-nav:hover { color: var(--text); border-color: var(--text-muted); }
+.btn-nav:hover { color: var(--text); background: var(--surface-3); border-color: rgba(255,255,255,0.12); }
 
 .btn-kill {
     background: var(--red-bg);
@@ -183,13 +204,18 @@ button:active { opacity: 0.7; }
 .asset-bar {
     display: flex;
     align-items: center;
-    height: 40px;
+    height: 44px;
     background: var(--surface);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     border-bottom: 1px solid var(--border);
-    padding: 0 12px;
+    padding: 0 16px;
     gap: 16px;
     font-size: 12px;
     overflow-x: auto;
+    position: sticky;
+    top: 52px;
+    z-index: 99;
 }
 
 .asset-selector {
@@ -248,8 +274,15 @@ button:active { opacity: 0.7; }
 /* ========== MAIN LAYOUT ========== */
 .main-layout {
     display: flex;
-    height: calc(100vh - 88px);
-    overflow: hidden;
+    flex-direction: column;
+    min-height: calc(100vh - 96px);
+    padding: 0;
+}
+
+.chart-section {
+    display: flex;
+    gap: 0;
+    min-height: 0;
 }
 
 .chart-area {
@@ -264,21 +297,24 @@ button:active { opacity: 0.7; }
 .chart-tabs {
     display: flex;
     align-items: center;
-    height: 32px;
+    height: 36px;
     background: var(--surface);
+    backdrop-filter: var(--blur);
     border-bottom: 1px solid var(--border);
-    padding: 0 8px;
-    gap: 2px;
+    padding: 0 12px;
+    gap: 4px;
 }
 .chart-tabs button {
-    padding: 4px 12px;
+    padding: 5px 14px;
     background: transparent;
     color: var(--text-dim);
     font-size: 11px;
-    border-radius: var(--radius);
+    font-weight: 500;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
 }
 .chart-tabs button:hover { color: var(--text); background: var(--surface-2); }
-.chart-tabs button.active { color: var(--yellow); }
+.chart-tabs button.active { color: var(--accent); background: var(--accent-bg); }
 .chart-tabs-spacer { flex: 1; }
 
 /* ========== CHART TOOLBAR ========== */
@@ -323,8 +359,8 @@ button:active { opacity: 0.7; }
 /* ========== CHART CONTAINER ========== */
 .chart-main-wrap {
     position: relative;
-    flex: 1;
-    min-height: 200px;
+    height: 55vh;
+    min-height: 300px;
     background: var(--bg);
 }
 
@@ -350,8 +386,8 @@ button:active { opacity: 0.7; }
 
 /* ========== SUB-CHARTS (RSI + MACD) ========== */
 .subchart-wrap {
-    height: 80px;
-    min-height: 60px;
+    height: 90px;
+    min-height: 70px;
     background: var(--bg);
     border-top: 1px solid var(--border);
     position: relative;
@@ -414,13 +450,15 @@ button:active { opacity: 0.7; }
 }
 .draw-toolbar button:hover { color: var(--text); background: var(--surface-2); }
 
-/* ========== RIGHT PANEL (orderbook + form + wallet) ========== */
+/* ========== RIGHT PANEL (orderbook only — order form is now floating) ========== */
 .right-panel {
-    width: 280px;
-    min-width: 280px;
+    width: 300px;
+    min-width: 300px;
     display: flex;
     flex-direction: column;
     background: var(--surface);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     overflow: hidden;
 }
 
@@ -544,13 +582,97 @@ button:active { opacity: 0.7; }
 .ob-ratio-bar .buy-bar { background: var(--green); height: 100%; }
 .ob-ratio-bar .sell-bar { background: var(--red); height: 100%; }
 
-/* ========== ORDER FORM ========== */
+/* ========== FLOATING ORDER WIDGET ========== */
+.order-widget {
+    position: fixed;
+    bottom: 40px;
+    right: 16px;
+    width: 320px;
+    max-height: 80vh;
+    z-index: 300;
+    display: none;
+    flex-direction: column;
+    background: var(--surface);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    transition: transform 0.3s cubic-bezier(0.32,0.72,0,1), opacity 0.3s ease;
+    transform: translateY(20px);
+    opacity: 0;
+}
+.order-widget.open {
+    display: flex;
+    transform: translateY(0);
+    opacity: 1;
+}
+.order-widget-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: grab;
+    user-select: none;
+}
+.order-widget-header:active { cursor: grabbing; }
+.order-widget-header .ow-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.order-widget-header .ow-title .ow-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+}
+.order-widget-header .ow-close {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-size: 14px;
+    transition: all var(--transition);
+}
+.order-widget-header .ow-close:hover { background: var(--red-bg); color: var(--red); }
+.order-widget-body { padding: 10px 14px; overflow-y: auto; max-height: 60vh; }
+
+.btn-trade-toggle {
+    position: fixed;
+    bottom: 40px;
+    right: 16px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), #0066cc);
+    color: white;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(56,189,248,0.4);
+    z-index: 299;
+    border: none;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+.btn-trade-toggle:hover { transform: scale(1.1); box-shadow: 0 6px 28px rgba(56,189,248,0.5); }
+.btn-trade-toggle.hidden { display: none; }
+
 .order-form {
-    border-top: 1px solid var(--border);
-    padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
 }
 
 .of-tabs {
@@ -703,10 +825,10 @@ button:active { opacity: 0.7; }
     font-weight: 600;
     letter-spacing: 0.5px;
 }
-.btn-long { background: var(--green); color: white; }
-.btn-long:hover { background: #0db874; }
-.btn-short { background: var(--red); color: white; }
-.btn-short:hover { background: #e03d54; }
+.btn-long { background: var(--green); color: white; border-radius: var(--radius-sm); }
+.btn-long:hover { filter: brightness(1.1); }
+.btn-short { background: var(--red); color: white; border-radius: var(--radius-sm); }
+.btn-short:hover { filter: brightness(1.1); }
 
 /* ========== WALLET ========== */
 .wallet-section {
@@ -744,13 +866,13 @@ button:active { opacity: 0.7; }
 
 /* ========== BOTTOM PANEL (positions table) ========== */
 .bottom-panel {
-    height: 200px;
-    min-height: 120px;
+    min-height: 200px;
     background: var(--surface);
+    backdrop-filter: var(--blur);
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    margin-top: 1px;
 }
 
 .bp-tabs {
@@ -763,15 +885,17 @@ button:active { opacity: 0.7; }
     flex-shrink: 0;
 }
 .bp-tabs button {
-    padding: 3px 10px;
+    padding: 4px 12px;
     background: transparent;
     color: var(--text-muted);
     font-size: 11px;
-    border-radius: var(--radius);
+    font-weight: 500;
+    border-radius: var(--radius-sm);
     position: relative;
+    transition: all var(--transition);
 }
-.bp-tabs button:hover { color: var(--text-dim); }
-.bp-tabs button.active { color: var(--text); }
+.bp-tabs button:hover { color: var(--text-dim); background: var(--surface-2); }
+.bp-tabs button.active { color: var(--accent); background: var(--accent-bg); }
 .bp-tabs button .badge {
     position: absolute;
     top: -2px;
@@ -865,17 +989,19 @@ button:active { opacity: 0.7; }
 /* ========== JARVIS CHAT PANEL ========== */
 .jarvis-chat {
     position: fixed;
-    bottom: 32px;
+    bottom: 40px;
     right: 12px;
-    width: 340px;
-    height: 420px;
+    width: 360px;
+    height: 440px;
     background: var(--surface);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 16px;
     display: none;
     flex-direction: column;
     z-index: 200;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
 }
 .jarvis-chat.open { display: flex; }
@@ -1031,10 +1157,12 @@ button:active { opacity: 0.7; }
 .footer {
     display: flex;
     align-items: center;
-    height: 28px;
+    height: 32px;
     background: var(--surface);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     border-top: 1px solid var(--border);
-    padding: 0 8px;
+    padding: 0 12px;
     gap: 12px;
     font-size: 10px;
     position: fixed;
@@ -1116,14 +1244,16 @@ button:active { opacity: 0.7; }
 
 .modal {
     background: var(--surface);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 16px;
     width: 480px;
     max-width: 90vw;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-lg);
 }
 
 .modal-header {
@@ -1210,6 +1340,87 @@ button:active { opacity: 0.7; }
 }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
+
+/* ========== MARKETS VIEW ========== */
+.markets-section {
+    display: none;
+    padding: 16px;
+    background: var(--bg);
+}
+.markets-section.visible { display: block; }
+
+.markets-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.markets-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+.markets-tabs {
+    display: flex;
+    gap: 4px;
+}
+.markets-tabs button {
+    padding: 5px 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 500;
+    transition: all var(--transition);
+}
+.markets-tabs button.active { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.markets-tabs button:hover { color: var(--text); }
+
+.markets-search {
+    margin-bottom: 12px;
+}
+.markets-search input {
+    width: 100%;
+    max-width: 320px;
+    padding: 8px 14px;
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 12px;
+    color: var(--text);
+}
+.markets-search input:focus { border-color: var(--accent); }
+.markets-search input::placeholder { color: var(--text-muted); }
+
+.markets-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+}
+
+.market-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.market-card:hover { border-color: rgba(255,255,255,0.12); background: var(--surface-2); transform: translateY(-1px); }
+.market-card .mc-left { display: flex; flex-direction: column; gap: 2px; }
+.market-card .mc-symbol { font-size: 13px; font-weight: 600; color: var(--text); }
+.market-card .mc-vol { font-size: 10px; color: var(--text-muted); }
+.market-card .mc-right { text-align: right; }
+.market-card .mc-price { font-size: 13px; font-weight: 600; font-family: var(--font-mono); color: var(--text); }
+.market-card .mc-change { font-size: 11px; font-weight: 600; font-family: var(--font-mono); padding: 2px 6px; border-radius: 4px; }
+.market-card .mc-change.up { color: var(--green); background: var(--green-bg); }
+.market-card .mc-change.down { color: var(--red); background: var(--red-bg); }
 
 /* Responsive — hamburger + overlay base */
 .btn-hamburger { display: none; font-size: 18px; }
@@ -1581,16 +1792,19 @@ button:active { opacity: 0.7; }
 /* GMX V2 Trading Panel */
 .gmx-panel {
     position: fixed;
-    top: 48px;
+    top: 52px;
     right: 0;
     width: 380px;
-    height: calc(100vh - 48px - 28px);
+    height: calc(100vh - 52px - 32px);
     background: var(--surface);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
     border-left: 1px solid var(--border);
     display: none;
     flex-direction: column;
     z-index: 800;
     overflow-y: auto;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.3);
 }
 .gmx-panel.open { display: flex; }
 .gmx-panel-header {
@@ -1785,10 +1999,9 @@ button:active { opacity: 0.7; }
         <span>J.A.R.V.I.S.</span>
     </div>
     <div class="navbar-menu">
-        <a href="#" class="active">USDT-M</a>
-        <a href="#">Coin-M</a>
-        <a href="#">Copy</a>
-        <a href="#">Grid</a>
+        <a href="#" class="active" id="nav-trade" onclick="switchView('trade'); return false;">Trade</a>
+        <a href="#" id="nav-markets" onclick="switchView('markets'); return false;">Markets</a>
+        <a href="#" onclick="toggleGMXPanel(); return false;">GMX Perps</a>
     </div>
     <button class="btn-nav btn-hamburger" id="btn-hamburger" onclick="toggleMobilePanel()">&#9776;</button>
     <div class="navbar-spacer"></div>
@@ -1797,7 +2010,6 @@ button:active { opacity: 0.7; }
         <button class="btn-nav btn-sound" id="btn-sound" onclick="toggleSound()">&#128266;</button>
         <button class="btn-nav" onclick="showAlertModal()">Alerts <span class="badge alert-badge" id="alert-badge" style="display:none">0</span></button>
         <button class="btn-nav" onclick="toggleJarvisChat()">AI</button>
-        <button class="btn-nav" onclick="toggleGMXPanel()" style="color:var(--accent)">GMX</button>
         <button class="btn-nav" onclick="showSettings()">Settings</button>
         <button class="btn-nav btn-kill" id="btn-killswitch" onclick="toggleKillSwitch()">KILL</button>
     </div>
@@ -1854,9 +2066,29 @@ button:active { opacity: 0.7; }
 <!-- HEATMAP -->
 <div class="heatmap-bar" id="heatmap-bar"></div>
 
-<!-- MAIN LAYOUT -->
-<div class="main-layout">
+<!-- MARKETS VIEW (hidden by default) -->
+<div class="markets-section" id="markets-section">
+    <div class="markets-header">
+        <h3>Futures Markets</h3>
+        <div class="markets-tabs">
+            <button class="active" onclick="filterMarkets('all')">All</button>
+            <button onclick="filterMarkets('gainers')">Gainers</button>
+            <button onclick="filterMarkets('losers')">Losers</button>
+            <button onclick="filterMarkets('volume')">Volume</button>
+        </div>
+    </div>
+    <div class="markets-search">
+        <input type="text" id="markets-search-input" placeholder="Search token..." oninput="searchMarkets(this.value)">
+    </div>
+    <div class="markets-grid" id="markets-grid">
+        <div style="color:var(--text-muted);padding:40px;text-align:center">Loading markets...</div>
+    </div>
+</div>
 
+<!-- MAIN LAYOUT -->
+<div class="main-layout" id="trade-view">
+
+<div class="chart-section">
     <!-- DRAWING TOOLBAR -->
     <div class="draw-toolbar">
         <button id="draw-cursor" title="Cursor" onclick="setDrawMode('cursor')" class="active">+</button>
@@ -1937,21 +2169,6 @@ button:active { opacity: 0.7; }
             <div id="pnl-container"></div>
         </div>
 
-        <!-- Bottom Panel (positions) -->
-        <div class="bottom-panel">
-            <div class="bp-tabs">
-                <button class="active" onclick="switchBPTab('positions')">Positions <span class="badge" id="pos-count" style="display:none">0</span></button>
-                <button onclick="switchBPTab('open-orders')">Open Orders</button>
-                <button onclick="switchBPTab('history')">Order History</button>
-                <button onclick="switchBPTab('paper')">Paper Trades</button>
-                <button onclick="switchBPTab('portfolio')">Portfolio</button>
-                <button onclick="switchBPTab('journal')">Journal</button>
-                <button onclick="switchBPTab('alerts')">Alerts</button>
-            </div>
-            <div class="bp-table-wrap" id="bp-content">
-                <div class="bp-empty">No open positions</div>
-            </div>
-        </div>
     </div>
 
     <!-- RIGHT PANEL -->
@@ -1989,7 +2206,52 @@ button:active { opacity: 0.7; }
             </div>
         </div>
 
-        <!-- Order Form -->
+        <!-- Wallet Summary -->
+        <div class="wallet-section">
+            <div class="wallet-row"><span class="wlabel">Balance</span><span class="wvalue" id="w-balance">--</span></div>
+            <div class="wallet-row"><span class="wlabel">Equity</span><span class="wvalue" id="w-equity">--</span></div>
+            <div class="wallet-row"><span class="wlabel">Available</span><span class="wvalue" id="w-available">--</span></div>
+            <div class="wallet-row"><span class="wlabel">Unrealized PNL</span><span class="wvalue" id="w-pnl">--</span></div>
+        </div>
+        <!-- Recent Trades -->
+        <div class="orderbook" style="max-height:180px;border-top:1px solid var(--border)">
+            <div class="orderbook-header"><span>Recent Trades</span></div>
+            <div class="orderbook-cols">
+                <span>Price</span>
+                <span>Qty</span>
+                <span>Time</span>
+            </div>
+            <div class="trades-list" id="trades-list"></div>
+        </div>
+    </div>
+
+</div><!-- /chart-section -->
+
+    <!-- Bottom Panel (positions) -->
+    <div class="bottom-panel">
+        <div class="bp-tabs">
+            <button class="active" onclick="switchBPTab('positions')">Positions <span class="badge" id="pos-count" style="display:none">0</span></button>
+            <button onclick="switchBPTab('open-orders')">Open Orders</button>
+            <button onclick="switchBPTab('history')">Order History</button>
+            <button onclick="switchBPTab('paper')">Paper Trades</button>
+            <button onclick="switchBPTab('portfolio')">Portfolio</button>
+            <button onclick="switchBPTab('journal')">Journal</button>
+        </div>
+        <div class="bp-table-wrap" id="bp-content">
+            <div class="bp-empty">No open positions</div>
+        </div>
+    </div>
+
+</div><!-- /main-layout -->
+
+<!-- FLOATING ORDER WIDGET -->
+<button class="btn-trade-toggle" id="btn-trade-toggle" onclick="toggleOrderWidget()">&#9654;</button>
+<div class="order-widget" id="order-widget">
+    <div class="order-widget-header" id="ow-header">
+        <span class="ow-title"><span class="ow-dot"></span>Trade</span>
+        <button class="ow-close" onclick="toggleOrderWidget()">&times;</button>
+    </div>
+    <div class="order-widget-body">
         <div class="order-form">
             <div class="of-tabs">
                 <button class="active" onclick="switchOrderTab('open')">Open</button>
@@ -2008,21 +2270,17 @@ button:active { opacity: 0.7; }
             <div class="of-type-tabs">
                 <button class="active" onclick="switchOrderType('limit')">Limit</button>
                 <button onclick="switchOrderType('market')">Market</button>
-                <button onclick="switchOrderType('oco')">OCO</button>
-                <button onclick="switchOrderType('trailing')">Trail</button>
-                <button onclick="switchOrderType('iceberg')">Iceberg</button>
-                <button onclick="switchOrderType('dca')">DCA</button>
             </div>
             <div class="of-field">
                 <label>Price</label>
-                <button onclick="adjustField('price',-1)">−</button>
+                <button onclick="adjustField('price',-1)">&#8722;</button>
                 <input type="text" id="order-price" placeholder="0.00">
                 <button onclick="adjustField('price',1)">+</button>
                 <span class="unit">USDT</span>
             </div>
             <div class="of-field">
                 <label>Qty</label>
-                <button onclick="adjustField('qty',-1)">−</button>
+                <button onclick="adjustField('qty',-1)">&#8722;</button>
                 <input type="text" id="order-qty" placeholder="0.000">
                 <button onclick="adjustField('qty',1)">+</button>
                 <span class="unit" id="qty-unit">BTC</span>
@@ -2038,28 +2296,6 @@ button:active { opacity: 0.7; }
                 <div class="of-field"><label>TP</label><input type="text" id="order-tp" placeholder="--"></div>
                 <div class="of-field"><label>SL</label><input type="text" id="order-sl" placeholder="--"></div>
             </div>
-            <!-- OCO fields -->
-            <div class="of-advanced" id="oco-fields">
-                <div class="of-field"><label>Limit Price</label><input type="text" id="oco-limit" placeholder="0.00"></div>
-                <div class="of-field"><label>Stop Price</label><input type="text" id="oco-stop" placeholder="0.00"></div>
-            </div>
-            <!-- Trailing fields -->
-            <div class="of-advanced" id="trailing-fields">
-                <div class="of-field"><label>Callback %</label><input type="text" id="trail-pct" placeholder="1.0"><span class="unit">%</span></div>
-                <div class="of-field"><label>Activation</label><input type="text" id="trail-activation" placeholder="Optional"></div>
-            </div>
-            <!-- Iceberg fields -->
-            <div class="of-advanced" id="iceberg-fields">
-                <div class="of-field"><label>Visible Qty</label><input type="text" id="ice-visible" placeholder="10"><span class="unit">%</span></div>
-                <div class="of-field"><label>Slices</label><input type="number" id="ice-slices" value="5" min="2" max="20"></div>
-            </div>
-            <!-- DCA fields -->
-            <div class="of-advanced" id="dca-fields">
-                <div class="of-field"><label>Levels</label><input type="number" id="dca-levels" value="5" min="2" max="10" oninput="updateDCAPreview()"></div>
-                <div class="of-field"><label>Step %</label><input type="text" id="dca-step" placeholder="2.0" oninput="updateDCAPreview()"><span class="unit">%</span></div>
-                <div class="of-field"><label>Multiplier</label><input type="text" id="dca-mult" placeholder="1.5" oninput="updateDCAPreview()"></div>
-                <div class="dca-preview" id="dca-preview"></div>
-            </div>
             <div class="of-info">
                 <span>Cost: <span id="order-cost">--</span></span>
                 <span>Fee: <span id="order-fee">--</span></span>
@@ -2069,32 +2305,8 @@ button:active { opacity: 0.7; }
                 <button class="btn-short" onclick="executeOrder('SHORT')">Short</button>
             </div>
         </div>
-
-        <!-- Wallet -->
-        <div class="wallet-section">
-            <div class="wallet-row"><span class="wlabel">Balance</span><span class="wvalue" id="w-balance">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Equity</span><span class="wvalue" id="w-equity">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Available</span><span class="wvalue" id="w-available">--</span></div>
-            <div class="wallet-row"><span class="wlabel">Unrealized PNL</span><span class="wvalue" id="w-pnl">--</span></div>
-            <div class="wallet-actions">
-                <button>Deposit</button>
-                <button>Transfer</button>
-            </div>
-        </div>
-
-        <!-- Recent Trades -->
-        <div class="orderbook" style="max-height:150px">
-            <div class="orderbook-header"><span>Recent Trades</span></div>
-            <div class="orderbook-cols">
-                <span>Price</span>
-                <span>Qty</span>
-                <span>Time</span>
-            </div>
-            <div class="trades-list" id="trades-list"></div>
-        </div>
     </div>
-
-</div><!-- /main-layout -->
+</div>
 
 <!-- MOBILE OVERLAY -->
 <div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobilePanel()"></div>
@@ -5391,6 +5603,100 @@ document.addEventListener('keydown', function(e) {
     var tfMap = { '1': '1m', '2': '5m', '3': '15m', '4': '30m', '5': '1h', '6': '4h', '7': '1d', '8': '1w' };
     if (tfMap[e.key]) { changeTF(tfMap[e.key]); e.preventDefault(); return; }
 });
+
+// ========== ORDER WIDGET TOGGLE ==========
+function toggleOrderWidget() {
+    var widget = $('order-widget');
+    var btn = $('btn-trade-toggle');
+    if (!widget) return;
+    if (widget.classList.contains('open')) {
+        widget.classList.remove('open');
+        if (btn) btn.classList.remove('hidden');
+    } else {
+        widget.classList.add('open');
+        if (btn) btn.classList.add('hidden');
+    }
+}
+
+// ========== VIEW SWITCHING (Trade / Markets) ==========
+function switchView(view) {
+    var tradeView = $('trade-view');
+    var marketsView = $('markets-section');
+    var navTrade = $('nav-trade');
+    var navMarkets = $('nav-markets');
+
+    document.querySelectorAll('.navbar-menu a').forEach(function(a) { a.classList.remove('active'); });
+
+    if (view === 'markets') {
+        if (tradeView) tradeView.style.display = 'none';
+        if (marketsView) marketsView.classList.add('visible');
+        if (navMarkets) navMarkets.classList.add('active');
+        loadMarkets();
+    } else {
+        if (tradeView) tradeView.style.display = '';
+        if (marketsView) marketsView.classList.remove('visible');
+        if (navTrade) navTrade.classList.add('active');
+    }
+}
+
+// ========== MARKETS VIEW ==========
+var marketsData = [];
+var marketsFilter = 'all';
+
+async function loadMarkets() {
+    try {
+        var resp = await fetch(API + '/api/markets');
+        if (!resp.ok) return;
+        var data = await resp.json();
+        marketsData = data.markets || [];
+        renderMarkets();
+    } catch (e) {
+        console.warn('loadMarkets:', e);
+    }
+}
+
+function renderMarkets() {
+    var grid = $('markets-grid');
+    if (!grid) return;
+
+    var filtered = marketsData.slice();
+    var search = ($('markets-search-input') || {}).value || '';
+    if (search) {
+        search = search.toUpperCase();
+        filtered = filtered.filter(function(m) { return m.symbol.indexOf(search) >= 0; });
+    }
+
+    if (marketsFilter === 'gainers') filtered = filtered.filter(function(m) { return m.change > 0; }).sort(function(a, b) { return b.change - a.change; });
+    else if (marketsFilter === 'losers') filtered = filtered.filter(function(m) { return m.change < 0; }).sort(function(a, b) { return a.change - b.change; });
+    else if (marketsFilter === 'volume') filtered.sort(function(a, b) { return b.volume - a.volume; });
+
+    var html = '';
+    for (var i = 0; i < filtered.length; i++) {
+        var m = filtered[i];
+        var sym = m.symbol.replace('USDT', '');
+        var chgClass = m.change >= 0 ? 'up' : 'down';
+        var chgSign = m.change >= 0 ? '+' : '';
+        html += '<div class="market-card" onclick="selectMarket(\'' + m.symbol + '\')">'
+            + '<div class="mc-left"><span class="mc-symbol">' + sym + '/USDT</span><span class="mc-vol">Vol: ' + fmtK(m.volume) + '</span></div>'
+            + '<div class="mc-right"><span class="mc-price">' + fmt(m.price) + '</span><span class="mc-change ' + chgClass + '">' + chgSign + m.change.toFixed(2) + '%</span></div>'
+            + '</div>';
+    }
+    grid.innerHTML = html || '<div style="color:var(--text-muted);padding:40px;text-align:center">No markets found</div>';
+}
+
+function filterMarkets(filter) {
+    marketsFilter = filter;
+    document.querySelectorAll('.markets-tabs button').forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+    renderMarkets();
+}
+
+function searchMarkets(val) { renderMarkets(); }
+
+function selectMarket(sym) {
+    switchView('trade');
+    changeSymbol(sym);
+}
 
 // ========== THEME TOGGLE ==========
 function applyChartTheme() {

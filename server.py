@@ -3291,6 +3291,38 @@ def api_ticker():
     return jsonify({"tickers": result})
 
 
+@app.route("/api/markets")
+def api_markets():
+    """Bulk futures-style market overview — returns top pairs with 24h stats."""
+    all_tickers = fetch_binance("/api/v3/ticker/24hr", ttl=30)
+    if not all_tickers:
+        return jsonify({"markets": []})
+
+    usdt_pairs = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+        "BNBUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
+        "LINKUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "NEARUSDT",
+        "APTUSDT", "ARBUSDT", "OPUSDT", "FILUSDT", "SUIUSDT",
+        "AAVEUSDT", "MKRUSDT", "INJUSDT", "TIAUSDT", "SEIUSDT",
+        "JUPUSDT", "WIFUSDT", "PEPEUSDT", "FETUSDT", "RENDERUSDT",
+    ]
+    ticker_map = {t["symbol"]: t for t in all_tickers if t.get("symbol")}
+    markets = []
+    for sym in usdt_pairs:
+        t = ticker_map.get(sym)
+        if not t:
+            continue
+        markets.append({
+            "symbol": sym,
+            "price": float(t.get("lastPrice", 0)),
+            "change": float(t.get("priceChangePercent", 0)),
+            "volume": float(t.get("quoteVolume", 0)),
+            "high": float(t.get("highPrice", 0)),
+            "low": float(t.get("lowPrice", 0)),
+        })
+    return jsonify({"markets": markets})
+
+
 # ===========================================================================
 # API ROUTES — Indicators & Intelligence (3 routes)
 # ===========================================================================
