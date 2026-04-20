@@ -3596,36 +3596,43 @@ async function loadIndicators(symbol, interval) {
         if (!resp.ok) return;
         const data = await resp.json();
 
-        const ind = data.indicators || {};
+        const ind = data;
         const regime = data.regime || {};
         const signal = data.signal || {};
 
-        // RSI sub-chart
+        // RSI sub-chart — server returns [{time, value}, ...]
         if (ind.rsi && rsiSeries) {
-            const rsiData = [];
-            for (let i = 0; i < ind.rsi.length; i++) {
-                if (ind.rsi[i] != null && candleData[i]) {
-                    rsiData.push({ time: epochToLocal(candleData[i].time), value: ind.rsi[i] });
+            var rsiData = [];
+            for (var i = 0; i < ind.rsi.length; i++) {
+                var pt = ind.rsi[i];
+                if (pt && pt.value != null) {
+                    rsiData.push({ time: epochToLocal(pt.time), value: pt.value });
                 }
             }
             rsiSeries.setData(rsiData);
         }
 
-        // MACD sub-chart
+        // MACD sub-chart — server returns {line: [{time,value},...], signal: [...], histogram: [...]}
         if (ind.macd && macdLineSeries) {
-            const macdL = [], macdS = [], macdH = [];
-            const macd = ind.macd;
-            for (let i = 0; i < (macd.line || []).length; i++) {
-                const ci = candleData.length - (macd.line.length - i);
-                if (ci < 0 || !candleData[ci]) continue;
-                const t = epochToLocal(candleData[ci].time);
-                if (macd.line[i] != null) macdL.push({ time: t, value: macd.line[i] });
-                if (macd.signal && macd.signal[i] != null) macdS.push({ time: t, value: macd.signal[i] });
-                if (macd.histogram && macd.histogram[i] != null) {
+            var macdL = [], macdS = [], macdH = [];
+            var macdLine = ind.macd.line || [];
+            var macdSig = ind.macd.signal || [];
+            var macdHist = ind.macd.histogram || [];
+            for (var j = 0; j < macdLine.length; j++) {
+                var mp = macdLine[j];
+                if (mp && mp.value != null) macdL.push({ time: epochToLocal(mp.time), value: mp.value });
+            }
+            for (var k = 0; k < macdSig.length; k++) {
+                var sp = macdSig[k];
+                if (sp && sp.value != null) macdS.push({ time: epochToLocal(sp.time), value: sp.value });
+            }
+            for (var h = 0; h < macdHist.length; h++) {
+                var hp = macdHist[h];
+                if (hp && hp.value != null) {
                     macdH.push({
-                        time: t,
-                        value: macd.histogram[i],
-                        color: macd.histogram[i] >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)',
+                        time: epochToLocal(hp.time),
+                        value: hp.value,
+                        color: hp.value >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)',
                     });
                 }
             }
@@ -3638,10 +3645,10 @@ async function loadIndicators(symbol, interval) {
         if (indicatorState.bb && ind.bollinger) applyBollinger(ind.bollinger);
 
         // EMA overlays
-        if (indicatorState.ema9 && ind.ema_9) applyEMA(ind.ema_9, 'ema9', '#f0b90b');
-        if (indicatorState.ema21 && ind.ema_21) applyEMA(ind.ema_21, 'ema21', '#ff8c00');
-        if (indicatorState.ema50 && ind.ema_50) applyEMA(ind.ema_50, 'ema50', '#00d4ff');
-        if (indicatorState.ema200 && ind.ema_200) applyEMA(ind.ema_200, 'ema200', '#e040fb');
+        if (indicatorState.ema9 && ind.ema9) applyEMA(ind.ema9, 'ema9', '#f0b90b');
+        if (indicatorState.ema21 && ind.ema21) applyEMA(ind.ema21, 'ema21', '#ff8c00');
+        if (indicatorState.ema50 && ind.ema50) applyEMA(ind.ema50, 'ema50', '#00d4ff');
+        if (indicatorState.ema200 && ind.ema200) applyEMA(ind.ema200, 'ema200', '#e040fb');
 
         // Update footer regime + signal
         updateRegimeDisplay(regime);
@@ -3654,11 +3661,11 @@ async function loadIndicators(symbol, interval) {
 
 // ========== INDICATOR OVERLAY HELPERS ==========
 function buildOverlayData(values) {
-    const result = [];
-    for (let i = 0; i < values.length; i++) {
-        const ci = candleData.length - (values.length - i);
-        if (ci < 0 || !candleData[ci] || values[i] == null) continue;
-        result.push({ time: epochToLocal(candleData[ci].time), value: values[i] });
+    var result = [];
+    for (var i = 0; i < values.length; i++) {
+        var pt = values[i];
+        if (!pt || pt.value == null) continue;
+        result.push({ time: epochToLocal(pt.time), value: pt.value });
     }
     return result;
 }
