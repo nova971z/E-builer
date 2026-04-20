@@ -1194,6 +1194,30 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Drawing canvas overlay */
+.draw-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 15;
+    pointer-events: none;
+}
+.draw-canvas.active { pointer-events: auto; cursor: crosshair; }
+.draw-toolbar button.active { color: var(--yellow); background: var(--surface-2); }
+.draw-text-input {
+    position: absolute;
+    z-index: 20;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 3px;
+    outline: none;
+}
+
 /* Toast stack */
 .toast-stack {
     position: fixed;
@@ -1497,14 +1521,15 @@ button:active { opacity: 0.7; }
 
     <!-- DRAWING TOOLBAR -->
     <div class="draw-toolbar">
-        <button title="Cursor">+</button>
-        <button title="Crosshair">&#9547;</button>
-        <button title="Trend Line">&#9585;</button>
-        <button title="Horizontal">&#8213;</button>
-        <button title="Fib Retracement">&#916;</button>
-        <button title="Rectangle">&#9633;</button>
-        <button title="Text">T</button>
-        <button title="Measure">&#8614;</button>
+        <button id="draw-cursor" title="Cursor" onclick="setDrawMode('cursor')" class="active">+</button>
+        <button id="draw-crosshair" title="Crosshair" onclick="setDrawMode('crosshair')">&#9547;</button>
+        <button id="draw-trendline" title="Trend Line" onclick="setDrawMode('trendline')">&#9585;</button>
+        <button id="draw-hline" title="Horizontal" onclick="setDrawMode('hline')">&#8213;</button>
+        <button id="draw-fib" title="Fib Retracement" onclick="setDrawMode('fib')">&#916;</button>
+        <button id="draw-rect" title="Rectangle" onclick="setDrawMode('rect')">&#9633;</button>
+        <button id="draw-text" title="Text" onclick="setDrawMode('text')">T</button>
+        <button id="draw-measure" title="Measure" onclick="setDrawMode('measure')">&#8614;</button>
+        <button id="draw-clear" title="Clear All" onclick="clearDrawings()" style="margin-top:auto;color:var(--red)">&#10005;</button>
     </div>
 
     <!-- CHART AREA -->
@@ -1548,6 +1573,7 @@ button:active { opacity: 0.7; }
                 <span><span class="lbl">V</span><span id="ov-v">--</span></span>
             </div>
             <div id="chart-container"></div>
+            <canvas id="draw-canvas" class="draw-canvas"></canvas>
         </div>
 
         <!-- RSI Sub-chart -->
@@ -1929,6 +1955,12 @@ const indicatorState = {
     bb: false, ema9: false, ema21: false, ema50: false, ema200: false, vol: true
 };
 
+// Drawing state
+let drawMode = 'cursor';
+let drawStart = null;
+let drawings = [];
+let drawCtx = null;
+
 let sparklineData = {};
 let toastStack = [];
 let currentTheme = localStorage.getItem('jarvis_theme') || 'dark';
@@ -2044,6 +2076,9 @@ function initMainChart() {
     new ResizeObserver(function() {
         mainChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
     }).observe(container);
+
+    mainChart.timeScale().subscribeVisibleTimeRangeChange(function() { renderAllDrawings(); });
+    initDrawCanvas();
 }
 
 // ========== INIT SUB-CHARTS ==========
@@ -2346,6 +2381,7 @@ function toggleIndicator(key) {
 
 // ========== CHANGE SYMBOL / TIMEFRAME ==========
 function changeSymbol(sym) {
+    saveDrawings();
     currentSymbol = sym;
     $('symbol-select').value = sym;
     const unit = sym.replace('USDT', '').replace('GOLD', 'XAU').replace('SILVER', 'XAG');
@@ -2362,9 +2398,11 @@ function changeSymbol(sym) {
     updateAssetSparkline();
     loadMTF();
     checkAlerts();
+    loadDrawings();
 }
 
 function changeTF(tf) {
+    saveDrawings();
     currentInterval = tf;
     document.querySelectorAll('.tf-btn').forEach(function(b) { b.classList.remove('active'); });
     document.querySelectorAll('.tf-btn').forEach(function(b) {
@@ -2378,6 +2416,7 @@ function changeTF(tf) {
     removeEMA('ema200');
 
     loadCandles(currentSymbol, tf);
+    loadDrawings();
 }
 
 // ========== DISPLAY HELPERS ==========
@@ -3482,6 +3521,297 @@ async function loadWhales(symbol) {
     }
 }
 
+// ========== DRAWING TOOLS ==========
+function setDrawMode(mode) {
+    drawMode = mode;
+    document.querySelectorAll('.draw-toolbar button').forEach(function(b) { b.classList.remove('active'); });
+    var btn = $('draw-' + mode);
+    if (btn) btn.classList.add('active');
+    var canvas = $('draw-canvas');
+    if (canvas) {
+        if (mode !== 'cursor') canvas.classList.add('active');
+        else canvas.classList.remove('active');
+    }
+}
+
+function pixelToPrice(y) {
+    if (!mainChart) return 0;
+    try { return mainChart.priceScale('right').coordinateToPrice(y); }
+    catch (e) { return 0; }
+}
+
+function pixelToTime(x) {
+    if (!mainChart) return 0;
+    try { return mainChart.timeScale().coordinateToTime(x); }
+    catch (e) { return 0; }
+}
+
+function priceToPixel(price) {
+    if (!mainChart) return 0;
+    try { return mainChart.priceScale('right').priceToCoordinate(price); }
+    catch (e) { return 0; }
+}
+
+function timeToPixel(time) {
+    if (!mainChart) return 0;
+    try { return mainChart.timeScale().timeToCoordinate(time); }
+    catch (e) { return 0; }
+}
+
+function initDrawCanvas() {
+    var canvas = $('draw-canvas');
+    var container = $('chart-container');
+    if (!canvas || !container) return;
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    drawCtx = canvas.getContext('2d');
+
+    new ResizeObserver(function() {
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        renderAllDrawings();
+    }).observe(container);
+
+    canvas.addEventListener('mousedown', onDrawMouseDown);
+    canvas.addEventListener('mousemove', onDrawMouseMove);
+    canvas.addEventListener('mouseup', onDrawMouseUp);
+}
+
+function onDrawMouseDown(e) {
+    if (drawMode === 'cursor') return;
+    var rect = e.target.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var y = e.clientY - rect.top;
+
+    if (drawMode === 'hline') {
+        var price = pixelToPrice(y);
+        if (price) {
+            drawings.push({type: 'hline', price: price});
+            saveDrawings();
+            renderAllDrawings();
+        }
+        return;
+    }
+
+    if (drawMode === 'text') {
+        var price = pixelToPrice(y);
+        var time = pixelToTime(x);
+        var txt = prompt('Enter annotation text:');
+        if (txt && price && time) {
+            drawings.push({type: 'text', price: price, time: time, text: txt});
+            saveDrawings();
+            renderAllDrawings();
+        }
+        return;
+    }
+
+    drawStart = {x: x, y: y, price: pixelToPrice(y), time: pixelToTime(x)};
+}
+
+function onDrawMouseMove(e) {
+    if (!drawStart || drawMode === 'cursor') return;
+    var rect = e.target.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var y = e.clientY - rect.top;
+    renderAllDrawings();
+    renderDrawingPreview(drawStart.x, drawStart.y, x, y);
+}
+
+function onDrawMouseUp(e) {
+    if (!drawStart || drawMode === 'cursor') return;
+    var rect = e.target.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var y = e.clientY - rect.top;
+    var endPrice = pixelToPrice(y);
+    var endTime = pixelToTime(x);
+
+    if (drawMode === 'trendline' || drawMode === 'crosshair') {
+        drawings.push({type: 'trendline', from: {price: drawStart.price, time: drawStart.time}, to: {price: endPrice, time: endTime}});
+    } else if (drawMode === 'fib') {
+        drawings.push({type: 'fib', from: {price: drawStart.price, time: drawStart.time}, to: {price: endPrice, time: endTime}});
+    } else if (drawMode === 'rect') {
+        drawings.push({type: 'rect', from: {price: drawStart.price, time: drawStart.time}, to: {price: endPrice, time: endTime}});
+    } else if (drawMode === 'measure') {
+        drawings.push({type: 'measure', from: {price: drawStart.price, time: drawStart.time}, to: {price: endPrice, time: endTime}});
+    }
+
+    drawStart = null;
+    saveDrawings();
+    renderAllDrawings();
+}
+
+function renderDrawingPreview(x1, y1, x2, y2) {
+    if (!drawCtx) return;
+    drawCtx.save();
+    drawCtx.setLineDash([4, 3]);
+    drawCtx.strokeStyle = 'rgba(0, 212, 255, 0.6)';
+    drawCtx.lineWidth = 1;
+
+    if (drawMode === 'trendline' || drawMode === 'crosshair' || drawMode === 'measure') {
+        drawCtx.beginPath();
+        drawCtx.moveTo(x1, y1);
+        drawCtx.lineTo(x2, y2);
+        drawCtx.stroke();
+    } else if (drawMode === 'rect') {
+        drawCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    } else if (drawMode === 'fib') {
+        drawCtx.beginPath();
+        drawCtx.moveTo(x1, y1);
+        drawCtx.lineTo(x2, y2);
+        drawCtx.stroke();
+    }
+    drawCtx.restore();
+}
+
+function renderAllDrawings() {
+    if (!drawCtx) return;
+    var canvas = $('draw-canvas');
+    if (!canvas) return;
+    drawCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (var i = 0; i < drawings.length; i++) {
+        var d = drawings[i];
+        if (d.type === 'trendline') drawTrendLine(d);
+        else if (d.type === 'hline') drawHLine(d);
+        else if (d.type === 'fib') drawFibRetracement(d);
+        else if (d.type === 'rect') drawRectangle(d);
+        else if (d.type === 'text') drawTextAnnotation(d);
+        else if (d.type === 'measure') drawMeasureLine(d);
+    }
+}
+
+function drawTrendLine(d) {
+    var x1 = timeToPixel(d.from.time);
+    var y1 = priceToPixel(d.from.price);
+    var x2 = timeToPixel(d.to.time);
+    var y2 = priceToPixel(d.to.price);
+    if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+    drawCtx.save();
+    drawCtx.strokeStyle = '#00d4ff';
+    drawCtx.lineWidth = 1.5;
+    drawCtx.beginPath();
+    drawCtx.moveTo(x1, y1);
+    drawCtx.lineTo(x2, y2);
+    drawCtx.stroke();
+    drawCtx.restore();
+}
+
+function drawHLine(d) {
+    var canvas = $('draw-canvas');
+    var y = priceToPixel(d.price);
+    if (y == null || !canvas) return;
+    drawCtx.save();
+    drawCtx.strokeStyle = '#f0b90b';
+    drawCtx.lineWidth = 1;
+    drawCtx.setLineDash([5, 3]);
+    drawCtx.beginPath();
+    drawCtx.moveTo(0, y);
+    drawCtx.lineTo(canvas.width, y);
+    drawCtx.stroke();
+    drawCtx.font = '10px monospace';
+    drawCtx.fillStyle = '#f0b90b';
+    drawCtx.fillText(fmt(d.price), canvas.width - 70, y - 3);
+    drawCtx.restore();
+}
+
+function drawFibRetracement(d) {
+    var canvas = $('draw-canvas');
+    if (!canvas) return;
+    var levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+    var colors = ['#0ecb81', '#26a69a', '#66bb6a', '#f0b90b', '#ef5350', '#e53935', '#f6465d'];
+    var range = d.to.price - d.from.price;
+
+    drawCtx.save();
+    drawCtx.lineWidth = 1;
+    drawCtx.font = '9px monospace';
+    for (var i = 0; i < levels.length; i++) {
+        var price = d.from.price + range * levels[i];
+        var y = priceToPixel(price);
+        if (y == null) continue;
+        drawCtx.strokeStyle = colors[i];
+        drawCtx.fillStyle = colors[i];
+        drawCtx.setLineDash([3, 2]);
+        drawCtx.beginPath();
+        drawCtx.moveTo(0, y);
+        drawCtx.lineTo(canvas.width, y);
+        drawCtx.stroke();
+        drawCtx.fillText((levels[i] * 100).toFixed(1) + '% ' + fmt(price), 4, y - 3);
+    }
+    drawCtx.restore();
+}
+
+function drawRectangle(d) {
+    var x1 = timeToPixel(d.from.time);
+    var y1 = priceToPixel(d.from.price);
+    var x2 = timeToPixel(d.to.time);
+    var y2 = priceToPixel(d.to.price);
+    if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+    drawCtx.save();
+    drawCtx.fillStyle = 'rgba(0, 212, 255, 0.08)';
+    drawCtx.strokeStyle = '#00d4ff';
+    drawCtx.lineWidth = 1;
+    drawCtx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    drawCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    drawCtx.restore();
+}
+
+function drawTextAnnotation(d) {
+    var x = timeToPixel(d.time);
+    var y = priceToPixel(d.price);
+    if (x == null || y == null) return;
+    drawCtx.save();
+    drawCtx.font = '11px sans-serif';
+    drawCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#e0e0e0';
+    drawCtx.fillText(d.text, x, y);
+    drawCtx.restore();
+}
+
+function drawMeasureLine(d) {
+    var x1 = timeToPixel(d.from.time);
+    var y1 = priceToPixel(d.from.price);
+    var x2 = timeToPixel(d.to.time);
+    var y2 = priceToPixel(d.to.price);
+    if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+    drawCtx.save();
+    drawCtx.strokeStyle = '#9b59b6';
+    drawCtx.lineWidth = 1;
+    drawCtx.setLineDash([4, 2]);
+    drawCtx.beginPath();
+    drawCtx.moveTo(x1, y1);
+    drawCtx.lineTo(x2, y2);
+    drawCtx.stroke();
+    var delta = d.to.price - d.from.price;
+    var pct = d.from.price ? ((delta / d.from.price) * 100).toFixed(2) : '0.00';
+    var sign = delta >= 0 ? '+' : '';
+    var midX = (x1 + x2) / 2;
+    var midY = (y1 + y2) / 2;
+    drawCtx.fillStyle = '#9b59b6';
+    drawCtx.font = '10px monospace';
+    drawCtx.fillText(sign + fmt(delta, 2) + ' (' + sign + pct + '%)', midX + 5, midY - 5);
+    drawCtx.restore();
+}
+
+function saveDrawings() {
+    var key = 'drawings_' + currentSymbol + '_' + currentInterval;
+    try { localStorage.setItem(key, JSON.stringify(drawings)); } catch (e) {}
+}
+
+function loadDrawings() {
+    var key = 'drawings_' + currentSymbol + '_' + currentInterval;
+    try {
+        var stored = localStorage.getItem(key);
+        drawings = stored ? JSON.parse(stored) : [];
+    } catch (e) { drawings = []; }
+    renderAllDrawings();
+}
+
+function clearDrawings() {
+    drawings = [];
+    var key = 'drawings_' + currentSymbol + '_' + currentInterval;
+    try { localStorage.removeItem(key); } catch (e) {}
+    renderAllDrawings();
+}
+
 // ========== ALERTS ==========
 function showAlertModal() {
     loadAlertList();
@@ -3890,6 +4220,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initRSIChart();
     initMACDChart();
     syncTimeScales();
+    loadDrawings();
 
     // First data load
     updateClock();
