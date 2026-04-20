@@ -30,7 +30,27 @@
     --transition: 0.15s ease;
 }
 
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+[data-theme="light"] {
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --surface-2: #f0f0f0;
+    --surface-3: #e0e0e0;
+    --border: #d9d9d9;
+    --text: #1a1a1a;
+    --text-dim: #555555;
+    --text-muted: #999999;
+    --green: #0a9e6a;
+    --green-bg: rgba(10,158,106,0.1);
+    --red: #d63a4a;
+    --red-bg: rgba(214,58,74,0.1);
+    --accent: #0090b3;
+    --accent-bg: rgba(0,144,179,0.1);
+    --yellow: #c99400;
+    --yellow-bg: rgba(201,148,0,0.1);
+    --orange: #cc7000;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
 
 html, body {
     height: 100%;
@@ -1172,6 +1192,8 @@ button:active { opacity: 0.7; }
     color: var(--text-dim);
 }
 
+.btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
+
 </style>
 </head>
 <body>
@@ -1190,6 +1212,7 @@ button:active { opacity: 0.7; }
     </div>
     <div class="navbar-spacer"></div>
     <div class="navbar-actions">
+        <button class="btn-nav btn-theme" id="btn-theme" onclick="toggleTheme()">&#9788;</button>
         <button class="btn-nav" onclick="toggleJarvisChat()">AI</button>
         <button class="btn-nav" onclick="showSettings()">Settings</button>
         <button class="btn-nav btn-kill" id="btn-killswitch" onclick="toggleKillSwitch()">KILL</button>
@@ -1613,6 +1636,31 @@ const indicatorState = {
     bb: false, ema9: false, ema21: false, ema50: false, ema200: false, vol: true
 };
 
+let currentTheme = localStorage.getItem('jarvis_theme') || 'dark';
+
+var CHART_THEMES = {
+    dark: {
+        bg: '#0b0e11',
+        text: '#848e9c',
+        textMuted: '#5e6673',
+        grid: 'rgba(43,49,57,0.5)',
+        gridSub: 'rgba(43,49,57,0.3)',
+        border: '#2b3139',
+        crosshair: 'rgba(255,255,255,0.2)',
+        watermark: 'rgba(0,212,255,0.04)',
+    },
+    light: {
+        bg: '#ffffff',
+        text: '#555555',
+        textMuted: '#999999',
+        grid: 'rgba(0,0,0,0.06)',
+        gridSub: 'rgba(0,0,0,0.04)',
+        border: '#d9d9d9',
+        crosshair: 'rgba(0,0,0,0.15)',
+        watermark: 'rgba(0,144,179,0.04)',
+    }
+};
+
 // ========== UTILITIES ==========
 function fmt(n, decimals) {
     if (n == null || isNaN(n)) return '--';
@@ -1635,39 +1683,23 @@ function epochToLocal(ts) {
 }
 
 // ========== CHART THEME ==========
-const chartOptions = {
-    layout: {
-        background: { color: '#0b0e11' },
-        textColor: '#848e9c',
-        fontSize: 11,
-        fontFamily: "'SF Mono', 'Consolas', monospace",
-    },
-    grid: {
-        vertLines: { color: 'rgba(43,49,57,0.5)' },
-        horzLines: { color: 'rgba(43,49,57,0.5)' },
-    },
-    crosshair: {
-        mode: LightweightCharts.CrosshairMode.Normal,
-        vertLine: { color: 'rgba(255,255,255,0.2)', style: 0, width: 1 },
-        horzLine: { color: 'rgba(255,255,255,0.2)', style: 0, width: 1 },
-    },
-    rightPriceScale: {
-        borderColor: '#2b3139',
-        scaleMargins: { top: 0.05, bottom: 0.05 },
-    },
-    timeScale: {
-        borderColor: '#2b3139',
-        timeVisible: true,
-        secondsVisible: false,
-    },
-    watermark: {
-        visible: true,
-        text: 'J.A.R.V.I.S.',
-        fontSize: 48,
-        color: 'rgba(0,212,255,0.04)',
-    },
-    handleScroll: { vertTouchDrag: false },
-};
+function getChartOptions() {
+    var t = CHART_THEMES[currentTheme];
+    return {
+        layout: { background: { color: t.bg }, textColor: t.text, fontSize: 11, fontFamily: "'SF Mono', 'Consolas', monospace" },
+        grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: { color: t.crosshair, style: 0, width: 1 },
+            horzLine: { color: t.crosshair, style: 0, width: 1 },
+        },
+        rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.05, bottom: 0.05 } },
+        timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false },
+        watermark: { visible: true, text: 'J.A.R.V.I.S.', fontSize: 48, color: t.watermark },
+        handleScroll: { vertTouchDrag: false },
+    };
+}
+var chartOptions = getChartOptions();
 
 // ========== INIT MAIN CHART ==========
 function initMainChart() {
@@ -1675,7 +1707,7 @@ function initMainChart() {
     if (!container) return;
 
     mainChart = LightweightCharts.createChart(container, {
-        ...chartOptions,
+        ...getChartOptions(),
         width: container.clientWidth,
         height: container.clientHeight,
     });
@@ -1720,24 +1752,25 @@ function initMainChart() {
 }
 
 // ========== INIT SUB-CHARTS ==========
-const subChartOptions = {
-    layout: { background: { color: '#0b0e11' }, textColor: '#5e6673', fontSize: 10 },
-    grid: {
-        vertLines: { color: 'rgba(43,49,57,0.3)' },
-        horzLines: { color: 'rgba(43,49,57,0.3)' },
-    },
-    rightPriceScale: { borderColor: '#2b3139', scaleMargins: { top: 0.1, bottom: 0.1 } },
-    timeScale: { visible: false },
-    crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
-    handleScroll: { vertTouchDrag: false },
-};
+function getSubChartOptions() {
+    var t = CHART_THEMES[currentTheme];
+    return {
+        layout: { background: { color: t.bg }, textColor: t.textMuted, fontSize: 10 },
+        grid: { vertLines: { color: t.gridSub }, horzLines: { color: t.gridSub } },
+        rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.1, bottom: 0.1 } },
+        timeScale: { visible: false },
+        crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
+        handleScroll: { vertTouchDrag: false },
+    };
+}
+var subChartOptions = getSubChartOptions();
 
 function initRSIChart() {
     const container = $('rsi-container');
     if (!container) return;
 
     rsiChart = LightweightCharts.createChart(container, {
-        ...subChartOptions,
+        ...getSubChartOptions(),
         width: container.clientWidth,
         height: container.clientHeight,
     });
@@ -1762,7 +1795,7 @@ function initMACDChart() {
     if (!container) return;
 
     macdChart = LightweightCharts.createChart(container, {
-        ...subChartOptions,
+        ...getSubChartOptions(),
         width: container.clientWidth,
         height: container.clientHeight,
     });
@@ -3139,8 +3172,33 @@ document.addEventListener('keydown', function(e) {
     if (tfMap[e.key]) { changeTF(tfMap[e.key]); e.preventDefault(); return; }
 });
 
+// ========== THEME TOGGLE ==========
+function applyChartTheme() {
+    var opts = getChartOptions();
+    var subOpts = getSubChartOptions();
+    if (mainChart) mainChart.applyOptions(opts);
+    if (rsiChart) rsiChart.applyOptions(subOpts);
+    if (macdChart) macdChart.applyOptions(subOpts);
+}
+
+function toggleTheme() {
+    currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    localStorage.setItem('jarvis_theme', currentTheme);
+    applyChartTheme();
+    var btn = $('btn-theme');
+    if (btn) btn.textContent = currentTheme === 'dark' ? '\u263C' : '\u263E';
+}
+
 // ========== INIT ON DOM READY ==========
 document.addEventListener('DOMContentLoaded', function() {
+    // Apply saved theme
+    if (currentTheme === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+    }
+    var themeBtn = $('btn-theme');
+    if (themeBtn) themeBtn.textContent = currentTheme === 'dark' ? '\u263C' : '\u263E';
+
     // Init charts
     initMainChart();
     initRSIChart();
