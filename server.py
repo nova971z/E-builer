@@ -2799,6 +2799,76 @@ def api_sparklines():
     return jsonify(result)
 
 
+@app.route("/api/mtf-signals")
+def api_mtf_signals():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if not sym_info:
+        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
+
+    timeframes = ["1h", "4h", "1d", "1w"]
+    tf_results = {}
+
+    for tf in timeframes:
+        try:
+            if sym_info["source"] == "stooq":
+                ohlcv = generate_gold_silver_candles(sym_info, 200)
+            else:
+                raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": tf, "limit": 200}, ttl=30)
+                if not raw:
+                    continue
+                ohlcv = transform_klines(raw)
+
+            if len(ohlcv) < 30:
+                continue
+
+            indicators = compute_all_indicators(ohlcv)
+            raw_ind = indicators["_raw"]
+            regime_info = regime_detector.detect(ohlcv, raw_ind)
+            signal_info = signal_engine.generate(raw_ind, regime_info)
+
+            rsi_val = raw_ind.get("rsi", [0])[-1] if raw_ind.get("rsi") else 0
+            macd_line = raw_ind.get("macd_line", [0])[-1] if raw_ind.get("macd_line") else 0
+            macd_signal = raw_ind.get("macd_signal", [0])[-1] if raw_ind.get("macd_signal") else 0
+
+            if macd_line > macd_signal * 1.01:
+                macd_dir = "bullish"
+            elif macd_line < macd_signal * 0.99:
+                macd_dir = "bearish"
+            else:
+                macd_dir = "flat"
+
+            tf_results[tf] = {
+                "rsi": round(rsi_val, 1),
+                "macd": macd_dir,
+                "regime": regime_info.get("regime", "UNKNOWN"),
+                "direction": signal_info.get("direction", "NEUTRAL"),
+                "confidence": signal_info.get("confidence", 0),
+            }
+        except Exception:
+            continue
+
+    directions = [v["direction"] for v in tf_results.values() if v["direction"] != "NEUTRAL"]
+    if directions:
+        from collections import Counter
+        counts = Counter(directions)
+        majority_dir = counts.most_common(1)[0][0]
+        agreement = counts[majority_dir]
+    else:
+        majority_dir = "NEUTRAL"
+        agreement = 0
+
+    total = len(tf_results)
+    confluence = {
+        "direction": majority_dir,
+        "agreement": agreement,
+        "total": total,
+        "pct": round(agreement / total * 100) if total else 0,
+    }
+
+    return jsonify({"symbol": symbol, "timeframes": tf_results, "confluence": confluence})
+
+
 @app.route("/")
 def serve_dashboard():
     return send_from_directory(str(BASE_DIR), "dashboard.html")

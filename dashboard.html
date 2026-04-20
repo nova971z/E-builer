@@ -1194,6 +1194,87 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Multi-Timeframe Panel */
+.mtf-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin: 8px 10px;
+    padding: 10px;
+    font-size: 11px;
+    transition: max-height 0.25s ease, padding 0.25s ease;
+    max-height: 400px;
+    overflow: hidden;
+}
+.mtf-panel.collapsed { max-height: 32px; padding: 6px 10px; }
+.mtf-panel.collapsed .mtf-grid,
+.mtf-panel.collapsed .mtf-confluence { display: none; }
+.mtf-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-weight: 700;
+    color: var(--text);
+    font-size: 12px;
+}
+.mtf-header button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 12px;
+    transition: transform 0.2s ease;
+}
+.mtf-panel.collapsed .mtf-header button { transform: rotate(-90deg); }
+.mtf-grid { display: flex; flex-direction: column; gap: 4px; }
+.mtf-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 3px;
+    background: var(--surface-2);
+}
+.mtf-row .mtf-tf { width: 28px; font-weight: 700; color: var(--accent); }
+.mtf-row .mtf-cell { display: flex; align-items: center; gap: 3px; }
+.mtf-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.mtf-dot.bull { background: var(--green); }
+.mtf-dot.bear { background: var(--red); }
+.mtf-dot.neutral { background: var(--text-muted); }
+.mtf-dir { font-weight: 700; font-size: 11px; }
+.mtf-dir.long { color: var(--green); }
+.mtf-dir.short { color: var(--red); }
+.mtf-dir.neutral { color: var(--text-muted); }
+.mtf-confluence {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-radius: 3px;
+    background: var(--surface-2);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 11px;
+}
+.mtf-confluence-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.mtf-confluence-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
 /* Heatmap bar */
 .heatmap-bar {
     display: flex;
@@ -1513,6 +1594,16 @@ button:active { opacity: 0.7; }
     </div>
 
 </div><!-- /main-layout -->
+
+<!-- MTF PANEL -->
+<div class="mtf-panel" id="mtf-panel">
+    <div class="mtf-header">
+        <span>&#9201; Multi-Timeframe</span>
+        <button onclick="toggleMTFPanel()">&#9660;</button>
+    </div>
+    <div class="mtf-grid" id="mtf-grid"></div>
+    <div class="mtf-confluence" id="mtf-confluence">Confluence: --</div>
+</div>
 
 <!-- JARVIS CHAT -->
 <div class="jarvis-chat" id="jarvis-chat">
@@ -2110,6 +2201,7 @@ function changeSymbol(sym) {
 
     loadCandles(sym, currentInterval);
     updateAssetSparkline();
+    loadMTF();
 }
 
 function changeTF(tf) {
@@ -3208,6 +3300,60 @@ async function loadWhales(symbol) {
     }
 }
 
+// ========== MULTI-TIMEFRAME PANEL ==========
+function toggleMTFPanel() {
+    var panel = $('mtf-panel');
+    if (panel) panel.classList.toggle('collapsed');
+}
+
+async function loadMTF() {
+    try {
+        var resp = await fetch(API + '/api/mtf-signals?symbol=' + currentSymbol);
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var tfs = data.timeframes || {};
+        var gridEl = $('mtf-grid');
+        var confEl = $('mtf-confluence');
+        if (!gridEl) return;
+
+        var html = '';
+        var tfOrder = ['1h', '4h', '1d', '1w'];
+        for (var i = 0; i < tfOrder.length; i++) {
+            var tf = tfOrder[i];
+            var info = tfs[tf];
+            if (!info) continue;
+
+            var rsiColor = info.rsi < 30 ? 'var(--green)' : (info.rsi > 70 ? 'var(--red)' : 'var(--text-dim)');
+            var macdCls = info.macd === 'bullish' ? 'bull' : (info.macd === 'bearish' ? 'bear' : 'neutral');
+            var regimeCls = info.regime === 'BULL' ? 'bull' : (info.regime === 'BEAR' ? 'bear' : (info.regime === 'CRISIS' ? 'bear' : 'neutral'));
+            var dirCls = info.direction === 'LONG' ? 'long' : (info.direction === 'SHORT' ? 'short' : 'neutral');
+            var dirArrow = info.direction === 'LONG' ? '&#9650;' : (info.direction === 'SHORT' ? '&#9660;' : '&#9670;');
+
+            html += '<div class="mtf-row">'
+                + '<span class="mtf-tf">' + tf + '</span>'
+                + '<span class="mtf-cell" style="color:' + rsiColor + '">RSI ' + info.rsi + '</span>'
+                + '<span class="mtf-cell"><span class="mtf-dot ' + macdCls + '"></span>MACD</span>'
+                + '<span class="mtf-cell"><span class="mtf-dot ' + regimeCls + '"></span>' + info.regime + '</span>'
+                + '<span class="mtf-cell mtf-dir ' + dirCls + '">' + dirArrow + ' ' + info.direction + '</span>'
+                + '<span class="mtf-cell" style="color:var(--text-dim)">' + info.confidence + '%</span>'
+                + '</div>';
+        }
+        gridEl.innerHTML = html;
+
+        if (confEl && data.confluence) {
+            var c = data.confluence;
+            var barColor = c.pct >= 75 ? 'var(--green)' : (c.pct >= 50 ? 'var(--yellow)' : 'var(--red)');
+            confEl.innerHTML = '<span>Confluence: ' + c.direction + ' ' + c.agreement + '/' + c.total + '</span>'
+                + '<div class="mtf-confluence-bar">'
+                + '<div class="mtf-confluence-fill" style="width:' + c.pct + '%;background:' + barColor + '"></div>'
+                + '</div>'
+                + '<span>' + c.pct + '%</span>';
+        }
+    } catch (err) {
+        console.error('loadMTF error:', err);
+    }
+}
+
 // ========== HEATMAP ==========
 function heatmapColorScale(pct) {
     var clamped = Math.max(-5, Math.min(5, pct));
@@ -3256,7 +3402,7 @@ function startAutoRefresh() {
     // Moderate: 30s — candles + indicators + sparklines
     refreshTimers.push(setInterval(function() { loadCandles(); loadSparklines().then(updateAssetSparkline); }, 30000));
 
-    // Slow: 60s — positions, wallet, paper status, kill switch, funding, sentiment
+    // Slow: 60s — positions, wallet, paper status, kill switch, funding, sentiment, MTF
     refreshTimers.push(setInterval(function() {
         loadPositions();
         loadWallet();
@@ -3264,6 +3410,7 @@ function startAutoRefresh() {
         loadKillSwitchStatus();
         loadFunding();
         loadSentiment();
+        loadMTF();
     }, 60000));
 
     // Very slow: 120s — fear & greed, drawdown, dip/top
@@ -3359,6 +3506,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadDipTop();
     loadWhales();
     loadSparklines().then(updateAssetSparkline);
+    loadMTF();
 
     // Start auto-refresh
     startAutoRefresh();
