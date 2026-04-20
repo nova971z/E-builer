@@ -1194,6 +1194,103 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Responsive — hamburger + overlay base */
+.btn-hamburger { display: none; font-size: 18px; }
+.mobile-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 149;
+}
+.mobile-overlay.visible { display: block; }
+
+/* Responsive — Tablet (768-1024px) */
+@media (max-width: 1024px) {
+    .navbar-menu a { font-size: 10px; padding: 4px 6px; }
+    .draw-toolbar { display: none; }
+    .right-panel { width: 240px; min-width: 240px; }
+    .order-form { padding: 6px; }
+    .of-type-tabs button { font-size: 9px; padding: 3px 4px; }
+    .asset-stat:nth-child(n+6) { display: none; }
+    .ft-info span:nth-child(n+4) { display: none; }
+    .jarvis-chat { width: 300px; right: 8px; }
+}
+
+/* Responsive — Mobile (<768px) */
+@media (max-width: 768px) {
+    .btn-hamburger { display: flex; }
+    .navbar-menu { display: none; }
+    .navbar-logo span { display: none; }
+    .navbar-clock { display: none; }
+
+    .asset-bar { overflow-x: auto; gap: 6px; padding: 4px 8px; }
+    .asset-stat:nth-child(n+4) { display: none; }
+    .asset-shortcuts { display: none; }
+    .asset-sparkline { display: none; }
+
+    .hm-cell .hm-sym { display: none; }
+    .hm-cell { min-width: 30px; font-size: 8px; }
+
+    .main-layout {
+        flex-direction: column;
+        height: auto;
+        overflow-y: auto;
+    }
+
+    .chart-area {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        height: 50vh;
+        min-height: 300px;
+    }
+
+    .subchart-wrap { height: 60px; min-height: 60px; }
+    .draw-toolbar { display: none; }
+
+    .right-panel {
+        position: fixed;
+        top: 48px;
+        right: -300px;
+        width: 280px;
+        height: calc(100vh - 48px - 28px);
+        z-index: 150;
+        transition: right 0.25s ease;
+        border-left: 1px solid var(--border);
+        overflow-y: auto;
+    }
+    .right-panel.open { right: 0; }
+
+    .bp-tabs { overflow-x: auto; flex-wrap: nowrap; }
+    .bp-tabs button { white-space: nowrap; font-size: 10px; }
+
+    .footer { height: 24px; font-size: 9px; gap: 6px; }
+    .ft-ticker { display: none; }
+    .ft-info span:nth-child(n+3) { display: none; }
+
+    .jarvis-chat {
+        width: 100%;
+        height: calc(100vh - 80px);
+        bottom: 28px;
+        right: 0;
+        border-radius: 0;
+    }
+
+    .modal { width: 95vw; max-height: 85vh; }
+    .mtf-panel { margin: 4px 6px; }
+}
+
+/* Responsive — Small Mobile (<480px) */
+@media (max-width: 480px) {
+    .navbar { padding: 0 6px; gap: 4px; }
+    .btn-nav { padding: 4px 6px; font-size: 10px; }
+    .chart-area { height: 40vh; min-height: 250px; }
+    .asset-bar { height: auto; flex-wrap: wrap; }
+    .asset-stat:nth-child(n+3) { display: none; }
+    .right-panel { width: 100%; right: -100%; }
+    .right-panel.open { right: 0; }
+}
+
 /* Sound toggle */
 .btn-sound { font-size: 14px; min-width: 32px; }
 .btn-sound.muted { opacity: 0.4; }
@@ -1480,6 +1577,7 @@ button:active { opacity: 0.7; }
         <a href="#">Copy</a>
         <a href="#">Grid</a>
     </div>
+    <button class="btn-nav btn-hamburger" id="btn-hamburger" onclick="toggleMobilePanel()">&#9776;</button>
     <div class="navbar-spacer"></div>
     <div class="navbar-actions">
         <button class="btn-nav btn-theme" id="btn-theme" onclick="toggleTheme()">&#9788;</button>
@@ -1772,6 +1870,9 @@ button:active { opacity: 0.7; }
     </div>
 
 </div><!-- /main-layout -->
+
+<!-- MOBILE OVERLAY -->
+<div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobilePanel()"></div>
 
 <!-- MTF PANEL -->
 <div class="mtf-panel" id="mtf-panel">
@@ -2453,6 +2554,8 @@ function changeSymbol(sym) {
     loadMTF();
     checkAlerts();
     loadDrawings();
+    var panel = document.querySelector('.right-panel');
+    if (panel && panel.classList.contains('open')) toggleMobilePanel();
 }
 
 function changeTF(tf) {
@@ -3606,6 +3709,27 @@ async function loadWhales(symbol) {
         console.error('loadWhales error:', err);
     }
 }
+
+// ========== RESPONSIVE MOBILE ==========
+function toggleMobilePanel() {
+    var panel = document.querySelector('.right-panel');
+    var overlay = $('mobile-overlay');
+    if (!panel) return;
+    var isOpen = panel.classList.contains('open');
+    panel.classList.toggle('open');
+    if (overlay) overlay.classList.toggle('visible');
+    document.body.style.overflow = isOpen ? '' : 'hidden';
+}
+
+window.addEventListener('resize', function() {
+    if (window.innerWidth > 768) {
+        var panel = document.querySelector('.right-panel');
+        var overlay = $('mobile-overlay');
+        if (panel) panel.classList.remove('open');
+        if (overlay) overlay.classList.remove('visible');
+        document.body.style.overflow = '';
+    }
+});
 
 // ========== SOUND EFFECTS (Web Audio API) ==========
 function initAudio() {
