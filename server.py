@@ -3293,33 +3293,33 @@ def api_ticker():
 
 @app.route("/api/markets")
 def api_markets():
-    """Bulk futures-style market overview — returns top pairs with 24h stats."""
+    """All USDT futures-style pairs with 24h stats, sorted by volume."""
     all_tickers = fetch_binance("/api/v3/ticker/24hr", ttl=30)
     if not all_tickers:
         return jsonify({"markets": []})
 
-    usdt_pairs = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
-        "BNBUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
-        "LINKUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "NEARUSDT",
-        "APTUSDT", "ARBUSDT", "OPUSDT", "FILUSDT", "SUIUSDT",
-        "AAVEUSDT", "MKRUSDT", "INJUSDT", "TIAUSDT", "SEIUSDT",
-        "JUPUSDT", "WIFUSDT", "PEPEUSDT", "FETUSDT", "RENDERUSDT",
-    ]
-    ticker_map = {t["symbol"]: t for t in all_tickers if t.get("symbol")}
+    stablecoins = {"USDT", "USDC", "BUSD", "TUSD", "DAI", "FDUSD", "USDP", "USDD"}
     markets = []
-    for sym in usdt_pairs:
-        t = ticker_map.get(sym)
-        if not t:
+    for t in all_tickers:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT"):
+            continue
+        base = sym.replace("USDT", "")
+        if base in stablecoins or len(base) < 2:
+            continue
+        vol = float(t.get("quoteVolume", 0))
+        if vol < 100_000:
             continue
         markets.append({
             "symbol": sym,
             "price": float(t.get("lastPrice", 0)),
             "change": float(t.get("priceChangePercent", 0)),
-            "volume": float(t.get("quoteVolume", 0)),
+            "volume": vol,
             "high": float(t.get("highPrice", 0)),
             "low": float(t.get("lowPrice", 0)),
         })
+
+    markets.sort(key=lambda x: x["volume"], reverse=True)
     return jsonify({"markets": markets})
 
 
@@ -4954,6 +4954,163 @@ def api_equity_curve():
             "initial_capital": initial_capital,
             "current_equity": round(equity, 2),
             "curve": curve,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bot/performance")
+def api_bot_performance():
+    """Comprehensive bot performance stats for the dashboard page."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        trades = conn.execute(
+            "SELECT * FROM paper_trades WHERE status = 'closed' ORDER BY closed_at ASC"
+        ).fetchall()
+
+        open_trades = conn.execute(
+            "SELECT * FROM paper_trades WHERE status = 'open'"
+        ).fetchall()
+
+        initial_capital = float(get_setting("paper_capital") or "100")
+        conn.close()
+
+        if not trades:
+            return jsonify({
+                "initial_capital": initial_capital,
+                "current_equity": initial_capital,
+                "total_trades": 0,
+                "wins": 0, "losses": 0, "win_rate": 0,
+                "total_pnl": 0, "best_trade": 0, "worst_trade": 0,
+                "avg_win": 0, "avg_loss": 0, "profit_factor": 0,
+                "max_drawdown": 0, "sharpe_ratio": 0,
+                "open_positions": len(open_trades),
+                "equity_curve": [{"time": 0, "value": initial_capital}],
+                "daily_pnl": [], "hourly_pnl": [],
+                "by_symbol": {}, "by_side": {"long": 0, "short": 0},
+                "streaks": {"current": 0, "best_win": 0, "worst_loss": 0},
+                "monthly": {},
+            })
+
+        pnls = [float(t["pnl"]) for t in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+
+        equity = initial_capital
+        peak = initial_capital
+        max_dd = 0
+        equity_curve = [{"time": 0, "value": initial_capital}]
+        daily_map = {}
+        hourly_map = {}
+        monthly_map = {}
+        by_symbol = {}
+        by_side = {"long": 0, "short": 0}
+
+        current_streak = 0
+        best_win_streak = 0
+        worst_loss_streak = 0
+        streak_type = None
+
+        for t in trades:
+            pnl = float(t["pnl"])
+            equity += pnl
+            if equity > peak:
+                peak = equity
+            dd = (peak - equity) / peak * 100 if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+
+            ts_str = t["closed_at"] or ""
+            epoch = 0
+            day_key = "unknown"
+            hour_key = "unknown"
+            month_key = "unknown"
+            if ts_str:
+                try:
+                    dt_obj = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    epoch = int(dt_obj.timestamp())
+                    day_key = dt_obj.strftime("%Y-%m-%d")
+                    hour_key = dt_obj.strftime("%Y-%m-%d %H:00")
+                    month_key = dt_obj.strftime("%Y-%m")
+                except (ValueError, TypeError):
+                    epoch = int(time.time())
+
+            equity_curve.append({"time": epoch, "value": round(equity, 2)})
+
+            daily_map[day_key] = daily_map.get(day_key, 0) + pnl
+            hourly_map[hour_key] = hourly_map.get(hour_key, 0) + pnl
+            monthly_map[month_key] = monthly_map.get(month_key, 0) + pnl
+
+            sym = t["symbol"]
+            if sym not in by_symbol:
+                by_symbol[sym] = {"trades": 0, "pnl": 0, "wins": 0}
+            by_symbol[sym]["trades"] += 1
+            by_symbol[sym]["pnl"] += pnl
+            if pnl > 0:
+                by_symbol[sym]["wins"] += 1
+
+            side = t["side"] if t["side"] else "long"
+            if side in by_side:
+                by_side[side] += 1
+
+            if pnl > 0:
+                if streak_type == "win":
+                    current_streak += 1
+                else:
+                    current_streak = 1
+                    streak_type = "win"
+                best_win_streak = max(best_win_streak, current_streak)
+            else:
+                if streak_type == "loss":
+                    current_streak += 1
+                else:
+                    current_streak = 1
+                    streak_type = "loss"
+                worst_loss_streak = max(worst_loss_streak, current_streak)
+
+        total_pnl = sum(pnls)
+        gross_profit = sum(wins) if wins else 0
+        gross_loss = abs(sum(losses)) if losses else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+        avg_pnl = total_pnl / len(pnls) if pnls else 0
+        std_pnl = (sum((p - avg_pnl) ** 2 for p in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 0
+        sharpe = (avg_pnl / std_pnl) * (252 ** 0.5) if std_pnl > 0 else 0
+
+        daily_pnl = [{"date": k, "pnl": round(v, 2)} for k, v in sorted(daily_map.items())]
+        hourly_pnl = [{"hour": k, "pnl": round(v, 2)} for k, v in sorted(hourly_map.items())]
+        monthly = {k: round(v, 2) for k, v in sorted(monthly_map.items())}
+
+        return jsonify({
+            "initial_capital": initial_capital,
+            "current_equity": round(equity, 2),
+            "total_trades": len(pnls),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else 0,
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl / initial_capital * 100, 2) if initial_capital else 0,
+            "best_trade": round(max(pnls), 2) if pnls else 0,
+            "worst_trade": round(min(pnls), 2) if pnls else 0,
+            "avg_win": round(sum(wins) / len(wins), 2) if wins else 0,
+            "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0,
+            "profit_factor": round(profit_factor, 2),
+            "max_drawdown": round(max_dd, 2),
+            "sharpe_ratio": round(sharpe, 2),
+            "open_positions": len(open_trades),
+            "equity_curve": equity_curve,
+            "daily_pnl": daily_pnl,
+            "hourly_pnl": hourly_pnl,
+            "by_symbol": by_symbol,
+            "by_side": by_side,
+            "streaks": {
+                "current": current_streak,
+                "current_type": streak_type or "none",
+                "best_win": best_win_streak,
+                "worst_loss": worst_loss_streak,
+            },
+            "monthly": monthly,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

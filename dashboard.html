@@ -1422,6 +1422,218 @@ button:active { opacity: 0.7; }
 .market-card .mc-change.up { color: var(--green); background: var(--green-bg); }
 .market-card .mc-change.down { color: var(--red); background: var(--red-bg); }
 
+/* ========== BOT PERFORMANCE PAGE ========== */
+.bot-section {
+    display: none;
+    padding: 20px;
+    background: var(--bg);
+    min-height: calc(100vh - 96px);
+}
+.bot-section.visible { display: block; }
+
+.bot-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+.bot-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.bot-header .bot-status {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+}
+.bot-header .bot-status.running { background: var(--green-bg); color: var(--green); }
+.bot-header .bot-status.stopped { background: var(--red-bg); color: var(--red); }
+
+.bot-period-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--surface);
+    padding: 4px;
+    border-radius: var(--radius);
+}
+.bot-period-tabs button {
+    padding: 6px 16px;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 500;
+    transition: all var(--transition);
+}
+.bot-period-tabs button.active { background: var(--accent-bg); color: var(--accent); }
+.bot-period-tabs button:hover { color: var(--text); }
+
+.bot-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.stat-card {
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: all var(--transition);
+}
+.stat-card:hover { border-color: rgba(255,255,255,0.12); transform: translateY(-2px); }
+.stat-card .sc-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.stat-card .sc-value {
+    font-size: 22px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--text);
+}
+.stat-card .sc-value.up { color: var(--green); }
+.stat-card .sc-value.down { color: var(--red); }
+.stat-card .sc-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+}
+
+.bot-charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.bot-chart-card {
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    overflow: hidden;
+}
+.bot-chart-card.full { grid-column: 1 / -1; }
+.bot-chart-card h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+}
+.bot-chart-container { height: 200px; width: 100%; }
+.bot-chart-container.tall { height: 280px; }
+
+.bot-bar-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 120px;
+    padding-top: 8px;
+}
+.bot-bar {
+    flex: 1;
+    min-width: 8px;
+    max-width: 40px;
+    border-radius: 3px 3px 0 0;
+    transition: all 0.2s;
+    position: relative;
+    cursor: pointer;
+}
+.bot-bar:hover { opacity: 0.8; }
+.bot-bar.up { background: var(--green); }
+.bot-bar.down { background: var(--red); }
+.bot-bar-label {
+    position: absolute;
+    bottom: -16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 8px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.bot-donut-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    height: 140px;
+}
+.bot-donut {
+    width: 120px;
+    height: 120px;
+    position: relative;
+}
+.bot-donut svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.bot-donut-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+.bot-donut-center .pct { font-size: 24px; font-weight: 700; font-family: var(--font-mono); }
+.bot-donut-center .lbl { font-size: 10px; color: var(--text-muted); }
+.bot-donut-legend { display: flex; flex-direction: column; gap: 6px; }
+.bot-donut-legend span { font-size: 11px; display: flex; align-items: center; gap: 6px; }
+.bot-donut-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+.bot-symbol-table { width: 100%; }
+.bot-symbol-table th {
+    text-align: left;
+    padding: 6px 8px;
+    font-size: 10px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.bot-symbol-table td {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    border-bottom: 1px solid var(--border);
+}
+.bot-symbol-table tr:hover td { background: var(--surface-2); }
+
+.bot-streak-wrap {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    padding: 12px 0;
+}
+.bot-streak {
+    text-align: center;
+}
+.bot-streak .num {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+.bot-streak .lbl {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+@media (max-width: 768px) {
+    .bot-stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .bot-charts-grid { grid-template-columns: 1fr; }
+    .bot-chart-card.full { grid-column: 1; }
+}
+
 /* Responsive — hamburger + overlay base */
 .btn-hamburger { display: none; font-size: 18px; }
 .mobile-overlay {
@@ -2001,6 +2213,7 @@ button:active { opacity: 0.7; }
     <div class="navbar-menu">
         <a href="#" class="active" id="nav-trade" onclick="switchView('trade'); return false;">Trade</a>
         <a href="#" id="nav-markets" onclick="switchView('markets'); return false;">Markets</a>
+        <a href="#" id="nav-bot" onclick="switchView('bot'); return false;">Bot</a>
         <a href="#" onclick="toggleGMXPanel(); return false;">GMX Perps</a>
     </div>
     <button class="btn-nav btn-hamburger" id="btn-hamburger" onclick="toggleMobilePanel()">&#9776;</button>
@@ -2082,6 +2295,67 @@ button:active { opacity: 0.7; }
     </div>
     <div class="markets-grid" id="markets-grid">
         <div style="color:var(--text-muted);padding:40px;text-align:center">Loading markets...</div>
+    </div>
+</div>
+
+<!-- BOT PERFORMANCE PAGE -->
+<div class="bot-section" id="bot-section">
+    <div class="bot-header">
+        <h2>Bot Performance <span class="bot-status running" id="bot-status-badge">PAPER</span></h2>
+        <div class="bot-period-tabs" id="bot-period-tabs">
+            <button onclick="setBotPeriod('1h')">1H</button>
+            <button onclick="setBotPeriod('24h')">24H</button>
+            <button onclick="setBotPeriod('7d')" class="active">7D</button>
+            <button onclick="setBotPeriod('30d')">30D</button>
+            <button onclick="setBotPeriod('all')">All</button>
+        </div>
+    </div>
+
+    <div class="bot-stats-grid" id="bot-stats-grid">
+        <div class="stat-card"><span class="sc-label">Equity</span><span class="sc-value" id="bs-equity">$0.00</span><span class="sc-sub" id="bs-equity-pct">+0.00%</span></div>
+        <div class="stat-card"><span class="sc-label">Total P&L</span><span class="sc-value" id="bs-pnl">$0.00</span><span class="sc-sub" id="bs-pnl-pct">+0.00%</span></div>
+        <div class="stat-card"><span class="sc-label">Win Rate</span><span class="sc-value" id="bs-winrate">0%</span><span class="sc-sub" id="bs-wl">0W / 0L</span></div>
+        <div class="stat-card"><span class="sc-label">Total Trades</span><span class="sc-value" id="bs-trades">0</span><span class="sc-sub" id="bs-open">0 open</span></div>
+        <div class="stat-card"><span class="sc-label">Profit Factor</span><span class="sc-value" id="bs-pf">0.00</span><span class="sc-sub">Gross P / Gross L</span></div>
+        <div class="stat-card"><span class="sc-label">Max Drawdown</span><span class="sc-value down" id="bs-dd">0.00%</span><span class="sc-sub">Peak to trough</span></div>
+        <div class="stat-card"><span class="sc-label">Best Trade</span><span class="sc-value up" id="bs-best">$0.00</span><span class="sc-sub">Single trade max</span></div>
+        <div class="stat-card"><span class="sc-label">Worst Trade</span><span class="sc-value down" id="bs-worst">$0.00</span><span class="sc-sub">Single trade min</span></div>
+        <div class="stat-card"><span class="sc-label">Avg Win</span><span class="sc-value up" id="bs-avgwin">$0.00</span><span class="sc-sub">Per winning trade</span></div>
+        <div class="stat-card"><span class="sc-label">Avg Loss</span><span class="sc-value down" id="bs-avgloss">$0.00</span><span class="sc-sub">Per losing trade</span></div>
+        <div class="stat-card"><span class="sc-label">Sharpe Ratio</span><span class="sc-value" id="bs-sharpe">0.00</span><span class="sc-sub">Risk-adjusted return</span></div>
+        <div class="stat-card"><span class="sc-label">Open Positions</span><span class="sc-value" id="bs-openpos">0</span><span class="sc-sub">Currently active</span></div>
+    </div>
+
+    <div class="bot-charts-grid">
+        <div class="bot-chart-card full">
+            <h4>Equity Curve</h4>
+            <div class="bot-chart-container tall" id="bot-equity-chart"></div>
+        </div>
+        <div class="bot-chart-card">
+            <h4>Daily P&L</h4>
+            <div class="bot-bar-chart" id="bot-daily-bars"></div>
+        </div>
+        <div class="bot-chart-card">
+            <h4>Win/Loss Distribution</h4>
+            <div class="bot-donut-wrap" id="bot-donut"></div>
+        </div>
+        <div class="bot-chart-card">
+            <h4>Performance by Symbol</h4>
+            <div style="overflow-y:auto;max-height:200px">
+                <table class="bot-symbol-table" id="bot-symbol-table">
+                    <thead><tr><th>Symbol</th><th>Trades</th><th>Win%</th><th>P&L</th></tr></thead>
+                    <tbody id="bot-symbol-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="bot-chart-card">
+            <h4>Streaks</h4>
+            <div class="bot-streak-wrap" id="bot-streaks">
+                <div class="bot-streak"><span class="num up" id="bst-win">0</span><span class="lbl">Best Win Streak</span></div>
+                <div class="bot-streak"><span class="num down" id="bst-loss">0</span><span class="lbl">Worst Loss Streak</span></div>
+                <div class="bot-streak"><span class="num" id="bst-current">0</span><span class="lbl">Current Streak</span></div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -2927,9 +3201,10 @@ function syncTimeScales() {
 // ========== LOAD CANDLES ==========
 function candleLimit() {
     var tf = currentInterval;
-    if (tf === '1m' || tf === '3m') return 300;
-    if (tf === '5m' || tf === '15m') return 300;
-    return 300;
+    if (tf === '1m') return 1000;
+    if (tf === '3m' || tf === '5m') return 1000;
+    if (tf === '15m' || tf === '30m') return 750;
+    return 500;
 }
 
 async function loadCandles(symbol, interval, skipIndicators) {
@@ -5627,14 +5902,25 @@ function switchView(view) {
 
     document.querySelectorAll('.navbar-menu a').forEach(function(a) { a.classList.remove('active'); });
 
+    var botView = $('bot-section');
+
     if (view === 'markets') {
         if (tradeView) tradeView.style.display = 'none';
         if (marketsView) marketsView.classList.add('visible');
+        if (botView) botView.classList.remove('visible');
         if (navMarkets) navMarkets.classList.add('active');
         loadMarkets();
+    } else if (view === 'bot') {
+        if (tradeView) tradeView.style.display = 'none';
+        if (marketsView) marketsView.classList.remove('visible');
+        if (botView) botView.classList.add('visible');
+        var navBot = $('nav-bot');
+        if (navBot) navBot.classList.add('active');
+        loadBotPerformance();
     } else {
         if (tradeView) tradeView.style.display = '';
         if (marketsView) marketsView.classList.remove('visible');
+        if (botView) botView.classList.remove('visible');
         if (navTrade) navTrade.classList.add('active');
     }
 }
@@ -5696,6 +5982,167 @@ function searchMarkets(val) { renderMarkets(); }
 function selectMarket(sym) {
     switchView('trade');
     changeSymbol(sym);
+}
+
+// ========== BOT PERFORMANCE ==========
+var botEquityChart = null;
+var botEquitySeries = null;
+
+function initBotEquityChart() {
+    var container = $('bot-equity-chart');
+    if (!container || botEquityChart) return;
+    botEquityChart = LightweightCharts.createChart(container, {
+        layout: { background: { color: 'transparent' }, textColor: '#8b95a5', fontSize: 10 },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true },
+        crosshair: { horzLine: { color: 'rgba(56,189,248,0.3)' }, vertLine: { color: 'rgba(56,189,248,0.3)' } },
+        handleScroll: { vertTouchDrag: false },
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+    botEquitySeries = botEquityChart.addAreaSeries({
+        topColor: 'rgba(56,189,248,0.35)',
+        bottomColor: 'rgba(56,189,248,0.02)',
+        lineColor: '#38bdf8',
+        lineWidth: 2,
+        priceFormat: { type: 'custom', formatter: function(v) { return '$' + v.toFixed(2); } },
+    });
+    new ResizeObserver(function() {
+        botEquityChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+async function loadBotPerformance() {
+    initBotEquityChart();
+    try {
+        var resp = await fetch(API + '/api/bot/performance');
+        if (!resp.ok) return;
+        var d = await resp.json();
+
+        var pnlSign = d.total_pnl >= 0 ? '+' : '';
+        var pnlClass = d.total_pnl >= 0 ? 'up' : 'down';
+
+        $('bs-equity').textContent = '$' + d.current_equity.toFixed(2);
+        $('bs-equity').className = 'sc-value ' + pnlClass;
+        $('bs-equity-pct').textContent = pnlSign + d.total_pnl_pct + '%';
+
+        $('bs-pnl').textContent = pnlSign + '$' + d.total_pnl.toFixed(2);
+        $('bs-pnl').className = 'sc-value ' + pnlClass;
+        $('bs-pnl-pct').textContent = pnlSign + d.total_pnl_pct + '% from $' + d.initial_capital.toFixed(0);
+
+        $('bs-winrate').textContent = d.win_rate + '%';
+        $('bs-winrate').className = 'sc-value ' + (d.win_rate >= 50 ? 'up' : 'down');
+        $('bs-wl').textContent = d.wins + 'W / ' + d.losses + 'L';
+
+        $('bs-trades').textContent = d.total_trades;
+        $('bs-open').textContent = d.open_positions + ' open';
+
+        $('bs-pf').textContent = d.profit_factor.toFixed(2);
+        $('bs-pf').className = 'sc-value ' + (d.profit_factor >= 1 ? 'up' : 'down');
+
+        $('bs-dd').textContent = d.max_drawdown.toFixed(2) + '%';
+
+        $('bs-best').textContent = '+$' + d.best_trade.toFixed(2);
+        $('bs-worst').textContent = '$' + d.worst_trade.toFixed(2);
+        $('bs-avgwin').textContent = '+$' + d.avg_win.toFixed(2);
+        $('bs-avgloss').textContent = '$' + d.avg_loss.toFixed(2);
+        $('bs-sharpe').textContent = d.sharpe_ratio.toFixed(2);
+        $('bs-sharpe').className = 'sc-value ' + (d.sharpe_ratio >= 1 ? 'up' : d.sharpe_ratio >= 0 ? '' : 'down');
+        $('bs-openpos').textContent = d.open_positions;
+
+        // Equity curve chart
+        if (botEquitySeries && d.equity_curve && d.equity_curve.length > 0) {
+            var pts = [];
+            for (var i = 0; i < d.equity_curve.length; i++) {
+                if (d.equity_curve[i].time > 0) {
+                    pts.push({ time: epochToLocal(d.equity_curve[i].time), value: d.equity_curve[i].value });
+                }
+            }
+            if (pts.length > 0) botEquitySeries.setData(pts);
+        }
+
+        // Daily P&L bars
+        renderDailyBars(d.daily_pnl || []);
+
+        // Win/Loss donut
+        renderDonut(d.wins, d.losses);
+
+        // Symbol table
+        renderSymbolTable(d.by_symbol || {});
+
+        // Streaks
+        $('bst-win').textContent = d.streaks.best_win;
+        $('bst-loss').textContent = d.streaks.worst_loss;
+        var curStreak = $('bst-current');
+        curStreak.textContent = d.streaks.current;
+        curStreak.className = 'num ' + (d.streaks.current_type === 'win' ? 'up' : d.streaks.current_type === 'loss' ? 'down' : '');
+
+    } catch (e) {
+        console.warn('loadBotPerformance:', e);
+    }
+}
+
+function renderDailyBars(daily) {
+    var container = $('bot-daily-bars');
+    if (!container || !daily.length) {
+        if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;width:100%;padding:40px">No daily data yet</div>';
+        return;
+    }
+    var maxAbs = Math.max.apply(null, daily.map(function(d) { return Math.abs(d.pnl); })) || 1;
+    var last = daily.slice(-14);
+    var html = '';
+    for (var i = 0; i < last.length; i++) {
+        var d = last[i];
+        var h = Math.max(4, Math.abs(d.pnl) / maxAbs * 100);
+        var cls = d.pnl >= 0 ? 'up' : 'down';
+        var lbl = d.date ? d.date.slice(5) : '';
+        html += '<div class="bot-bar ' + cls + '" style="height:' + h + '%" title="' + d.date + ': $' + d.pnl.toFixed(2) + '"><span class="bot-bar-label">' + lbl + '</span></div>';
+    }
+    container.innerHTML = html;
+}
+
+function renderDonut(wins, losses) {
+    var container = $('bot-donut');
+    if (!container) return;
+    var total = wins + losses;
+    var winPct = total > 0 ? Math.round(wins / total * 100) : 0;
+    var circumference = 2 * Math.PI * 45;
+    var winArc = circumference * winPct / 100;
+    var lossArc = circumference - winArc;
+
+    container.innerHTML = '<div class="bot-donut">'
+        + '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="none" stroke="' + (wins > 0 ? 'var(--green)' : 'var(--surface-3)') + '" stroke-width="8" stroke-dasharray="' + winArc + ' ' + lossArc + '" stroke-linecap="round"/>'
+        + '<circle cx="50" cy="50" r="45" fill="none" stroke="var(--red)" stroke-width="8" stroke-dasharray="0 ' + winArc + ' ' + lossArc + ' 0" stroke-linecap="round"/></svg>'
+        + '<div class="bot-donut-center"><span class="pct" style="color:' + (winPct >= 50 ? 'var(--green)' : 'var(--red)') + '">' + winPct + '%</span><span class="lbl">Win Rate</span></div></div>'
+        + '<div class="bot-donut-legend">'
+        + '<span><span class="dot" style="background:var(--green)"></span>Wins: ' + wins + '</span>'
+        + '<span><span class="dot" style="background:var(--red)"></span>Losses: ' + losses + '</span>'
+        + '<span><span class="dot" style="background:var(--text-muted)"></span>Total: ' + total + '</span>'
+        + '</div>';
+}
+
+function renderSymbolTable(bySymbol) {
+    var tbody = $('bot-symbol-tbody');
+    if (!tbody) return;
+    var entries = Object.keys(bySymbol).map(function(k) { return { symbol: k, data: bySymbol[k] }; });
+    entries.sort(function(a, b) { return Math.abs(b.data.pnl) - Math.abs(a.data.pnl); });
+
+    var html = '';
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        var wr = e.data.trades > 0 ? Math.round(e.data.wins / e.data.trades * 100) : 0;
+        var pnlClass = e.data.pnl >= 0 ? 'up' : 'down';
+        var sym = e.symbol.replace('USDT', '');
+        html += '<tr><td style="font-weight:600">' + sym + '</td><td>' + e.data.trades + '</td><td>' + wr + '%</td><td class="col-pnl-' + pnlClass + '">$' + e.data.pnl.toFixed(2) + '</td></tr>';
+    }
+    tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No trades yet</td></tr>';
+}
+
+function setBotPeriod(period) {
+    document.querySelectorAll('#bot-period-tabs button').forEach(function(b) { b.classList.remove('active'); });
+    event.target.classList.add('active');
+    loadBotPerformance();
 }
 
 // ========== THEME TOGGLE ==========
