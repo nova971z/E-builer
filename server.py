@@ -196,6 +196,19 @@ def init_db():
     )""")
     c.execute("INSERT OR IGNORE INTO killswitch (id, active) VALUES (1, 0)")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        condition_type TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        value REAL NOT NULL,
+        message TEXT DEFAULT '',
+        triggered INTEGER DEFAULT 0,
+        repeat INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        triggered_at TEXT
+    )""")
+
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
@@ -2797,6 +2810,158 @@ def api_sparklines():
         if raw and isinstance(raw, list):
             result[pair] = [float(k[4]) for k in raw]
     return jsonify(result)
+
+
+# ===========================================================================
+# API ROUTES — Alerts CRUD + Check (4 routes)
+# ===========================================================================
+
+VALID_ALERT_TYPES = ("price", "rsi", "regime_change", "volume_spike")
+VALID_ALERT_OPS = ("gt", "lt", "eq", "cross_up", "cross_down")
+
+
+@app.route("/api/alerts", methods=["POST"])
+def api_alerts_create():
+    data = request.get_json(silent=True) or {}
+    symbol = data.get("symbol", "BTCUSDT").upper()
+    cond_type = data.get("condition_type", "")
+    operator = data.get("operator", "")
+    value = data.get("value")
+    message = data.get("message", "")
+    repeat = 1 if data.get("repeat") else 0
+
+    if cond_type not in VALID_ALERT_TYPES:
+        return jsonify({"error": f"Invalid condition_type. Allowed: {VALID_ALERT_TYPES}"}), 400
+    if operator not in VALID_ALERT_OPS:
+        return jsonify({"error": f"Invalid operator. Allowed: {VALID_ALERT_OPS}"}), 400
+    if value is None:
+        return jsonify({"error": "value is required"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.execute(
+            "INSERT INTO alerts (symbol, condition_type, operator, value, message, repeat) VALUES (?, ?, ?, ?, ?, ?)",
+            (symbol, cond_type, operator, float(value), message, repeat),
+        )
+        alert_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "id": alert_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/alerts", methods=["GET"])
+def api_alerts_list():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM alerts ORDER BY created_at DESC").fetchall()
+        conn.close()
+        return jsonify({"alerts": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/alerts/<int:alert_id>", methods=["DELETE"])
+def api_alerts_delete(alert_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/alerts/check")
+def api_alerts_check():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        active = conn.execute(
+            "SELECT * FROM alerts WHERE symbol = ? AND (triggered = 0 OR repeat = 1)",
+            (symbol,),
+        ).fetchall()
+
+        if not active:
+            total_active = conn.execute("SELECT COUNT(*) as c FROM alerts WHERE triggered = 0 OR repeat = 1").fetchone()["c"]
+            conn.close()
+            return jsonify({"triggered": [], "active_count": total_active, "triggered_count": 0})
+
+        price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=5)
+        current_price = float(price_data["price"]) if price_data and "price" in price_data else None
+
+        current_rsi = None
+        current_regime = None
+        sym_info = SUPPORTED_SYMBOLS.get(symbol)
+        if sym_info and sym_info["source"] == "binance":
+            raw_klines = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": 200}, ttl=30)
+            if raw_klines and len(raw_klines) >= 30:
+                ohlcv = transform_klines(raw_klines)
+                indicators = compute_all_indicators(ohlcv)
+                raw_ind = indicators.get("_raw", {})
+                rsi_arr = raw_ind.get("rsi", [])
+                current_rsi = rsi_arr[-1] if rsi_arr else None
+                regime_info = regime_detector.detect(ohlcv, raw_ind)
+                current_regime = regime_info.get("regime")
+
+        triggered_alerts = []
+        now = datetime.now().isoformat()
+
+        for alert in active:
+            fired = False
+            ctype = alert["condition_type"]
+            op = alert["operator"]
+            val = alert["value"]
+
+            if ctype == "price" and current_price is not None:
+                fired = _eval_condition(current_price, op, val)
+            elif ctype == "rsi" and current_rsi is not None:
+                fired = _eval_condition(current_rsi, op, val)
+            elif ctype == "regime_change" and current_regime is not None:
+                regime_map = {"BULL": 1, "RANGE": 2, "BEAR": 3, "CRISIS": 4}
+                fired = _eval_condition(regime_map.get(current_regime, 0), "eq", val)
+            elif ctype == "volume_spike":
+                pass
+
+            if fired:
+                conn.execute(
+                    "UPDATE alerts SET triggered = 1, triggered_at = ? WHERE id = ?",
+                    (now, alert["id"]),
+                )
+                triggered_alerts.append({
+                    "id": alert["id"],
+                    "symbol": alert["symbol"],
+                    "condition_type": ctype,
+                    "operator": op,
+                    "value": val,
+                    "message": alert["message"] or f"{ctype} {op} {val}",
+                })
+
+        conn.commit()
+        total_active = conn.execute("SELECT COUNT(*) as c FROM alerts WHERE triggered = 0 OR repeat = 1").fetchone()["c"]
+        conn.close()
+
+        return jsonify({
+            "triggered": triggered_alerts,
+            "active_count": total_active,
+            "triggered_count": len(triggered_alerts),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _eval_condition(current, operator, target):
+    if operator == "gt":
+        return current > target
+    elif operator == "lt":
+        return current < target
+    elif operator == "eq":
+        return abs(current - target) < 0.001
+    return False
 
 
 @app.route("/api/portfolio")
