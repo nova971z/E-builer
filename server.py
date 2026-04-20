@@ -2799,6 +2799,113 @@ def api_sparklines():
     return jsonify(result)
 
 
+@app.route("/api/portfolio")
+def api_portfolio():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        closed = conn.execute(
+            "SELECT symbol, pnl FROM paper_trades WHERE status = 'closed'"
+        ).fetchall()
+
+        if not closed:
+            conn.close()
+            return jsonify({
+                "total_pnl": 0, "total_trades": 0, "win_rate": 0,
+                "open_positions": 0, "unrealized_pnl": 0,
+                "by_symbol": [], "best_trade": None, "worst_trade": None,
+            })
+
+        total_pnl = sum(r["pnl"] for r in closed)
+        total_trades = len(closed)
+        wins = sum(1 for r in closed if r["pnl"] > 0)
+        win_rate = round(wins / total_trades * 100, 1) if total_trades else 0
+
+        by_sym = {}
+        for r in closed:
+            s = r["symbol"]
+            if s not in by_sym:
+                by_sym[s] = {"symbol": s, "pnl": 0, "trades": 0, "wins": 0}
+            by_sym[s]["pnl"] += r["pnl"]
+            by_sym[s]["trades"] += 1
+            if r["pnl"] > 0:
+                by_sym[s]["wins"] += 1
+
+        by_symbol = []
+        abs_total = sum(abs(v["pnl"]) for v in by_sym.values()) or 1
+        for v in sorted(by_sym.values(), key=lambda x: x["pnl"], reverse=True):
+            by_symbol.append({
+                "symbol": v["symbol"],
+                "pnl": round(v["pnl"], 2),
+                "trades": v["trades"],
+                "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0,
+                "pct": round(abs(v["pnl"]) / abs_total * 100, 1),
+            })
+
+        best = conn.execute(
+            "SELECT symbol, pnl, closed_at FROM paper_trades WHERE status = 'closed' ORDER BY pnl DESC LIMIT 1"
+        ).fetchone()
+        worst = conn.execute(
+            "SELECT symbol, pnl, closed_at FROM paper_trades WHERE status = 'closed' ORDER BY pnl ASC LIMIT 1"
+        ).fetchone()
+
+        open_pos = conn.execute(
+            "SELECT COUNT(*) as c FROM paper_trades WHERE status = 'open'"
+        ).fetchone()["c"]
+
+        conn.close()
+
+        return jsonify({
+            "total_pnl": round(total_pnl, 2),
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "open_positions": open_pos,
+            "unrealized_pnl": 0,
+            "by_symbol": by_symbol,
+            "best_trade": {"symbol": best["symbol"], "pnl": round(best["pnl"], 2), "date": best["closed_at"]} if best else None,
+            "worst_trade": {"symbol": worst["symbol"], "pnl": round(worst["pnl"], 2), "date": worst["closed_at"]} if worst else None,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/equity-curve")
+def api_equity_curve():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            "SELECT closed_at, pnl FROM paper_trades WHERE status = 'closed' ORDER BY closed_at ASC"
+        ).fetchall()
+        conn.close()
+
+        initial_capital = float(get_setting("paper_capital") or "100")
+        equity = initial_capital
+        curve = [{"time": 0, "value": initial_capital}]
+
+        for r in rows:
+            equity += r["pnl"]
+            ts = r["closed_at"]
+            epoch = 0
+            if ts:
+                try:
+                    from datetime import datetime as dt_parse
+                    epoch = int(dt_parse.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                except (ValueError, TypeError):
+                    epoch = int(time.time())
+            curve.append({"time": epoch, "value": round(equity, 2)})
+
+        return jsonify({
+            "initial_capital": initial_capital,
+            "current_equity": round(equity, 2),
+            "curve": curve,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/mtf-signals")
 def api_mtf_signals():
     symbol = request.args.get("symbol", "BTCUSDT").upper()

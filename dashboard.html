@@ -1194,6 +1194,65 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Portfolio */
+.portfolio-wrap {
+    display: flex;
+    gap: 16px;
+    padding: 12px;
+    flex-wrap: wrap;
+}
+.portfolio-stats {
+    flex: 1;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.portfolio-stat {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 3px;
+    background: var(--surface-2);
+    font-size: 11px;
+}
+.portfolio-stat .ps-label { color: var(--text-dim); }
+.portfolio-stat .ps-value { font-weight: 700; color: var(--text); }
+.portfolio-pie {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-width: 140px;
+}
+.portfolio-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+}
+.portfolio-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+.portfolio-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    display: inline-block;
+}
+.equity-chart-wrap {
+    width: 100%;
+    height: 150px;
+    margin-top: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
 /* Multi-Timeframe Panel */
 .mtf-panel {
     background: var(--surface);
@@ -1468,6 +1527,7 @@ button:active { opacity: 0.7; }
                 <button onclick="switchBPTab('open-orders')">Open Orders</button>
                 <button onclick="switchBPTab('history')">Order History</button>
                 <button onclick="switchBPTab('paper')">Paper Trades</button>
+                <button onclick="switchBPTab('portfolio')">Portfolio</button>
                 <button onclick="switchBPTab('journal')">Journal</button>
                 <button onclick="switchBPTab('alerts')">Alerts</button>
             </div>
@@ -2603,6 +2663,7 @@ function switchBPTab(tab) {
 
     if (tab === 'positions') loadPositions();
     else if (tab === 'paper') loadPaperHistory();
+    else if (tab === 'portfolio') loadPortfolio();
     else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + tab + '</div>';
 }
 
@@ -3297,6 +3358,129 @@ async function loadWhales(symbol) {
         // Whale data available for signal engine — no dedicated panel
     } catch (err) {
         console.error('loadWhales error:', err);
+    }
+}
+
+// ========== PORTFOLIO & EQUITY CURVE ==========
+var equityChart = null;
+var equityLineSeries = null;
+
+var PIE_COLORS = ['#0ecb81', '#00d4ff', '#f0b90b', '#f6465d', '#9b59b6', '#e67e22', '#1abc9c'];
+
+function renderPieChart(bySymbol) {
+    if (!bySymbol || !bySymbol.length) return '<div style="color:var(--text-muted);font-size:11px">No allocation data</div>';
+    var size = 120, cx = 60, cy = 60, r = 50;
+    var total = 0;
+    for (var i = 0; i < bySymbol.length; i++) total += bySymbol[i].pct;
+    if (total === 0) return '';
+
+    var paths = '';
+    var startAngle = -Math.PI / 2;
+    for (var j = 0; j < bySymbol.length; j++) {
+        var slice = bySymbol[j].pct / total * 2 * Math.PI;
+        var endAngle = startAngle + slice;
+        var largeArc = slice > Math.PI ? 1 : 0;
+        var x1 = cx + r * Math.cos(startAngle);
+        var y1 = cy + r * Math.sin(startAngle);
+        var x2 = cx + r * Math.cos(endAngle);
+        var y2 = cy + r * Math.sin(endAngle);
+        var color = PIE_COLORS[j % PIE_COLORS.length];
+        paths += '<path d="M' + cx + ',' + cy + ' L' + x1.toFixed(2) + ',' + y1.toFixed(2)
+            + ' A' + r + ',' + r + ' 0 ' + largeArc + ' 1 ' + x2.toFixed(2) + ',' + y2.toFixed(2)
+            + ' Z" fill="' + color + '" stroke="var(--surface)" stroke-width="1"/>';
+        startAngle = endAngle;
+    }
+
+    var svg = '<svg viewBox="0 0 ' + size + ' ' + size + '" width="' + size + '" height="' + size + '">' + paths + '</svg>';
+    var legend = '';
+    for (var k = 0; k < bySymbol.length; k++) {
+        var c = PIE_COLORS[k % PIE_COLORS.length];
+        legend += '<span class="portfolio-legend-item"><span class="portfolio-legend-dot" style="background:' + c + '"></span>'
+            + bySymbol[k].symbol + ' ' + bySymbol[k].pct.toFixed(1) + '%</span>';
+    }
+    return '<div class="portfolio-pie">' + svg + '<div class="portfolio-legend">' + legend + '</div></div>';
+}
+
+async function loadPortfolio() {
+    var content = $('bp-content');
+    if (!content) return;
+    try {
+        var resp = await fetch(API + '/api/portfolio');
+        if (!resp.ok) { content.innerHTML = '<div class="bp-empty">Failed to load portfolio</div>'; return; }
+        var data = await resp.json();
+
+        if (data.total_trades === 0) {
+            content.innerHTML = '<div class="bp-empty">No trades yet — complete paper trades to build your portfolio</div>';
+            return;
+        }
+
+        var pnlCls = data.total_pnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+        var pnlSign = data.total_pnl >= 0 ? '+' : '';
+
+        var statsHtml = '<div class="portfolio-stats">'
+            + '<div class="portfolio-stat"><span class="ps-label">Total PnL</span><span class="ps-value" style="' + pnlCls + '">' + pnlSign + fmt(data.total_pnl, 2) + ' USDT</span></div>'
+            + '<div class="portfolio-stat"><span class="ps-label">Win Rate</span><span class="ps-value">' + data.win_rate + '%</span></div>'
+            + '<div class="portfolio-stat"><span class="ps-label">Total Trades</span><span class="ps-value">' + data.total_trades + '</span></div>'
+            + '<div class="portfolio-stat"><span class="ps-label">Open Positions</span><span class="ps-value">' + data.open_positions + '</span></div>';
+
+        if (data.best_trade) {
+            statsHtml += '<div class="portfolio-stat"><span class="ps-label">Best Trade</span><span class="ps-value" style="color:var(--green)">' + data.best_trade.symbol + ' +' + fmt(data.best_trade.pnl, 2) + '</span></div>';
+        }
+        if (data.worst_trade) {
+            statsHtml += '<div class="portfolio-stat"><span class="ps-label">Worst Trade</span><span class="ps-value" style="color:var(--red)">' + data.worst_trade.symbol + ' ' + fmt(data.worst_trade.pnl, 2) + '</span></div>';
+        }
+        statsHtml += '</div>';
+
+        var pieHtml = renderPieChart(data.by_symbol);
+
+        content.innerHTML = '<div class="portfolio-wrap">' + statsHtml + pieHtml + '</div>'
+            + '<div class="equity-chart-wrap" id="equity-chart"></div>';
+
+        loadEquityCurve();
+    } catch (err) {
+        console.error('loadPortfolio error:', err);
+        content.innerHTML = '<div class="bp-empty">Error loading portfolio</div>';
+    }
+}
+
+async function loadEquityCurve() {
+    var container = $('equity-chart');
+    if (!container) return;
+    try {
+        var resp = await fetch(API + '/api/equity-curve');
+        if (!resp.ok) return;
+        var data = await resp.json();
+
+        if (!data.curve || data.curve.length < 2) {
+            container.innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:11px;text-align:center">Not enough data for equity curve</div>';
+            return;
+        }
+
+        if (equityChart) {
+            equityChart.remove();
+            equityChart = null;
+            equityLineSeries = null;
+        }
+
+        var opts = getSubChartOptions();
+        opts.timeScale = { visible: true, borderColor: opts.rightPriceScale.borderColor, timeVisible: true };
+        opts.height = 150;
+        equityChart = LightweightCharts.createChart(container, opts);
+
+        equityLineSeries = equityChart.addLineSeries({
+            color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#00d4ff',
+            lineWidth: 2,
+            crosshairMarkerVisible: true,
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
+
+        var filtered = data.curve.filter(function(p) { return p.time > 0; });
+        if (filtered.length >= 2) {
+            equityLineSeries.setData(filtered);
+            equityChart.timeScale().fitContent();
+        }
+    } catch (err) {
+        console.error('loadEquityCurve error:', err);
     }
 }
 
