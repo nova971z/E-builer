@@ -3137,26 +3137,27 @@ def api_candles():
     limit = int(request.args.get("limit", 1000))
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info:
-        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
 
-    if sym_info["source"] == "stooq":
+    if sym_info and sym_info["source"] == "stooq":
         candles = generate_gold_silver_candles(sym_info, limit)
         return jsonify(candles)
 
     if interval not in INTERVALS:
         return jsonify({"error": f"Invalid interval: {interval}"}), 400
 
-    if limit <= 1000:
-        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
+    # Cap paginated requests to avoid timeouts
+    max_limit = min(limit, 10000)
+
+    if max_limit <= 1000:
+        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": max_limit}, ttl=10)
         if raw is None:
             return jsonify({"error": "Failed to fetch candles from Binance"}), 502
         return jsonify({"candles": transform_klines(raw)})
 
     all_klines = []
-    remaining = limit
+    remaining = max_limit
     end_time = None
-    for _ in range(200):
+    for _ in range(10):
         batch = min(remaining, 1000)
         params = {"symbol": symbol, "interval": interval, "limit": batch}
         if end_time is not None:
@@ -3177,10 +3178,8 @@ def api_candles():
 def api_price():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info:
-        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
 
-    if sym_info["source"] == "stooq":
+    if sym_info and sym_info["source"] == "stooq":
         data = fetch_stooq_price(sym_info)
         if not data:
             return jsonify({"error": "Failed to fetch price from Stooq"}), 502
@@ -3210,7 +3209,7 @@ def api_orderbook():
     limit = min(int(request.args.get("limit", 20)), 100)
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info or sym_info["source"] != "binance":
+    if sym_info and sym_info["source"] != "binance":
         return jsonify({"bids": [], "asks": [], "spread": 0, "spread_pct": 0})
 
     data = fetch_binance("/api/v3/depth", {"symbol": symbol, "limit": limit}, ttl=2)
@@ -3248,7 +3247,7 @@ def api_trades():
     limit = min(int(request.args.get("limit", 30)), 100)
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info or sym_info["source"] != "binance":
+    if sym_info and sym_info["source"] != "binance":
         return jsonify([])
 
     data = fetch_binance("/api/v3/trades", {"symbol": symbol, "limit": limit}, ttl=3)
@@ -3354,10 +3353,8 @@ def api_indicators():
     limit = min(int(request.args.get("limit", 500)), 1500)
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info:
-        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
 
-    if sym_info["source"] == "stooq":
+    if sym_info and sym_info["source"] == "stooq":
         ohlcv = generate_gold_silver_candles(sym_info, limit)
     else:
         raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
@@ -3393,10 +3390,8 @@ def api_dip_top():
     limit = min(int(request.args.get("limit", 500)), 1500)
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info:
-        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
 
-    if sym_info["source"] == "stooq":
+    if sym_info and sym_info["source"] == "stooq":
         ohlcv = generate_gold_silver_candles(sym_info, limit)
     else:
         raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
@@ -5140,15 +5135,13 @@ def api_bot_performance():
 def api_mtf_signals():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
-    if not sym_info:
-        return jsonify({"error": f"Unsupported symbol: {symbol}"}), 400
 
     timeframes = ["1h", "4h", "1d", "1w"]
     tf_results = {}
 
     for tf in timeframes:
         try:
-            if sym_info["source"] == "stooq":
+            if sym_info and sym_info["source"] == "stooq":
                 ohlcv = generate_gold_silver_candles(sym_info, 200)
             else:
                 raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": tf, "limit": 200}, ttl=30)
