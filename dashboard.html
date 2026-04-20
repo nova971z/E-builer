@@ -1194,6 +1194,33 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Heatmap bar */
+.heatmap-bar {
+    display: flex;
+    height: 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+}
+.hm-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+    min-width: 40px;
+    position: relative;
+    overflow: hidden;
+}
+.hm-cell:hover { opacity: 0.85; }
+.hm-cell .hm-sym { font-size: 9px; opacity: 0.8; }
+.hm-cell .hm-pct { font-size: 10px; font-weight: 700; }
+
 /* Sparkline mini-charts */
 .sparkline { display: inline-block; vertical-align: middle; line-height: 0; }
 .sparkline svg { display: block; }
@@ -1279,6 +1306,9 @@ button:active { opacity: 0.7; }
         <button onclick="changeSymbol('GOLD')">GOLD</button>
     </div>
 </div>
+
+<!-- HEATMAP -->
+<div class="heatmap-bar" id="heatmap-bar"></div>
 
 <!-- MAIN LAYOUT -->
 <div class="main-layout">
@@ -2295,6 +2325,8 @@ async function loadTicker() {
             if (cur.volume) $('stat-vol').textContent = fmtK(parseFloat(cur.volume));
         }
 
+        renderHeatmap(tickers);
+
     } catch (err) {
         console.error('loadTicker error:', err);
     }
@@ -3174,6 +3206,38 @@ async function loadWhales(symbol) {
     } catch (err) {
         console.error('loadWhales error:', err);
     }
+}
+
+// ========== HEATMAP ==========
+function heatmapColorScale(pct) {
+    var clamped = Math.max(-5, Math.min(5, pct));
+    var t = (clamped + 5) / 10;
+    var r = Math.round(246 + (14 - 246) * t);
+    var g = Math.round(70 + (203 - 70) * t);
+    var b = Math.round(93 + (129 - 93) * t);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+function renderHeatmap(tickers) {
+    var el = $('heatmap-bar');
+    if (!el || !tickers || !tickers.length) return;
+    var totalVol = 0;
+    for (var i = 0; i < tickers.length; i++) totalVol += (tickers[i].volume || 1);
+    var html = '';
+    for (var j = 0; j < tickers.length; j++) {
+        var t = tickers[j];
+        var pct = parseFloat(t.change_pct) || 0;
+        var bg = heatmapColorScale(pct);
+        var flex = ((t.volume || 1) / totalVol * 100).toFixed(1);
+        var sign = pct >= 0 ? '+' : '';
+        html += '<div class="hm-cell" style="flex:' + flex + ';background:' + bg
+            + '" title="' + t.symbol + ': $' + fmt(parseFloat(t.price)) + ' (' + sign + pct.toFixed(2) + '%)"'
+            + ' onclick="changeSymbol(\'' + t.symbol + '\')">'
+            + '<span class="hm-sym">' + (t.base || t.symbol) + '</span>'
+            + '<span class="hm-pct">' + sign + pct.toFixed(2) + '%</span>'
+            + '</div>';
+    }
+    el.innerHTML = html;
 }
 
 // ========== AUTO-REFRESH INTERVALS ==========

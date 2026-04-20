@@ -1970,6 +1970,9 @@ def api_ticker():
                 "base": SUPPORTED_SYMBOLS[pair]["base"],
                 "price": price_map[pair],
                 "change_pct": change_pct,
+                "high": float(ticker_24h.get("highPrice", 0)) if ticker_24h else 0,
+                "low": float(ticker_24h.get("lowPrice", 0)) if ticker_24h else 0,
+                "volume": float(ticker_24h.get("quoteVolume", 0)) if ticker_24h else 0,
             })
 
     for sym_key in ("GOLD", "SILVER"):
@@ -1981,9 +1984,12 @@ def api_ticker():
                 "base": sym_info["base"],
                 "price": stooq["price"],
                 "change_pct": 0,
+                "high": 0,
+                "low": 0,
+                "volume": 0,
             })
 
-    return jsonify(result)
+    return jsonify({"tickers": result})
 
 
 # ===========================================================================
