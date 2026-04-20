@@ -3200,17 +3200,6 @@ function syncTimeScales() {
 
 // ========== LOAD CANDLES ==========
 function candleLimit() {
-    var tf = currentInterval;
-    if (tf === '1m') return 10000;
-    if (tf === '3m') return 10000;
-    if (tf === '5m') return 10000;
-    if (tf === '15m') return 10000;
-    if (tf === '30m') return 10000;
-    if (tf === '1h') return 10000;
-    if (tf === '4h') return 10000;
-    if (tf === '1d') return 5000;
-    if (tf === '1w') return 2000;
-    if (tf === '1M') return 1000;
     return 10000;
 }
 
