@@ -383,6 +383,28 @@ log = logging.getLogger("jarvis")
 app = Flask(__name__, static_folder=str(BASE_DIR))
 CORS(app)
 
+import gzip as _gzip
+
+@app.after_request
+def _compress(response):
+    if (response.status_code < 200 or response.status_code >= 300
+        or response.content_length is not None and response.content_length < 512
+        or 'Content-Encoding' in response.headers
+        or 'gzip' not in request.headers.get('Accept-Encoding', '')):
+        return response
+    ct = response.content_type or ''
+    if not (ct.startswith('application/json') or ct.startswith('text/')):
+        return response
+    data = response.get_data()
+    if len(data) < 512:
+        return response
+    compressed = _gzip.compress(data, compresslevel=1)
+    response.set_data(compressed)
+    response.headers['Content-Encoding'] = 'gzip'
+    response.headers['Content-Length'] = len(compressed)
+    response.headers['Vary'] = 'Accept-Encoding'
+    return response
+
 # ---------------------------------------------------------------------------
 # Thread-safe cache with TTL
 # ---------------------------------------------------------------------------

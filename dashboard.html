@@ -367,6 +367,23 @@ button:active { opacity: 0.7; }
     pointer-events: none;
 }
 
+.pnl-curve-wrap { height: 100px; min-height: 80px; }
+.pnl-curve-wrap #pnl-container { width: 100%; height: 100%; }
+.pnl-stats {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--text-muted);
+    z-index: 5;
+    pointer-events: none;
+    font-family: var(--font-mono);
+}
+.pnl-stats .up { color: var(--green); }
+.pnl-stats .down { color: var(--red); }
+
 #rsi-container, #macd-container {
     width: 100%;
     height: 100%;
@@ -1909,6 +1926,17 @@ button:active { opacity: 0.7; }
             <div id="macd-container"></div>
         </div>
 
+        <!-- P&L Equity Curve -->
+        <div class="subchart-wrap pnl-curve-wrap" id="pnl-section">
+            <span class="subchart-label">P&L Equity Curve</span>
+            <div class="pnl-stats" id="pnl-stats">
+                <span id="pnl-capital">Capital: --</span>
+                <span id="pnl-current">Equity: --</span>
+                <span id="pnl-change">Change: --</span>
+            </div>
+            <div id="pnl-container"></div>
+        </div>
+
         <!-- Bottom Panel (positions) -->
         <div class="bottom-panel">
             <div class="bp-tabs">
@@ -2356,6 +2384,13 @@ let macdChart = null;
 let macdLineSeries = null;
 let macdSignalSeries = null;
 let macdHistSeries = null;
+let pnlChart = null;
+let pnlSeries = null;
+
+// WebSocket for real-time candle updates
+let binanceWS = null;
+let wsReconnectTimer = null;
+let wsConnected = false;
 
 // Indicator overlay series (nullable — toggled on/off)
 let bbUpperSeries = null;
@@ -2575,13 +2610,80 @@ function initMACDChart() {
     }).observe(container);
 }
 
+// ========== P&L EQUITY CURVE CHART ==========
+function initPnlChart() {
+    var container = $('pnl-container');
+    if (!container) return;
+
+    pnlChart = LightweightCharts.createChart(container, {
+        ...getSubChartOptions(),
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+
+    pnlSeries = pnlChart.addAreaSeries({
+        topColor: 'rgba(0,212,255,0.3)',
+        bottomColor: 'rgba(0,212,255,0.02)',
+        lineColor: '#00d4ff',
+        lineWidth: 2,
+        priceFormat: { type: 'custom', formatter: function(v) { return '$' + v.toFixed(2); } },
+    });
+
+    pnlChart.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+    });
+
+    new ResizeObserver(function() {
+        pnlChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+async function loadPnlCurve() {
+    try {
+        var resp = await fetch(API + '/api/equity-curve');
+        if (!resp.ok) return;
+        var data = await resp.json();
+
+        if (!data.curve || !data.curve.length) return;
+
+        var points = [];
+        for (var i = 0; i < data.curve.length; i++) {
+            var p = data.curve[i];
+            if (p.time > 0) {
+                points.push({ time: epochToLocal(p.time), value: p.value });
+            }
+        }
+
+        if (pnlSeries && points.length > 0) {
+            pnlSeries.setData(points);
+        }
+
+        // Update stats display
+        var capitalEl = $('pnl-capital');
+        var currentEl = $('pnl-current');
+        var changeEl = $('pnl-change');
+
+        if (capitalEl) capitalEl.textContent = 'Capital: $' + (data.initial_capital || 0).toFixed(2);
+        if (currentEl) currentEl.textContent = 'Equity: $' + (data.current_equity || 0).toFixed(2);
+
+        if (changeEl) {
+            var pct = data.initial_capital > 0 ? ((data.current_equity - data.initial_capital) / data.initial_capital * 100) : 0;
+            var sign = pct >= 0 ? '+' : '';
+            changeEl.textContent = 'Change: ' + sign + pct.toFixed(2) + '%';
+            changeEl.className = pct >= 0 ? 'up' : 'down';
+        }
+    } catch (e) {
+        console.warn('loadPnlCurve:', e);
+    }
+}
+
 // ========== SYNC TIME SCALES ==========
 function syncTimeScales() {
     if (!mainChart || !rsiChart || !macdChart) return;
 
-    const mainTS = mainChart.timeScale();
-    const rsiTS = rsiChart.timeScale();
-    const macdTS = macdChart.timeScale();
+    var mainTS = mainChart.timeScale();
+    var rsiTS = rsiChart.timeScale();
+    var macdTS = macdChart.timeScale();
 
     let syncing = false;
 
@@ -2611,14 +2713,22 @@ function syncTimeScales() {
 }
 
 // ========== LOAD CANDLES ==========
-async function loadCandles(symbol, interval) {
+function candleLimit() {
+    var tf = currentInterval;
+    if (tf === '1m' || tf === '3m') return 300;
+    if (tf === '5m' || tf === '15m') return 300;
+    return 300;
+}
+
+async function loadCandles(symbol, interval, skipIndicators) {
     symbol = symbol || currentSymbol;
     interval = interval || currentInterval;
 
     try {
-        const resp = await fetch(API + '/api/candles?symbol=' + symbol + '&interval=' + interval + '&limit=500');
+        var lim = candleLimit();
+        var resp = await fetch(API + '/api/candles?symbol=' + symbol + '&interval=' + interval + '&limit=' + lim);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
+        var data = await resp.json();
 
         if (!data.candles || !data.candles.length) {
             console.warn('No candle data received');
@@ -2626,34 +2736,120 @@ async function loadCandles(symbol, interval) {
         }
 
         candleData = data.candles;
+        renderCandleData(candleData);
 
-        const candles = [];
-        const volumes = [];
+        // Connect WebSocket for real-time streaming
+        connectBinanceWS(symbol, interval);
 
-        for (let i = 0; i < candleData.length; i++) {
-            const c = candleData[i];
-            const t = epochToLocal(Math.floor(c.time / 1000));
-            candles.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
-            volumes.push({
-                time: t,
-                value: c.volume,
-                color: c.close >= c.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
-            });
-        }
-
-        candleSeries.setData(candles);
-        volumeSeries.setData(volumes);
-
-        // Update price display
-        const last = candleData[candleData.length - 1];
-        if (last) updateAssetPrice(last.close, candleData.length > 1 ? candleData[candleData.length - 2].close : last.open);
-
-        // Load indicators after candles
-        loadIndicators(symbol, interval);
+        if (!skipIndicators) loadIndicators(symbol, interval);
 
     } catch (err) {
         console.error('loadCandles error:', err);
     }
+}
+
+function renderCandleData(data) {
+    var candles = [];
+    var volumes = [];
+
+    for (var i = 0; i < data.length; i++) {
+        var c = data[i];
+        var t = epochToLocal(c.time);
+        candles.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
+        volumes.push({
+            time: t,
+            value: c.volume,
+            color: c.close >= c.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)',
+        });
+    }
+
+    candleSeries.setData(candles);
+    volumeSeries.setData(volumes);
+
+    var last = data[data.length - 1];
+    if (last) updateAssetPrice(last.close, data.length > 1 ? data[data.length - 2].close : last.open);
+}
+
+// ========== BINANCE WEBSOCKET — REAL-TIME CANDLES ==========
+function connectBinanceWS(symbol, interval) {
+    if (binanceWS) {
+        binanceWS.onclose = null;
+        binanceWS.close();
+        binanceWS = null;
+    }
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+
+    var sym = symbol.toLowerCase();
+    // Gold/Silver don't have Binance WS
+    if (sym === 'gold' || sym === 'silver') return;
+
+    var url = 'wss://stream.binance.com:9443/ws/' + sym + '@kline_' + interval;
+    try {
+        binanceWS = new WebSocket(url);
+    } catch (e) {
+        console.warn('WebSocket not supported or blocked');
+        return;
+    }
+
+    binanceWS.onopen = function() {
+        wsConnected = true;
+        var dot = $('net-dot');
+        if (dot) dot.style.background = '#0ecb81';
+    };
+
+    binanceWS.onmessage = function(evt) {
+        try {
+            var msg = JSON.parse(evt.data);
+            if (!msg.k) return;
+            var k = msg.k;
+
+            var t = epochToLocal(Math.floor(k.t / 1000));
+            var candle = { time: t, open: parseFloat(k.o), high: parseFloat(k.h), low: parseFloat(k.l), close: parseFloat(k.c) };
+            var vol = { time: t, value: parseFloat(k.v), color: candle.close >= candle.open ? 'rgba(14,203,129,0.3)' : 'rgba(246,70,93,0.3)' };
+
+            candleSeries.update(candle);
+            volumeSeries.update(vol);
+
+            // Update price display with every tick
+            var prevClose = candleData.length > 1 ? candleData[candleData.length - 2].close : candle.open;
+            updateAssetPrice(candle.close, prevClose);
+
+            // Update candleData array (last element)
+            var newCandle = { time: Math.floor(k.t / 1000), open: candle.open, high: candle.high, low: candle.low, close: candle.close, volume: parseFloat(k.v) };
+            if (candleData.length > 0 && candleData[candleData.length - 1].time === newCandle.time) {
+                candleData[candleData.length - 1] = newCandle;
+            } else {
+                candleData.push(newCandle);
+            }
+
+            // Update asset bar price
+            var el = $('asset-price');
+            if (el) {
+                el.textContent = fmt(candle.close);
+                el.classList.remove('up', 'down');
+                el.classList.add(candle.close >= prevClose ? 'up' : 'down');
+            }
+        } catch (e) {}
+    };
+
+    binanceWS.onclose = function() {
+        wsConnected = false;
+        var dot = $('net-dot');
+        if (dot) dot.style.background = '#f6465d';
+        // Reconnect after 3 seconds
+        wsReconnectTimer = setTimeout(function() {
+            if (symbol === currentSymbol && interval === currentInterval) {
+                connectBinanceWS(symbol, interval);
+            }
+        }, 3000);
+    };
+
+    binanceWS.onerror = function() {
+        wsConnected = false;
+    };
 }
 
 // ========== LOAD INDICATORS ==========
@@ -2675,7 +2871,7 @@ async function loadIndicators(symbol, interval) {
             const rsiData = [];
             for (let i = 0; i < ind.rsi.length; i++) {
                 if (ind.rsi[i] != null && candleData[i]) {
-                    rsiData.push({ time: epochToLocal(Math.floor(candleData[i].time / 1000)), value: ind.rsi[i] });
+                    rsiData.push({ time: epochToLocal(candleData[i].time), value: ind.rsi[i] });
                 }
             }
             rsiSeries.setData(rsiData);
@@ -2688,7 +2884,7 @@ async function loadIndicators(symbol, interval) {
             for (let i = 0; i < (macd.line || []).length; i++) {
                 const ci = candleData.length - (macd.line.length - i);
                 if (ci < 0 || !candleData[ci]) continue;
-                const t = epochToLocal(Math.floor(candleData[ci].time / 1000));
+                const t = epochToLocal(candleData[ci].time);
                 if (macd.line[i] != null) macdL.push({ time: t, value: macd.line[i] });
                 if (macd.signal && macd.signal[i] != null) macdS.push({ time: t, value: macd.signal[i] });
                 if (macd.histogram && macd.histogram[i] != null) {
@@ -2728,7 +2924,7 @@ function buildOverlayData(values) {
     for (let i = 0; i < values.length; i++) {
         const ci = candleData.length - (values.length - i);
         if (ci < 0 || !candleData[ci] || values[i] == null) continue;
-        result.push({ time: epochToLocal(Math.floor(candleData[ci].time / 1000)), value: values[i] });
+        result.push({ time: epochToLocal(candleData[ci].time), value: values[i] });
     }
     return result;
 }
@@ -2804,10 +3000,9 @@ function changeSymbol(sym) {
     saveDrawings();
     currentSymbol = sym;
     $('symbol-select').value = sym;
-    const unit = sym.replace('USDT', '').replace('GOLD', 'XAU').replace('SILVER', 'XAG');
+    var unit = sym.replace('USDT', '').replace('GOLD', 'XAU').replace('SILVER', 'XAG');
     $('qty-unit').textContent = unit;
 
-    // Clear overlays before reload
     removeBollinger();
     removeEMA('ema9');
     removeEMA('ema21');
@@ -5123,16 +5318,19 @@ function startAutoRefresh() {
     // Fast: 2s — order book
     refreshTimers.push(setInterval(function() { loadOrderBook(); }, 2000));
 
-    // Medium-fast: 5s — trades + price
-    refreshTimers.push(setInterval(function() { loadTrades(); loadPriceData(); }, 5000));
+    // Medium-fast: 5s — trades + price (price only if WS not connected)
+    refreshTimers.push(setInterval(function() { loadTrades(); if (!wsConnected) loadPriceData(); }, 5000));
 
     // Medium: 10s — ticker
     refreshTimers.push(setInterval(function() { loadTicker(); }, 10000));
 
-    // Moderate: 30s — candles + indicators + sparklines + alerts check
-    refreshTimers.push(setInterval(function() { loadCandles(); loadSparklines().then(updateAssetSparkline); checkAlerts(); }, 30000));
+    // 30s — sparklines + alerts (NO full candle reload — WS handles real-time)
+    refreshTimers.push(setInterval(function() { loadSparklines().then(updateAssetSparkline); checkAlerts(); }, 30000));
 
-    // Slow: 60s — positions, wallet, paper status, kill switch, funding, sentiment, MTF
+    // 60s — indicators refresh (decoupled from candles for speed)
+    refreshTimers.push(setInterval(function() { loadIndicators(); }, 60000));
+
+    // 60s — positions, wallet, paper status, kill switch, funding, sentiment, MTF
     refreshTimers.push(setInterval(function() {
         loadPositions();
         loadWallet();
@@ -5148,19 +5346,25 @@ function startAutoRefresh() {
         if (gmxPanelOpen) { loadGMXPositions(); loadGMXEntryPlan(); }
     }, 30000));
 
-    // Very slow: 120s — fear & greed, drawdown, dip/top
+    // 120s — fear & greed, drawdown, dip/top, P&L equity curve
     refreshTimers.push(setInterval(function() {
         loadFearGreed();
         loadDrawdown();
         loadDipTop();
+        loadPnlCurve();
     }, 120000));
 
-    // Glacial: 300s — news, calendar, whales
+    // 300s — news, calendar, whales
     refreshTimers.push(setInterval(function() {
         loadNews();
         loadCalendar();
         loadWhales();
     }, 300000));
+
+    // WS fallback: if WebSocket disconnects, reload candles via REST every 15s
+    refreshTimers.push(setInterval(function() {
+        if (!wsConnected) loadCandles(null, null, true);
+    }, 15000));
 
     // Clock: 1s
     refreshTimers.push(setInterval(updateClock, 1000));
@@ -5195,6 +5399,7 @@ function applyChartTheme() {
     if (mainChart) mainChart.applyOptions(opts);
     if (rsiChart) rsiChart.applyOptions(subOpts);
     if (macdChart) macdChart.applyOptions(subOpts);
+    if (pnlChart) pnlChart.applyOptions(subOpts);
 }
 
 function toggleTheme() {
@@ -5224,6 +5429,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initMainChart();
     initRSIChart();
     initMACDChart();
+    initPnlChart();
     syncTimeScales();
     loadDrawings();
 
@@ -5249,6 +5455,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadSparklines().then(updateAssetSparkline);
     loadMTF();
     checkAlerts();
+    loadPnlCurve();
 
     // Start auto-refresh
     startAutoRefresh();
