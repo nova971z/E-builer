@@ -3500,6 +3500,11 @@ function renderCandleData(data) {
     candleSeries.setData(candles);
     volumeSeries.setData(volumes);
 
+    // Scroll to latest candle — show last ~80 candles centered
+    if (mainChart && candles.length > 0) {
+        mainChart.timeScale().scrollToPosition(5, false);
+    }
+
     var last = data[data.length - 1];
     if (last) updateAssetPrice(last.close, data.length > 1 ? data[data.length - 2].close : last.open);
 }
@@ -3587,75 +3592,174 @@ function connectBinanceWS(symbol, interval) {
 }
 
 // ========== LOAD INDICATORS ==========
+// ===== CLIENT-SIDE INDICATOR CALCULATIONS =====
+function clientCalcRSI(closes, period) {
+    period = period || 14;
+    var rsi = [];
+    if (closes.length < period + 1) return rsi;
+    var gains = 0, losses = 0;
+    for (var i = 1; i <= period; i++) {
+        var diff = closes[i] - closes[i - 1];
+        if (diff > 0) gains += diff; else losses -= diff;
+    }
+    var avgGain = gains / period;
+    var avgLoss = losses / period;
+    for (var j = 0; j < period; j++) rsi.push(null);
+    rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    for (var k = period + 1; k < closes.length; k++) {
+        var d = closes[k] - closes[k - 1];
+        avgGain = (avgGain * (period - 1) + (d > 0 ? d : 0)) / period;
+        avgLoss = (avgLoss * (period - 1) + (d < 0 ? -d : 0)) / period;
+        rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    }
+    return rsi;
+}
+
+function clientCalcEMA(data, period) {
+    var ema = [];
+    if (data.length < period) return ema;
+    var mult = 2 / (period + 1);
+    var sum = 0;
+    for (var i = 0; i < period; i++) { sum += data[i]; ema.push(null); }
+    ema[period - 1] = sum / period;
+    for (var j = period; j < data.length; j++) {
+        ema.push(data[j] * mult + ema[ema.length - 1] * (1 - mult));
+    }
+    return ema;
+}
+
+function clientCalcMACD(closes, fast, slow, sig) {
+    fast = fast || 12; slow = slow || 26; sig = sig || 9;
+    var emaFast = clientCalcEMA(closes, fast);
+    var emaSlow = clientCalcEMA(closes, slow);
+    var line = [];
+    for (var i = 0; i < closes.length; i++) {
+        if (emaFast[i] != null && emaSlow[i] != null) line.push(emaFast[i] - emaSlow[i]);
+        else line.push(null);
+    }
+    var nonNull = line.filter(function(v) { return v != null; });
+    var signalLine = clientCalcEMA(nonNull, sig);
+    var signal = [], histogram = [];
+    var si = 0;
+    for (var j = 0; j < line.length; j++) {
+        if (line[j] == null) { signal.push(null); histogram.push(null); continue; }
+        var sv = signalLine[si] != null ? signalLine[si] : null;
+        signal.push(sv);
+        histogram.push(sv != null ? line[j] - sv : null);
+        si++;
+    }
+    return { line: line, signal: signal, histogram: histogram };
+}
+
+function clientCalcBollinger(closes, period, stdDev) {
+    period = period || 20; stdDev = stdDev || 2;
+    var upper = [], middle = [], lower = [];
+    for (var i = 0; i < closes.length; i++) {
+        if (i < period - 1) { upper.push(null); middle.push(null); lower.push(null); continue; }
+        var sum = 0;
+        for (var j = i - period + 1; j <= i; j++) sum += closes[j];
+        var mean = sum / period;
+        var sqSum = 0;
+        for (var k = i - period + 1; k <= i; k++) sqSum += (closes[k] - mean) * (closes[k] - mean);
+        var std = Math.sqrt(sqSum / period);
+        middle.push(mean);
+        upper.push(mean + stdDev * std);
+        lower.push(mean - stdDev * std);
+    }
+    return { upper: upper, middle: middle, lower: lower };
+}
+
+function computeClientIndicators() {
+    if (!candleData || candleData.length < 30) return;
+    var closes = [];
+    var times = [];
+    for (var i = 0; i < candleData.length; i++) {
+        closes.push(candleData[i].close);
+        times.push(epochToLocal(candleData[i].time));
+    }
+
+    // RSI
+    if (rsiSeries) {
+        var rsi = clientCalcRSI(closes, 14);
+        var rsiData = [];
+        for (var r = 0; r < rsi.length; r++) {
+            if (rsi[r] != null) rsiData.push({ time: times[r], value: rsi[r] });
+        }
+        rsiSeries.setData(rsiData);
+    }
+
+    // MACD
+    if (macdLineSeries) {
+        var macd = clientCalcMACD(closes);
+        var mL = [], mS = [], mH = [];
+        for (var m = 0; m < macd.line.length; m++) {
+            if (macd.line[m] != null) mL.push({ time: times[m], value: macd.line[m] });
+            if (macd.signal[m] != null) mS.push({ time: times[m], value: macd.signal[m] });
+            if (macd.histogram[m] != null) {
+                mH.push({ time: times[m], value: macd.histogram[m],
+                    color: macd.histogram[m] >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)' });
+            }
+        }
+        macdLineSeries.setData(mL);
+        macdSignalSeries.setData(mS);
+        macdHistSeries.setData(mH);
+    }
+
+    // Bollinger
+    if (indicatorState.bb) {
+        var bb = clientCalcBollinger(closes);
+        var bbU = [], bbM = [], bbL = [];
+        for (var b = 0; b < bb.upper.length; b++) {
+            if (bb.upper[b] != null) bbU.push({ time: times[b], value: bb.upper[b] });
+            if (bb.middle[b] != null) bbM.push({ time: times[b], value: bb.middle[b] });
+            if (bb.lower[b] != null) bbL.push({ time: times[b], value: bb.lower[b] });
+        }
+        applyBollinger({ upper: bbU, middle: bbM, lower: bbL });
+    }
+
+    // EMAs
+    if (indicatorState.ema9) {
+        var e9 = clientCalcEMA(closes, 9);
+        var d9 = [];
+        for (var a = 0; a < e9.length; a++) if (e9[a] != null) d9.push({ time: times[a], value: e9[a] });
+        applyEMA(d9, 'ema9', '#f0b90b');
+    }
+    if (indicatorState.ema21) {
+        var e21 = clientCalcEMA(closes, 21);
+        var d21 = [];
+        for (var a2 = 0; a2 < e21.length; a2++) if (e21[a2] != null) d21.push({ time: times[a2], value: e21[a2] });
+        applyEMA(d21, 'ema21', '#ff8c00');
+    }
+    if (indicatorState.ema50) {
+        var e50 = clientCalcEMA(closes, 50);
+        var d50 = [];
+        for (var a5 = 0; a5 < e50.length; a5++) if (e50[a5] != null) d50.push({ time: times[a5], value: e50[a5] });
+        applyEMA(d50, 'ema50', '#00d4ff');
+    }
+    if (indicatorState.ema200) {
+        var e200 = clientCalcEMA(closes, 200);
+        var d200 = [];
+        for (var a20 = 0; a20 < e200.length; a20++) if (e200[a20] != null) d200.push({ time: times[a20], value: e200[a20] });
+        applyEMA(d200, 'ema200', '#e040fb');
+    }
+}
+
 async function loadIndicators(symbol, interval) {
     symbol = symbol || currentSymbol;
     interval = interval || currentInterval;
 
+    // Compute RSI, MACD, BB, EMA client-side from candleData (full coverage)
+    computeClientIndicators();
+
+    // Fetch regime + signal from server (lightweight, no candle data needed for display)
     try {
-        const resp = await fetch(API + '/api/indicators?symbol=' + symbol + '&interval=' + interval);
+        var resp = await fetch(API + '/api/indicators?symbol=' + symbol + '&interval=' + interval + '&limit=1000');
         if (!resp.ok) return;
-        const data = await resp.json();
-
-        const ind = data;
-        const regime = data.regime || {};
-        const signal = data.signal || {};
-
-        // RSI sub-chart — server returns [{time, value}, ...]
-        if (ind.rsi && rsiSeries) {
-            var rsiData = [];
-            for (var i = 0; i < ind.rsi.length; i++) {
-                var pt = ind.rsi[i];
-                if (pt && pt.value != null) {
-                    rsiData.push({ time: epochToLocal(pt.time), value: pt.value });
-                }
-            }
-            rsiSeries.setData(rsiData);
-        }
-
-        // MACD sub-chart — server returns {line: [{time,value},...], signal: [...], histogram: [...]}
-        if (ind.macd && macdLineSeries) {
-            var macdL = [], macdS = [], macdH = [];
-            var macdLine = ind.macd.line || [];
-            var macdSig = ind.macd.signal || [];
-            var macdHist = ind.macd.histogram || [];
-            for (var j = 0; j < macdLine.length; j++) {
-                var mp = macdLine[j];
-                if (mp && mp.value != null) macdL.push({ time: epochToLocal(mp.time), value: mp.value });
-            }
-            for (var k = 0; k < macdSig.length; k++) {
-                var sp = macdSig[k];
-                if (sp && sp.value != null) macdS.push({ time: epochToLocal(sp.time), value: sp.value });
-            }
-            for (var h = 0; h < macdHist.length; h++) {
-                var hp = macdHist[h];
-                if (hp && hp.value != null) {
-                    macdH.push({
-                        time: epochToLocal(hp.time),
-                        value: hp.value,
-                        color: hp.value >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)',
-                    });
-                }
-            }
-            macdLineSeries.setData(macdL);
-            macdSignalSeries.setData(macdS);
-            macdHistSeries.setData(macdH);
-        }
-
-        // Bollinger Bands overlay
-        if (indicatorState.bb && ind.bollinger) applyBollinger(ind.bollinger);
-
-        // EMA overlays
-        if (indicatorState.ema9 && ind.ema9) applyEMA(ind.ema9, 'ema9', '#f0b90b');
-        if (indicatorState.ema21 && ind.ema21) applyEMA(ind.ema21, 'ema21', '#ff8c00');
-        if (indicatorState.ema50 && ind.ema50) applyEMA(ind.ema50, 'ema50', '#00d4ff');
-        if (indicatorState.ema200 && ind.ema200) applyEMA(ind.ema200, 'ema200', '#e040fb');
-
-        // Update footer regime + signal
-        updateRegimeDisplay(regime);
-        updateSignalDisplay(signal);
-
+        var data = await resp.json();
+        updateRegimeDisplay(data.regime || {});
+        updateSignalDisplay(data.signal || {});
     } catch (err) {
-        console.error('loadIndicators error:', err);
+        console.error('loadIndicators regime/signal error:', err);
     }
 }
 
@@ -3675,17 +3779,17 @@ function applyBollinger(bb) {
 
     removeBollinger();
 
-    if (bb.upper) {
+    if (bb.upper && bb.upper.length) {
         bbUpperSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.4)', lineWidth: 1, lineStyle: 2 });
-        bbUpperSeries.setData(buildOverlayData(bb.upper));
+        bbUpperSeries.setData(bb.upper);
     }
-    if (bb.middle) {
+    if (bb.middle && bb.middle.length) {
         bbMiddleSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.25)', lineWidth: 1, lineStyle: 1 });
-        bbMiddleSeries.setData(buildOverlayData(bb.middle));
+        bbMiddleSeries.setData(bb.middle);
     }
-    if (bb.lower) {
+    if (bb.lower && bb.lower.length) {
         bbLowerSeries = mainChart.addLineSeries({ color: 'rgba(0,212,255,0.4)', lineWidth: 1, lineStyle: 2 });
-        bbLowerSeries.setData(buildOverlayData(bb.lower));
+        bbLowerSeries.setData(bb.lower);
     }
 }
 
@@ -3699,8 +3803,8 @@ function applyEMA(values, key, color) {
     if (!mainChart) return;
     removeEMA(key);
 
-    const series = mainChart.addLineSeries({ color: color, lineWidth: 1 });
-    series.setData(buildOverlayData(values));
+    var series = mainChart.addLineSeries({ color: color, lineWidth: 1 });
+    series.setData(values);
 
     if (key === 'ema9') ema9Series = series;
     else if (key === 'ema21') ema21Series = series;

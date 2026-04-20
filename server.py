@@ -3347,7 +3347,7 @@ def api_markets():
 def api_indicators():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     interval = request.args.get("interval", "1h")
-    limit = min(int(request.args.get("limit", 500)), 1500)
+    limit = min(int(request.args.get("limit", 1000)), 1000)
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
 
