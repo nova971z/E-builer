@@ -3134,7 +3134,7 @@ paper_trader = PaperTrader()
 def api_candles():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     interval = request.args.get("interval", "1h")
-    limit = min(int(request.args.get("limit", 500)), 1500)
+    limit = int(request.args.get("limit", 1000))
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
     if not sym_info:
@@ -3147,10 +3147,31 @@ def api_candles():
     if interval not in INTERVALS:
         return jsonify({"error": f"Invalid interval: {interval}"}), 400
 
-    raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
-    if raw is None:
-        return jsonify({"error": "Failed to fetch candles from Binance"}), 502
-    return jsonify({"candles": transform_klines(raw)})
+    if limit <= 1000:
+        raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
+        if raw is None:
+            return jsonify({"error": "Failed to fetch candles from Binance"}), 502
+        return jsonify({"candles": transform_klines(raw)})
+
+    all_klines = []
+    remaining = limit
+    end_time = None
+    for _ in range(10):
+        batch = min(remaining, 1000)
+        params = {"symbol": symbol, "interval": interval, "limit": batch}
+        if end_time is not None:
+            params["endTime"] = end_time - 1
+        cache_key_suffix = f":{end_time}" if end_time else ""
+        raw = fetch_binance("/api/v3/klines", params, ttl=15)
+        if not raw:
+            break
+        all_klines = raw + all_klines
+        remaining -= len(raw)
+        if remaining <= 0 or len(raw) < batch:
+            break
+        end_time = int(raw[0][0])
+
+    return jsonify({"candles": transform_klines(all_klines)})
 
 
 @app.route("/api/price")
