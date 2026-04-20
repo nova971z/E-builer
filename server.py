@@ -2038,7 +2038,72 @@ class GMXAdapter(ExchangeAdapter):
         return raw / (10 ** decimals)
 
     def get_balance(self):
-        return {"exchange": "GMX", "error": "Not yet implemented (step 3)", "assets": {}}
+        if not HAS_WEB3:
+            return {"exchange": "GMX", "error": "web3.py not installed", "assets": {}}
+        if not self._ensure_connection():
+            return {"exchange": "GMX", "error": "Cannot connect to Arbitrum RPC", "assets": {}}
+        if not self._has_signer():
+            return {"exchange": "GMX", "error": "No private key configured (read-only)", "assets": {}}
+
+        address = self._account.address
+        assets = {}
+        total_usdt = 0.0
+
+        try:
+            eth_raw = self._w3.eth.get_balance(address)
+            eth_balance = eth_raw / 10**18
+            if eth_balance > 0:
+                assets["ETH"] = {"total": round(eth_balance, 8), "free": round(eth_balance, 8), "used": 0.0}
+        except Exception as e:
+            log.warning("GMX get_balance ETH failed: %s", e)
+
+        token_configs = [
+            ("WETH", GMX_V2_TOKENS["WETH"], 18),
+            ("USDC", GMX_V2_TOKENS["USDC"], 6),
+            ("USDC.e", GMX_V2_TOKENS["USDC_BRIDGED"], 6),
+            ("WBTC", GMX_V2_TOKENS["WBTC"], 8),
+            ("ARB", GMX_V2_TOKENS["ARB"], 18),
+        ]
+
+        for token_name, token_addr, decimals in token_configs:
+            try:
+                balance = self._get_token_balance(token_addr, decimals)
+                if balance > 0:
+                    assets[token_name] = {"total": round(balance, 8), "free": round(balance, 8), "used": 0.0}
+                    if token_name in ("USDC", "USDC.e"):
+                        total_usdt += balance
+            except Exception as e:
+                log.warning("GMX get_balance %s failed: %s", token_name, e)
+
+        # Read collateral locked in GMX positions via Reader contract
+        try:
+            reader = self._contracts.get("reader")
+            data_store = self._contracts.get("data_store")
+            if reader and data_store:
+                positions = reader.functions.getAccountPositions(data_store, address, 0, 50).call()
+                collateral_locked = 0.0
+                for pos in positions:
+                    numbers = pos[1]
+                    collateral_raw = numbers[2]
+                    collateral_token = pos[0][2]
+                    token_decimals = 6 if collateral_token.lower() == GMX_V2_TOKENS["USDC"].lower() else 18
+                    collateral_locked += collateral_raw / (10 ** token_decimals)
+                if collateral_locked > 0:
+                    assets["GMX_COLLATERAL"] = {"total": round(collateral_locked, 4), "free": 0.0, "used": round(collateral_locked, 4)}
+                    total_usdt += collateral_locked
+        except Exception as e:
+            log.debug("GMX collateral read skipped: %s", e)
+
+        if "USDC" in assets:
+            total_usdt = max(total_usdt, assets["USDC"]["total"])
+
+        return {
+            "exchange": "GMX",
+            "network": "Arbitrum One" if not self.testnet else "Arbitrum Sepolia",
+            "account": address,
+            "assets": assets,
+            "total_usdt": round(total_usdt, 2),
+        }
 
     def get_positions(self):
         return []
