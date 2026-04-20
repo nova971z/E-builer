@@ -1874,36 +1874,202 @@ class MEXCAdapter(ExchangeAdapter):
 
 
 # ---------------------------------------------------------------------------
-# GMX Adapter — Placeholder (Arbitrum on-chain, requires web3.py)
+# GMX V2 — Web3 Connection & Contract Helpers
+# ---------------------------------------------------------------------------
+
+_web3_instances = {}
+_web3_lock = threading.Lock()
+
+
+def get_web3(rpc_url=None, testnet=False):
+    """Create or retrieve a cached Web3 instance connected to Arbitrum."""
+    if not HAS_WEB3:
+        return None, False
+
+    if rpc_url is None:
+        rpc_url = GMX_RPC_TESTNET if testnet else GMX_RPC_MAINNET
+
+    with _web3_lock:
+        if rpc_url in _web3_instances:
+            w3 = _web3_instances[rpc_url]
+            try:
+                if w3.is_connected():
+                    return w3, True
+            except Exception:
+                pass
+            del _web3_instances[rpc_url]
+
+        try:
+            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            if w3.is_connected():
+                _web3_instances[rpc_url] = w3
+                log.info("Web3 connected: %s (chain=%d)", rpc_url, w3.eth.chain_id)
+                return w3, True
+            return w3, False
+        except Exception as e:
+            log.error("Web3 connection failed (%s): %s", rpc_url, e)
+            return None, False
+
+
+def get_gmx_contracts(w3, testnet=False):
+    """Instantiate GMX V2 contract objects from a Web3 instance."""
+    if w3 is None:
+        return {}
+    addresses = GMX_V2_CONTRACTS_TESTNET if testnet else GMX_V2_CONTRACTS_MAINNET
+    try:
+        return {
+            "reader": w3.eth.contract(
+                address=Web3.to_checksum_address(addresses["Reader"]),
+                abi=GMX_READER_ABI,
+            ),
+            "exchange_router": w3.eth.contract(
+                address=Web3.to_checksum_address(addresses["ExchangeRouter"]),
+                abi=GMX_EXCHANGE_ROUTER_ABI,
+            ),
+            "data_store": Web3.to_checksum_address(addresses["DataStore"]),
+            "order_vault": Web3.to_checksum_address(addresses["OrderVault"]),
+            "router": Web3.to_checksum_address(addresses["Router"]),
+        }
+    except Exception as e:
+        log.error("Failed to instantiate GMX contracts: %s", e)
+        return {}
+
+
+def get_erc20_contract(w3, token_address):
+    """Get an ERC-20 contract instance for balance/approval operations."""
+    if w3 is None:
+        return None
+    return w3.eth.contract(
+        address=Web3.to_checksum_address(token_address),
+        abi=GMX_ERC20_ABI,
+    )
+
+
+def gmx_symbol_to_market(symbol):
+    """Resolve a trading symbol (e.g. BTCUSDT) to its GMX V2 market config."""
+    market = GMX_V2_MARKETS.get(symbol)
+    if market:
+        return market
+    normalized = symbol.upper().replace("/", "").replace("-", "")
+    if not normalized.endswith("USDT"):
+        normalized += "USDT"
+    return GMX_V2_MARKETS.get(normalized)
+
+
+# ---------------------------------------------------------------------------
+# GMX V2 Adapter — Full on-chain integration (Arbitrum)
 # ---------------------------------------------------------------------------
 
 class GMXAdapter(ExchangeAdapter):
 
-    def __init__(self, private_key="", rpc_url="https://arb1.arbitrum.io/rpc", testnet=False):
+    def __init__(self, private_key="", rpc_url=None, testnet=False):
         super().__init__("GMX", testnet=testnet)
-        self.private_key = private_key
-        self.rpc_url = rpc_url
+        self.rpc_url = rpc_url or (GMX_RPC_TESTNET if testnet else GMX_RPC_MAINNET)
+        self._w3 = None
+        self._account = None
+        self._contracts = {}
+        self._initialized = False
+
+        if not HAS_WEB3:
+            log.warning("GMXAdapter: web3.py not installed")
+            return
+
+        if private_key:
+            try:
+                self._account = Web3Account.from_key(private_key)
+                self.api_key = self._account.address
+            except Exception as e:
+                log.error("GMXAdapter: invalid private key: %s", e)
+                return
+
+        self._connect()
+
+    def _connect(self):
+        """Establish Web3 connection and instantiate contracts."""
+        self._w3, connected = get_web3(self.rpc_url, self.testnet)
+        if not connected:
+            return
+        self._contracts = get_gmx_contracts(self._w3, self.testnet)
+        self._initialized = bool(self._contracts)
+        if self._initialized:
+            log.info("GMXAdapter ready: account=%s, testnet=%s",
+                     self._account.address if self._account else "read-only",
+                     self.testnet)
+
+    def _ensure_connection(self):
+        """Reconnect if the connection dropped."""
+        if self._w3 and self._w3.is_connected():
+            return True
+        self._connect()
+        return self._initialized
+
+    def _has_signer(self):
+        """Check if a signing account is available for write operations."""
+        return self._account is not None
+
+    def _build_tx(self, value=0):
+        """Build base transaction parameters for the signing account."""
+        if not self._has_signer():
+            return None
+        address = self._account.address
+        return {
+            "from": address,
+            "nonce": self._w3.eth.get_transaction_count(address),
+            "gas": 3000000,
+            "maxFeePerGas": self._w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": self._w3.to_wei(0.1, "gwei"),
+            "value": value,
+            "chainId": 42161 if not self.testnet else 421614,
+        }
+
+    def _sign_and_send(self, tx):
+        """Sign a transaction and broadcast it, returning the tx hash."""
+        signed = self._w3.eth.account.sign_transaction(tx, self._account.key)
+        tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        return tx_hash.hex()
+
+    def _get_token_balance(self, token_address, decimals=18):
+        """Read ERC-20 token balance for the signing account."""
+        if not self._has_signer():
+            return 0.0
+        contract = get_erc20_contract(self._w3, token_address)
+        raw = contract.functions.balanceOf(self._account.address).call()
+        return raw / (10 ** decimals)
 
     def get_balance(self):
-        return {"exchange": "GMX", "error": "GMX adapter not yet implemented (requires web3.py)", "assets": {}}
+        return {"exchange": "GMX", "error": "Not yet implemented (step 3)", "assets": {}}
 
     def get_positions(self):
         return []
 
     def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
-        return {"success": False, "error": "GMX on-chain execution not yet implemented", "exchange": "GMX"}
+        return {"success": False, "error": "Not yet implemented (step 5)", "exchange": "GMX"}
 
     def close_position(self, symbol, position_id=None):
-        return {"success": False, "error": "GMX on-chain close not yet implemented"}
+        return {"success": False, "error": "Not yet implemented (step 6)"}
 
     def test_connection(self):
-        try:
-            resp = requests.get(self.rpc_url, timeout=3, json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1})
-            if resp.status_code == 200:
-                return {"connected": True, "exchange": "GMX", "network": "Arbitrum", "testnet": self.testnet}
-        except Exception:
-            pass
-        return {"connected": False, "error": "Cannot reach Arbitrum RPC"}
+        if not HAS_WEB3:
+            return {"connected": False, "error": "web3.py not installed"}
+        if not self._ensure_connection():
+            return {"connected": False, "error": f"Cannot reach Arbitrum RPC: {self.rpc_url}"}
+        result = {
+            "connected": True,
+            "exchange": "GMX",
+            "network": "Arbitrum One" if not self.testnet else "Arbitrum Sepolia",
+            "testnet": self.testnet,
+            "chain_id": self._w3.eth.chain_id,
+            "block": self._w3.eth.block_number,
+            "contracts_loaded": list(self._contracts.keys()),
+        }
+        if self._has_signer():
+            result["account"] = self._account.address
+            eth_bal = self._w3.eth.get_balance(self._account.address)
+            result["eth_balance"] = round(eth_bal / 10**18, 6)
+        else:
+            result["account"] = "read-only (no private key)"
+        return result
 
 
 # ---------------------------------------------------------------------------
