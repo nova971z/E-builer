@@ -209,6 +209,24 @@ def init_db():
         triggered_at TEXT
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS scheduled_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        order_type TEXT NOT NULL,
+        parent_type TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL,
+        trigger_price REAL,
+        trail_pct REAL,
+        leverage INTEGER DEFAULT 1,
+        status TEXT DEFAULT 'pending',
+        parent_id INTEGER,
+        sequence_idx INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        executed_at TEXT
+    )""")
+
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
@@ -2528,7 +2546,75 @@ def api_execute():
         if price <= 0:
             return jsonify({"error": "Could not determine current price"}), 502
 
-    # Paper trading
+    # Advanced order types — create scheduled orders
+    if order_type in ("oco", "trailing", "iceberg", "dca"):
+        conn = sqlite3.connect(DB_PATH)
+        trade_side = "long" if side in ("long", "buy") else "short"
+        order_ids = []
+
+        if order_type == "oco":
+            oco_limit = float(body.get("oco_limit", price))
+            oco_stop = float(body.get("oco_stop", 0))
+            parent_id = int(time.time() * 1000)
+            cur = conn.execute(
+                "INSERT INTO scheduled_orders (symbol, side, order_type, parent_type, quantity, price, leverage, status, parent_id, sequence_idx) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (symbol, trade_side, "limit", "oco", quantity, oco_limit, leverage, "pending", parent_id, 0),
+            )
+            order_ids.append(cur.lastrowid)
+            cur = conn.execute(
+                "INSERT INTO scheduled_orders (symbol, side, order_type, parent_type, quantity, trigger_price, leverage, status, parent_id, sequence_idx) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (symbol, trade_side, "stop", "oco", quantity, oco_stop, leverage, "pending", parent_id, 1),
+            )
+            order_ids.append(cur.lastrowid)
+
+        elif order_type == "trailing":
+            trail_pct = float(body.get("trail_pct", 1.0))
+            activation = float(body.get("trail_activation", 0)) or price
+            cur = conn.execute(
+                "INSERT INTO scheduled_orders (symbol, side, order_type, parent_type, quantity, price, trigger_price, trail_pct, leverage, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (symbol, trade_side, "trailing_stop", "trailing", quantity, price, activation, trail_pct, leverage, "active"),
+            )
+            order_ids.append(cur.lastrowid)
+
+        elif order_type == "iceberg":
+            slices = int(body.get("slices", 5))
+            slices = max(2, min(20, slices))
+            slice_qty = quantity / slices
+            parent_id = int(time.time() * 1000)
+            for i in range(slices):
+                status_val = "executed" if i == 0 else "pending"
+                cur = conn.execute(
+                    "INSERT INTO scheduled_orders (symbol, side, order_type, parent_type, quantity, price, leverage, status, parent_id, sequence_idx) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (symbol, trade_side, "limit", "iceberg", slice_qty, price, leverage, status_val, parent_id, i),
+                )
+                order_ids.append(cur.lastrowid)
+            paper_trader.execute(symbol, trade_side, slice_qty, price, leverage, tp, sl)
+
+        elif order_type == "dca":
+            levels = int(body.get("levels", 5))
+            levels = max(2, min(10, levels))
+            step_pct = float(body.get("step_pct", 2.0)) / 100.0
+            multiplier = float(body.get("multiplier", 1.5))
+            weights = [multiplier ** i for i in range(levels)]
+            total_weight = sum(weights)
+            parent_id = int(time.time() * 1000)
+            for i in range(levels):
+                level_price = price * (1 - step_pct * i)
+                level_qty = quantity * (weights[i] / total_weight)
+                status_val = "executed" if i == 0 else "pending"
+                cur = conn.execute(
+                    "INSERT INTO scheduled_orders (symbol, side, order_type, parent_type, quantity, price, leverage, status, parent_id, sequence_idx) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (symbol, trade_side, "limit", "dca", level_qty, level_price, leverage, status_val, parent_id, i),
+                )
+                order_ids.append(cur.lastrowid)
+            first_qty = quantity * (weights[0] / total_weight)
+            paper_trader.execute(symbol, trade_side, first_qty, price, leverage, tp, sl)
+
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "order_ids": order_ids, "type": order_type, "mode": "paper"})
+
+    # Paper trading (standard limit/market)
     if mode == "paper":
         trade_side = "long" if side in ("long", "buy") else "short"
         result = paper_trader.execute(symbol, trade_side, quantity, price, leverage, tp, sl)
@@ -2810,6 +2896,53 @@ def api_sparklines():
         if raw and isinstance(raw, list):
             result[pair] = [float(k[4]) for k in raw]
     return jsonify(result)
+
+
+# ===========================================================================
+# API ROUTES — Scheduled Orders (2 routes)
+# ===========================================================================
+
+@app.route("/api/scheduled-orders")
+def api_scheduled_orders_list():
+    status_filter = request.args.get("status")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        if status_filter:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_orders WHERE status = ? ORDER BY created_at DESC", (status_filter,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM scheduled_orders ORDER BY created_at DESC").fetchall()
+        conn.close()
+        return jsonify({"orders": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scheduled-orders/<int:order_id>", methods=["DELETE"])
+def api_scheduled_orders_cancel(order_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        order = conn.execute("SELECT * FROM scheduled_orders WHERE id = ?", (order_id,)).fetchone()
+        if not order:
+            conn.close()
+            return jsonify({"error": "Order not found"}), 404
+
+        conn.execute("UPDATE scheduled_orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+
+        if order["parent_type"] == "oco" and order["parent_id"]:
+            conn.execute(
+                "UPDATE scheduled_orders SET status = 'cancelled' WHERE parent_id = ? AND id != ?",
+                (order["parent_id"], order_id),
+            )
+
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ===========================================================================

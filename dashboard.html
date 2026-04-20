@@ -1194,6 +1194,27 @@ button:active { opacity: 0.7; }
 
 .btn-theme { font-size: 16px; min-width: 32px; cursor: pointer; }
 
+/* Advanced order fields */
+.of-advanced { display: none; flex-direction: column; gap: 6px; padding: 6px 0; }
+.of-advanced.visible { display: flex; }
+.dca-preview {
+    margin-top: 4px;
+    padding: 6px;
+    background: var(--surface-2);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--text-dim);
+    max-height: 100px;
+    overflow-y: auto;
+}
+.dca-preview-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    border-bottom: 1px solid var(--border);
+}
+.dca-preview-row:last-child { border-bottom: none; }
+
 /* Drawing canvas overlay */
 .draw-canvas {
     position: absolute;
@@ -1659,8 +1680,10 @@ button:active { opacity: 0.7; }
             <div class="of-type-tabs">
                 <button class="active" onclick="switchOrderType('limit')">Limit</button>
                 <button onclick="switchOrderType('market')">Market</button>
-                <button onclick="switchOrderType('plan')">Plan</button>
-                <button onclick="switchOrderType('trailing')">Trailing</button>
+                <button onclick="switchOrderType('oco')">OCO</button>
+                <button onclick="switchOrderType('trailing')">Trail</button>
+                <button onclick="switchOrderType('iceberg')">Iceberg</button>
+                <button onclick="switchOrderType('dca')">DCA</button>
             </div>
             <div class="of-field">
                 <label>Price</label>
@@ -1686,6 +1709,28 @@ button:active { opacity: 0.7; }
             <div class="of-tpsl">
                 <div class="of-field"><label>TP</label><input type="text" id="order-tp" placeholder="--"></div>
                 <div class="of-field"><label>SL</label><input type="text" id="order-sl" placeholder="--"></div>
+            </div>
+            <!-- OCO fields -->
+            <div class="of-advanced" id="oco-fields">
+                <div class="of-field"><label>Limit Price</label><input type="text" id="oco-limit" placeholder="0.00"></div>
+                <div class="of-field"><label>Stop Price</label><input type="text" id="oco-stop" placeholder="0.00"></div>
+            </div>
+            <!-- Trailing fields -->
+            <div class="of-advanced" id="trailing-fields">
+                <div class="of-field"><label>Callback %</label><input type="text" id="trail-pct" placeholder="1.0"><span class="unit">%</span></div>
+                <div class="of-field"><label>Activation</label><input type="text" id="trail-activation" placeholder="Optional"></div>
+            </div>
+            <!-- Iceberg fields -->
+            <div class="of-advanced" id="iceberg-fields">
+                <div class="of-field"><label>Visible Qty</label><input type="text" id="ice-visible" placeholder="10"><span class="unit">%</span></div>
+                <div class="of-field"><label>Slices</label><input type="number" id="ice-slices" value="5" min="2" max="20"></div>
+            </div>
+            <!-- DCA fields -->
+            <div class="of-advanced" id="dca-fields">
+                <div class="of-field"><label>Levels</label><input type="number" id="dca-levels" value="5" min="2" max="10" oninput="updateDCAPreview()"></div>
+                <div class="of-field"><label>Step %</label><input type="text" id="dca-step" placeholder="2.0" oninput="updateDCAPreview()"><span class="unit">%</span></div>
+                <div class="of-field"><label>Multiplier</label><input type="text" id="dca-mult" placeholder="1.5" oninput="updateDCAPreview()"></div>
+                <div class="dca-preview" id="dca-preview"></div>
             </div>
             <div class="of-info">
                 <span>Cost: <span id="order-cost">--</span></span>
@@ -2801,6 +2846,7 @@ function switchBPTab(tab) {
     event.target.classList.add('active');
 
     if (tab === 'positions') loadPositions();
+    else if (tab === 'open-orders') loadScheduledOrders();
     else if (tab === 'paper') loadPaperHistory();
     else if (tab === 'portfolio') loadPortfolio();
     else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + tab + '</div>';
@@ -2935,6 +2981,15 @@ function switchOrderType(type) {
         priceField.disabled = false;
         priceField.placeholder = '0.00';
     }
+
+    // Hide all advanced fields
+    document.querySelectorAll('.of-advanced').forEach(function(el) { el.classList.remove('visible'); });
+
+    // Show relevant fields
+    if (type === 'oco') { var f = $('oco-fields'); if (f) f.classList.add('visible'); }
+    else if (type === 'trailing') { var f = $('trailing-fields'); if (f) f.classList.add('visible'); }
+    else if (type === 'iceberg') { var f = $('iceberg-fields'); if (f) f.classList.add('visible'); }
+    else if (type === 'dca') { var f = $('dca-fields'); if (f) f.classList.add('visible'); updateDCAPreview(); }
 }
 
 // ========== MARGIN MODE ==========
@@ -3055,6 +3110,21 @@ async function executeOrder(side) {
         sl: sl,
     };
     if (price) body.price = price;
+
+    // Advanced order fields
+    if (orderType === 'oco') {
+        body.oco_limit = parseFloat($('oco-limit').value) || price;
+        body.oco_stop = parseFloat($('oco-stop').value) || 0;
+    } else if (orderType === 'trailing') {
+        body.trail_pct = parseFloat($('trail-pct').value) || 1.0;
+        body.trail_activation = parseFloat($('trail-activation').value) || 0;
+    } else if (orderType === 'iceberg') {
+        body.slices = parseInt($('ice-slices').value) || 5;
+    } else if (orderType === 'dca') {
+        body.levels = parseInt($('dca-levels').value) || 5;
+        body.step_pct = parseFloat($('dca-step').value) || 2.0;
+        body.multiplier = parseFloat($('dca-mult').value) || 1.5;
+    }
 
     try {
         const resp = await fetch(API + '/api/execute', {
@@ -3518,6 +3588,94 @@ async function loadWhales(symbol) {
         // Whale data available for signal engine — no dedicated panel
     } catch (err) {
         console.error('loadWhales error:', err);
+    }
+}
+
+// ========== ADVANCED ORDERS ==========
+function updateDCAPreview() {
+    var el = $('dca-preview');
+    if (!el) return;
+    var levels = parseInt($('dca-levels') ? $('dca-levels').value : '5') || 5;
+    var stepPct = parseFloat($('dca-step') ? $('dca-step').value : '2') || 2;
+    var mult = parseFloat($('dca-mult') ? $('dca-mult').value : '1.5') || 1.5;
+    var basePrice = parseFloat($('order-price') ? $('order-price').value : '0') || 0;
+    var totalQty = parseFloat($('order-qty') ? $('order-qty').value : '0') || 0;
+
+    if (!basePrice || !totalQty) {
+        el.innerHTML = '<div style="color:var(--text-muted)">Set price and quantity to preview</div>';
+        return;
+    }
+
+    var weights = [];
+    for (var i = 0; i < levels; i++) weights.push(Math.pow(mult, i));
+    var totalWeight = weights.reduce(function(a, b) { return a + b; }, 0);
+
+    var html = '';
+    for (var j = 0; j < levels; j++) {
+        var lvlPrice = basePrice * (1 - (stepPct / 100) * j);
+        var lvlQty = totalQty * (weights[j] / totalWeight);
+        var pct = ((weights[j] / totalWeight) * 100).toFixed(1);
+        html += '<div class="dca-preview-row">'
+            + '<span>L' + (j + 1) + '</span>'
+            + '<span>$' + fmt(lvlPrice) + '</span>'
+            + '<span>' + lvlQty.toFixed(6) + '</span>'
+            + '<span>' + pct + '%</span>'
+            + '</div>';
+    }
+    el.innerHTML = html;
+}
+
+async function loadScheduledOrders() {
+    var content = $('bp-content');
+    if (!content) return;
+    try {
+        var resp = await fetch(API + '/api/scheduled-orders?status=pending');
+        if (!resp.ok) { content.innerHTML = '<div class="bp-empty">Failed to load orders</div>'; return; }
+        var data = await resp.json();
+        var orders = data.orders || [];
+
+        if (!orders.length) {
+            content.innerHTML = '<div class="bp-empty">No pending orders</div>';
+            return;
+        }
+
+        var html = '<table class="bp-table"><thead><tr>'
+            + '<th>Type</th><th>Symbol</th><th>Side</th><th>Price</th><th>Qty</th><th>Status</th><th></th>'
+            + '</tr></thead><tbody>';
+
+        for (var i = 0; i < orders.length; i++) {
+            var o = orders[i];
+            var sideClass = o.side === 'long' ? 'col-long' : 'col-short';
+            html += '<tr>'
+                + '<td>' + o.parent_type.toUpperCase() + '</td>'
+                + '<td>' + o.symbol + '</td>'
+                + '<td class="' + sideClass + '">' + o.side.toUpperCase() + '</td>'
+                + '<td>' + fmt(o.price || o.trigger_price || 0) + '</td>'
+                + '<td>' + (o.quantity ? o.quantity.toFixed(6) : '--') + '</td>'
+                + '<td>' + o.status + '</td>'
+                + '<td><button onclick="cancelScheduledOrder(' + o.id + ')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">&times;</button></td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    } catch (err) {
+        console.error('loadScheduledOrders error:', err);
+        content.innerHTML = '<div class="bp-empty">Error loading orders</div>';
+    }
+}
+
+async function cancelScheduledOrder(id) {
+    try {
+        var resp = await fetch(API + '/api/scheduled-orders/' + id, {method: 'DELETE'});
+        var data = await resp.json();
+        if (data.success) {
+            showToast('Order cancelled', 'success');
+            loadScheduledOrders();
+        } else {
+            showToast(data.error || 'Cancel failed', 'error');
+        }
+    } catch (err) {
+        showToast('Network error', 'error');
     }
 }
 
