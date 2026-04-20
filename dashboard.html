@@ -283,6 +283,12 @@ button:active { opacity: 0.7; }
     box-sizing: border-box;
 }
 
+/* chart-section is the flex row: chart + watchlist */
+.chart-section {
+    display: flex;
+    gap: 12px;
+}
+
 .chart-area {
     flex: 1;
     display: flex;
@@ -294,29 +300,172 @@ button:active { opacity: 0.7; }
     border: 1px solid var(--border);
 }
 
-/* ========== CHART TABS ========== */
-.chart-tabs {
+.chart-tabs { display: none; }
+
+/* ========== WATCHLIST SIDEBAR ========== */
+.watchlist-panel {
+    width: 20%;
+    min-width: 180px;
+    max-width: 280px;
     display: flex;
-    align-items: center;
-    height: 36px;
-    background: var(--surface);
-    backdrop-filter: var(--blur);
-    border-bottom: 1px solid var(--border);
-    padding: 0 12px;
+    flex-direction: column;
+    background: rgba(16,20,26,0.65);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.wl-header {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+}
+.wl-header .wl-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+}
+.wl-search {
+    width: 100%;
+    padding: 7px 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 11px;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+}
+.wl-search:focus { border-color: var(--accent); }
+.wl-search::placeholder { color: var(--text-muted); }
+
+.wl-coins {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
     gap: 4px;
 }
-.chart-tabs button {
-    padding: 5px 14px;
-    background: transparent;
-    color: var(--text-dim);
-    font-size: 11px;
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition);
+.wl-coin {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.03);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
 }
-.chart-tabs button:hover { color: var(--text); background: var(--surface-2); }
-.chart-tabs button.active { color: var(--accent); background: var(--accent-bg); }
-.chart-tabs-spacer { flex: 1; }
+.wl-coin:hover {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.12);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.wl-coin.active {
+    background: rgba(56,189,248,0.1);
+    border-color: rgba(56,189,248,0.25);
+    box-shadow: 0 0 12px rgba(56,189,248,0.1);
+}
+.wl-coin.dragging {
+    opacity: 0.5;
+    transform: scale(0.95);
+}
+.wl-coin-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(139,92,246,0.2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--text);
+    flex-shrink: 0;
+}
+.wl-coin-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.wl-coin-sym {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wl-coin-price {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+.wl-coin-change {
+    font-size: 10px;
+    font-weight: 600;
+    text-align: right;
+    flex-shrink: 0;
+}
+.wl-coin-change.up { color: var(--green); }
+.wl-coin-change.down { color: var(--red); }
+
+.wl-add-bar {
+    display: flex;
+    gap: 4px;
+    padding: 8px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+}
+.wl-add-select {
+    flex: 1;
+    padding: 6px 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 10px;
+    outline: none;
+    appearance: none;
+}
+.wl-add-btn {
+    padding: 6px 10px;
+    background: rgba(56,189,248,0.15);
+    border: 1px solid rgba(56,189,248,0.3);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.wl-add-btn:hover { background: rgba(56,189,248,0.3); }
+.wl-drop-results {
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 4px 8px;
+    flex-shrink: 0;
+}
+.wl-drop-item {
+    padding: 6px 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s;
+}
+.wl-drop-item:hover { background: rgba(255,255,255,0.06); color: var(--text); }
 
 /* ========== CHART TOOLBAR ========== */
 .chart-toolbar {
@@ -428,14 +577,7 @@ button:active { opacity: 0.7; }
 
 /* ========== DRAWING TOOLBAR (vertical) ========== */
 .draw-toolbar {
-    display: flex;
-    flex-direction: column;
-    width: 32px;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    padding: 4px 0;
-    gap: 2px;
-    align-items: center;
+    display: none;
 }
 
 .draw-toolbar button {
@@ -1744,6 +1886,13 @@ button:active { opacity: 0.7; }
 
     .main-layout { padding: 8px 8px 36px; }
 
+    .chart-section { flex-direction: column; }
+    .watchlist-panel { width: 100%; max-width: 100%; min-width: 0; flex-direction: row; max-height: 80px; overflow-x: auto; }
+    .wl-header { display: none; }
+    .wl-coins { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+    .wl-add-bar { display: none; }
+    .wl-drop-results { display: none !important; }
+
     .chart-area {
         height: 50vh;
         min-height: 300px;
@@ -2432,15 +2581,6 @@ button:active { opacity: 0.7; }
 
     <!-- CHART AREA -->
     <div class="chart-area">
-        <!-- Chart Tabs -->
-        <div class="chart-tabs">
-            <button class="active">Chart</button>
-            <button>Analysis AI</button>
-            <button>Info</button>
-            <button>Trading Rules</button>
-            <div class="chart-tabs-spacer"></div>
-        </div>
-
         <!-- Chart Toolbar -->
         <div class="chart-toolbar">
             <button class="tf-btn" onclick="changeTF('1m')">1m</button>
@@ -2497,6 +2637,42 @@ button:active { opacity: 0.7; }
             <div id="pnl-container"></div>
         </div>
 
+    </div>
+
+    <!-- WATCHLIST PANEL -->
+    <div class="watchlist-panel" id="watchlist-panel">
+        <div class="wl-header">
+            <div class="wl-title">Watchlist</div>
+            <input type="text" class="wl-search" id="wl-search" placeholder="Search symbol..." oninput="filterWatchlistDropdown(this.value)">
+        </div>
+        <div class="wl-drop-results" id="wl-drop-results" style="display:none"></div>
+        <div class="wl-coins" id="wl-coins"></div>
+        <div class="wl-add-bar">
+            <select class="wl-add-select" id="wl-add-select">
+                <option value="">Add token...</option>
+                <option value="BTCUSDT">BTC</option>
+                <option value="ETHUSDT">ETH</option>
+                <option value="SOLUSDT">SOL</option>
+                <option value="XRPUSDT">XRP</option>
+                <option value="DOGEUSDT">DOGE</option>
+                <option value="BNBUSDT">BNB</option>
+                <option value="AVAXUSDT">AVAX</option>
+                <option value="ADAUSDT">ADA</option>
+                <option value="DOTUSDT">DOT</option>
+                <option value="MATICUSDT">MATIC</option>
+                <option value="LINKUSDT">LINK</option>
+                <option value="LTCUSDT">LTC</option>
+                <option value="NEARUSDT">NEAR</option>
+                <option value="UNIUSDT">UNI</option>
+                <option value="APTUSDT">APT</option>
+                <option value="ARBUSDT">ARB</option>
+                <option value="SUIUSDT">SUI</option>
+                <option value="OPUSDT">OP</option>
+                <option value="PEPEUSDT">PEPE</option>
+                <option value="SHIBUSDT">SHIB</option>
+            </select>
+            <button class="wl-add-btn" onclick="addWatchlistFromSelect()">+</button>
+        </div>
     </div>
 
 </div><!-- /chart-section -->
@@ -5897,8 +6073,8 @@ function startAutoRefresh() {
     // Medium-fast: 5s — trades + price (price only if WS not connected)
     refreshTimers.push(setInterval(function() { loadTrades(); if (!wsConnected) loadPriceData(); }, 5000));
 
-    // Medium: 10s — ticker
-    refreshTimers.push(setInterval(function() { loadTicker(); }, 10000));
+    // Medium: 10s — ticker + watchlist prices
+    refreshTimers.push(setInterval(function() { loadTicker(); updateWatchlistPrices(); }, 10000));
 
     // 30s — sparklines + alerts (NO full candle reload — WS handles real-time)
     refreshTimers.push(setInterval(function() { loadSparklines().then(updateAssetSparkline); checkAlerts(); }, 30000));
@@ -6072,6 +6248,161 @@ function sendDrawerJarvis() {
         resizing = false;
     });
 })();
+
+// ========== WATCHLIST ==========
+var watchlist = JSON.parse(localStorage.getItem('jarvis_watchlist') || '["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT"]');
+var wlPrices = {};
+var wlDragSrcIdx = null;
+
+function saveWatchlist() {
+    localStorage.setItem('jarvis_watchlist', JSON.stringify(watchlist));
+}
+
+function addToWatchlist(sym) {
+    if (!sym || watchlist.indexOf(sym) >= 0) return;
+    watchlist.push(sym);
+    saveWatchlist();
+    renderWatchlist();
+    updateWatchlistPrices();
+}
+
+function removeFromWatchlist(sym) {
+    var idx = watchlist.indexOf(sym);
+    if (idx >= 0) {
+        watchlist.splice(idx, 1);
+        saveWatchlist();
+        renderWatchlist();
+    }
+}
+
+function renderWatchlist() {
+    var container = $('wl-coins');
+    if (!container) return;
+    var html = '';
+    for (var i = 0; i < watchlist.length; i++) {
+        var sym = watchlist[i];
+        var base = sym.replace('USDT', '');
+        var p = wlPrices[sym] || {};
+        var price = p.price ? fmt(p.price) : '--';
+        var chg = p.change != null ? p.change.toFixed(2) : '--';
+        var chgClass = (p.change || 0) >= 0 ? 'up' : 'down';
+        var chgSign = (p.change || 0) >= 0 ? '+' : '';
+        var isActive = sym === currentSymbol ? ' active' : '';
+        html += '<div class="wl-coin' + isActive + '" draggable="true" data-idx="' + i + '" data-sym="' + sym + '" '
+            + 'onclick="watchlistSelect(\'' + sym + '\')" '
+            + 'ondragstart="wlDragStart(event,' + i + ')" ondragover="wlDragOver(event)" ondrop="wlDrop(event,' + i + ')" ondragend="wlDragEnd(event)">'
+            + '<div class="wl-coin-icon">' + base.substring(0, 3) + '</div>'
+            + '<div class="wl-coin-info"><span class="wl-coin-sym">' + base + '/USDT</span>'
+            + '<span class="wl-coin-price">' + price + '</span></div>'
+            + '<span class="wl-coin-change ' + chgClass + '">' + chgSign + chg + '%</span>'
+            + '</div>';
+    }
+    container.innerHTML = html;
+}
+
+function watchlistSelect(sym) {
+    changeSymbol(sym);
+    renderWatchlist();
+}
+
+function addWatchlistFromSelect() {
+    var sel = $('wl-add-select');
+    if (!sel || !sel.value) return;
+    addToWatchlist(sel.value);
+    sel.value = '';
+}
+
+function filterWatchlistDropdown(query) {
+    var drop = $('wl-drop-results');
+    if (!drop) return;
+    if (!query || query.length < 1) { drop.style.display = 'none'; return; }
+    query = query.toUpperCase();
+    var results = (marketsData || []).filter(function(m) {
+        return m.symbol.indexOf(query) >= 0 && watchlist.indexOf(m.symbol) < 0;
+    }).slice(0, 12);
+    if (!results.length) { drop.style.display = 'none'; return; }
+    var html = '';
+    for (var i = 0; i < results.length; i++) {
+        var r = results[i];
+        var chgClass = r.change >= 0 ? 'up' : 'down';
+        var chgSign = r.change >= 0 ? '+' : '';
+        html += '<div class="wl-drop-item" onclick="addFromSearch(\'' + r.symbol + '\')">'
+            + r.symbol.replace('USDT', '/USDT') + ' <span class="wl-coin-change ' + chgClass + '" style="margin-left:6px">' + chgSign + r.change.toFixed(2) + '%</span></div>';
+    }
+    drop.innerHTML = html;
+    drop.style.display = '';
+}
+
+function addFromSearch(sym) {
+    addToWatchlist(sym);
+    var search = $('wl-search');
+    if (search) search.value = '';
+    var drop = $('wl-drop-results');
+    if (drop) drop.style.display = 'none';
+}
+
+async function updateWatchlistPrices() {
+    try {
+        var resp = await fetch(API + '/api/ticker');
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var tickers = data.tickers || [];
+        for (var i = 0; i < tickers.length; i++) {
+            wlPrices[tickers[i].symbol] = { price: tickers[i].price, change: tickers[i].change };
+        }
+        // For symbols not in ticker (need individual fetch)
+        for (var j = 0; j < watchlist.length; j++) {
+            if (!wlPrices[watchlist[j]]) {
+                fetchSinglePrice(watchlist[j]);
+            }
+        }
+        renderWatchlist();
+    } catch (e) {}
+}
+
+async function fetchSinglePrice(sym) {
+    try {
+        var resp = await fetch(API + '/api/price?symbol=' + sym);
+        if (!resp.ok) return;
+        var d = await resp.json();
+        wlPrices[sym] = { price: d.price, change: d.change_24h_pct };
+    } catch (e) {}
+}
+
+// Drag & drop reorder
+function wlDragStart(e, idx) {
+    wlDragSrcIdx = idx;
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+}
+function wlDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+}
+function wlDrop(e, targetIdx) {
+    e.preventDefault();
+    if (wlDragSrcIdx === null || wlDragSrcIdx === targetIdx) return;
+    var item = watchlist.splice(wlDragSrcIdx, 1)[0];
+    watchlist.splice(targetIdx, 0, item);
+    saveWatchlist();
+    renderWatchlist();
+}
+function wlDragEnd(e) {
+    wlDragSrcIdx = null;
+    e.target.classList.remove('dragging');
+}
+
+// Context menu (long press / right click) to remove
+document.addEventListener('contextmenu', function(e) {
+    var coin = e.target.closest('.wl-coin');
+    if (coin) {
+        e.preventDefault();
+        var sym = coin.getAttribute('data-sym');
+        if (sym && confirm('Remove ' + sym.replace('USDT', '') + ' from watchlist?')) {
+            removeFromWatchlist(sym);
+        }
+    }
+});
 
 // ========== VIEW SWITCHING (Trade / Markets) ==========
 function switchView(view) {
@@ -6389,6 +6720,8 @@ document.addEventListener('DOMContentLoaded', function() {
     loadMTF();
     checkAlerts();
     loadPnlCurve();
+    renderWatchlist();
+    updateWatchlistPrices();
 
     // Start auto-refresh
     startAutoRefresh();
