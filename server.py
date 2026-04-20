@@ -651,7 +651,7 @@ def fetch_stooq_price(symbol_info):
 def generate_gold_silver_candles(symbol_info, limit=100):
     price_data = fetch_stooq_price(symbol_info)
     if not price_data or not price_data["price"]:
-        return []
+        return {"candles": []}
     p = price_data["price"]
     now = int(time.time())
     candles = []
@@ -666,7 +666,7 @@ def generate_gold_silver_candles(symbol_info, limit=100):
             "close": round(p + noise * 0.5, 2),
             "volume": 0,
         })
-    return candles
+    return {"candles": candles}
 
 
 # ---------------------------------------------------------------------------
@@ -3125,7 +3125,7 @@ def api_candles():
     raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
     if raw is None:
         return jsonify({"error": "Failed to fetch candles from Binance"}), 502
-    return jsonify(transform_klines(raw))
+    return jsonify({"candles": transform_klines(raw)})
 
 
 @app.route("/api/price")
