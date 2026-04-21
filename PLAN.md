@@ -3191,12 +3191,12 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 42 | S4.0 | CORS & Headers HTTP | `[x]` FAIT | — | 2026-04-21 |
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[x]` FAIT | — | 2026-04-21 |
 | 44 | S6.0 | Blindage du chiffrement | `[x]` FAIT | — | 2026-04-21 |
-| 45 | S7.0 | Validation entrées & erreurs | `[ ]` EN ATTENTE | — | — |
+| 45 | S7.0 | Validation entrées & erreurs | `[x]` FAIT | — | 2026-04-21 |
 | 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[ ]` EN ATTENTE | — | — |
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 6 / 10 étapes terminées**
+**Progression sécurité : 7 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,63 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S7.0 — Validation des entrées & assainissement erreurs (Step 45) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S7.1 | `validate_symbol(s)` : regex `^[A-Z0-9]{2,20}$`, retourne `(clean, None)` ou `(None, error)` | `[x]` |
+| S7.2 | `validate_quantity(q)` : float > 0, max 1e12 | `[x]` |
+| S7.3 | `validate_price(p)` : float >= 0, max 1e12 | `[x]` |
+| S7.4 | `sanitize_error(e)` : whitelist de préfixes safe, sinon "Internal server error" + log.debug | `[x]` |
+| S7.5 | Validateurs appliqués à 6 routes : `/api/candles`, `/api/price`, `/api/orderbook`, `/api/trades`, `/api/execute`, `/api/close` | `[x]` |
+| S7.6 | 24× `str(e)` remplacés par `sanitize_error(e)` dans tout server.py (routes + classes internes) | `[x]` |
+| S7.7 | `escapeHtml()` ajouté dans dashboard.html — 34 appels sur innerHTML affichant données externes | `[x]` |
+| S7.8 | Audit innerHTML : positions, paper trades, exchanges, alerts, ticker, watchlist, MTF, GMX, scan results — tous protégés | `[x]` |
+
+**Vulnérabilités corrigées** : C-07 (injection données dans erreurs), H-05 (XSS potentiel via innerHTML), M-03 (pas de validation entrées)
+
+**Fonctions de validation (server.py)** :
+```python
+validate_symbol(s)  → (str, None) ou (None, "Invalid symbol format")
+validate_quantity(q) → (float, None) ou (None, "Invalid quantity")
+validate_price(p)    → (float, None) ou (None, "Invalid price")
+sanitize_error(e)    → str safe (whitelist préfixes ou "Internal server error")
+```
+
+**escapeHtml (dashboard.html)** :
+```javascript
+function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+```
+
+**Zones innerHTML protégées (34 appels)** :
+- Positions table : `p.symbol`, `p.side`, `p.id`
+- Paper trades : `t.symbol`, `t.side`, `t.status`, `t.opened_at`
+- Exchange list : `ex.name`, `ex.status`
+- Alerts list : `a.symbol`, `a.condition_type`, `a.operator`, `a.value`
+- Ticker footer : `t.symbol`
+- Watchlist : `sym`, `base`
+- GMX positions : `p.symbol`, `p.side`
+- Scan results : `o.direction`, `o.symbol`, `o.score`
+- Entry plan : `plan.direction`, `signals[]`
+- MTF grid : `tf`, `info.regime`, `info.direction`
+- Scheduled orders : `o.parent_type`, `o.symbol`, `o.side`, `o.status`
+- Market cards : `m.symbol`
+- Search dropdown : `r.symbol`
+
+**Tests passés** :
+- `python3 -m py_compile server.py` → OK ✓
+- `GET /api/candles?symbol=<script>alert(1)</script>` → `{"error":"Invalid symbol format"}` 400 ✓
+- `POST /api/execute {"symbol":"<img>"}` → `{"error":"Invalid symbol format"}` 400 ✓
+- Limit clamping : `limit=999999` → plafonné à 10000 ✓
+- `GET /api/status` → `{"status":"online"}` ✓
+- 0 `str(e)` restants dans les routes ✓
+- 34 `escapeHtml()` dans dashboard.html ✓
 
 ---
 

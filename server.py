@@ -658,6 +658,58 @@ def check_key_file_permissions():
 
 
 # ---------------------------------------------------------------------------
+# Input validation & error sanitization
+# ---------------------------------------------------------------------------
+
+_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}$")
+
+
+def validate_symbol(s):
+    """Validate trading symbol. Returns (clean_symbol, error_msg)."""
+    s = str(s).strip().upper()
+    if not _SYMBOL_RE.match(s):
+        return None, "Invalid symbol format"
+    return s, None
+
+
+def validate_quantity(q):
+    """Validate quantity. Returns (float_value, error_msg)."""
+    try:
+        v = float(q)
+    except (TypeError, ValueError):
+        return None, "Invalid quantity"
+    if v <= 0 or v > 1e12:
+        return None, "Quantity must be between 0 and 1,000,000,000,000"
+    return v, None
+
+
+def validate_price(p):
+    """Validate price. Returns (float_value, error_msg)."""
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return None, "Invalid price"
+    if v < 0 or v > 1e12:
+        return None, "Price must be between 0 and 1,000,000,000,000"
+    return v, None
+
+
+def sanitize_error(e):
+    """Return a safe error message — never expose stack traces or internals."""
+    safe_prefixes = (
+        "Failed to fetch", "Invalid", "Quantity", "Price", "No ", "Could not",
+        "Kill switch", "PIN", "Not found", "Unsupported", "Too many",
+        "Authentication", "Encryption", "Already",
+    )
+    msg = str(e)
+    for prefix in safe_prefixes:
+        if msg.startswith(prefix):
+            return msg
+    log.debug("Sanitized error: %s", msg)
+    return "Internal server error"
+
+
+# ---------------------------------------------------------------------------
 # Settings helpers
 # ---------------------------------------------------------------------------
 
@@ -2431,7 +2483,7 @@ class MEXCAdapter(ExchangeAdapter):
             )
             return {"exchange": self.name, "assets": assets, "total_usdt": total_usdt}
         except Exception as e:
-            return {"exchange": self.name, "error": str(e), "assets": {}}
+            return {"exchange": self.name, "error": sanitize_error(e), "assets": {}}
 
     def get_positions(self):
         if not self._exchange:
@@ -2477,7 +2529,7 @@ class MEXCAdapter(ExchangeAdapter):
                 "exchange": self.name,
             }
         except Exception as e:
-            return {"success": False, "error": str(e), "exchange": self.name}
+            return {"success": False, "error": sanitize_error(e), "exchange": self.name}
 
     def close_position(self, symbol, position_id=None):
         if not self._exchange:
@@ -2494,7 +2546,7 @@ class MEXCAdapter(ExchangeAdapter):
             order = self._exchange.create_order(symbol, "market", "sell", target["quantity"])
             return {"success": True, "order_id": order.get("id"), "closed": symbol}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": sanitize_error(e)}
 
     def test_connection(self):
         if not self._exchange:
@@ -2505,7 +2557,7 @@ class MEXCAdapter(ExchangeAdapter):
             self._exchange.fetch_time()
             return {"connected": True, "exchange": self.name, "testnet": self.testnet}
         except Exception as e:
-            return {"connected": False, "error": str(e)}
+            return {"connected": False, "error": sanitize_error(e)}
 
     @staticmethod
     def _no_exchange():
@@ -3015,7 +3067,7 @@ class GMXAdapter(ExchangeAdapter):
 
         except Exception as e:
             log.error("GMX place_order failed: %s", e)
-            return {"success": False, "error": str(e), "exchange": "GMX"}
+            return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
     def _place_tp_sl_order(self, symbol, market, is_long_close, quantity, trigger_price_usd, is_tp=True):
         """Place a conditional decrease order as TP or SL."""
@@ -3210,7 +3262,7 @@ class GMXAdapter(ExchangeAdapter):
 
         except Exception as e:
             log.error("GMX close_position failed: %s", e)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": sanitize_error(e)}
 
     def test_connection(self):
         if not HAS_WEB3:
@@ -3483,9 +3535,14 @@ paper_trader = PaperTrader()
 @app.route("/api/candles")
 @rate_limit("market_data")
 def api_candles():
-    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    symbol, err = validate_symbol(request.args.get("symbol", "BTCUSDT"))
+    if err:
+        return jsonify({"error": err}), 400
     interval = request.args.get("interval", "1h")
-    limit = int(request.args.get("limit", 1000))
+    try:
+        limit = max(1, min(int(request.args.get("limit", 1000)), 10000))
+    except (TypeError, ValueError):
+        limit = 1000
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
 
@@ -3525,7 +3582,9 @@ def api_candles():
 @app.route("/api/price")
 @rate_limit("market_data")
 def api_price():
-    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    symbol, err = validate_symbol(request.args.get("symbol", "BTCUSDT"))
+    if err:
+        return jsonify({"error": err}), 400
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
 
     if sym_info and sym_info["source"] == "stooq":
@@ -3555,8 +3614,13 @@ def api_price():
 @app.route("/api/orderbook")
 @rate_limit("market_data")
 def api_orderbook():
-    symbol = request.args.get("symbol", "BTCUSDT").upper()
-    limit = min(int(request.args.get("limit", 20)), 100)
+    symbol, err = validate_symbol(request.args.get("symbol", "BTCUSDT"))
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        limit = max(1, min(int(request.args.get("limit", 20)), 100))
+    except (TypeError, ValueError):
+        limit = 20
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
     if sym_info and sym_info["source"] != "binance":
@@ -3594,8 +3658,13 @@ def api_orderbook():
 @app.route("/api/trades")
 @rate_limit("market_data")
 def api_trades():
-    symbol = request.args.get("symbol", "BTCUSDT").upper()
-    limit = min(int(request.args.get("limit", 30)), 100)
+    symbol, err = validate_symbol(request.args.get("symbol", "BTCUSDT"))
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        limit = max(1, min(int(request.args.get("limit", 30)), 100))
+    except (TypeError, ValueError):
+        limit = 30
 
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
     if sym_info and sym_info["source"] != "binance":
@@ -4199,21 +4268,27 @@ def api_execute():
     denied = require_auth()
     if denied: return denied
     body = request.get_json(force=True)
-    symbol = body.get("symbol", "BTCUSDT").upper()
-    side = body.get("side", "long").lower()
-    order_type = body.get("type", "market").lower()
-    quantity = float(body.get("quantity", 0))
-    price = float(body.get("price", 0))
-    leverage = int(body.get("leverage", 1))
+    symbol, err = validate_symbol(body.get("symbol", "BTCUSDT"))
+    if err:
+        return jsonify({"error": err}), 400
+    side = str(body.get("side", "long")).lower()
+    order_type = str(body.get("type", "market")).lower()
+    quantity, err = validate_quantity(body.get("quantity", 0))
+    if err:
+        return jsonify({"error": err}), 400
+    price, err = validate_price(body.get("price", 0))
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        leverage = max(1, min(int(body.get("leverage", 1)), 500))
+    except (TypeError, ValueError):
+        leverage = 1
     tp = body.get("tp")
     sl = body.get("sl")
     mode = body.get("mode", "paper")
 
-    if quantity <= 0:
-        return jsonify({"error": "Quantity must be positive"}), 400
-
     if side not in ("long", "short", "buy", "sell"):
-        return jsonify({"error": f"Invalid side: {side}"}), 400
+        return jsonify({"error": "Invalid side"}), 400
 
     # Kill switch check
     if risk_engine._is_kill_switch_active():
@@ -4411,9 +4486,11 @@ def api_close():
     if denied: return denied
     body = request.get_json(force=True)
     trade_id = body.get("trade_id")
-    symbol = body.get("symbol", "")
+    symbol = str(body.get("symbol", "")).upper()
     mode = body.get("mode", "paper")
-    exit_price = float(body.get("exit_price", 0))
+    exit_price, err = validate_price(body.get("exit_price", 0))
+    if err:
+        return jsonify({"error": err}), 400
 
     if mode == "paper":
         if not trade_id:
@@ -4758,7 +4835,7 @@ def api_gmx_markets():
 
     except Exception as e:
         log.error("GMX markets route error: %s", e)
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": sanitize_error(e)}), 502
 
 
 def _gmx_markets_fallback():
@@ -4827,7 +4904,7 @@ def api_gmx_funding():
 
     except Exception as e:
         log.error("GMX funding route error: %s", e)
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": sanitize_error(e)}), 502
 
 
 def _gmx_funding_estimate(symbol):
@@ -4864,7 +4941,7 @@ def api_gmx_prices():
             prices[symbol] = round(p, 4)
         return jsonify({"prices": prices, "source": "binance+cache", "timestamp": int(time.time())})
     except Exception as e:
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": sanitize_error(e)}), 502
 
 
 @app.route("/api/gmx/positions")
@@ -4894,7 +4971,7 @@ def api_gmx_positions():
         })
     except Exception as e:
         log.error("GMX positions route error: %s", e)
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": sanitize_error(e)}), 502
 
 
 @app.route("/api/gmx/estimate", methods=["POST"])
@@ -5008,7 +5085,7 @@ def api_gmx_entry_plan():
 
     except Exception as e:
         log.error("GMX entry-plan error: %s", e)
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": sanitize_error(e)}), 502
 
 
 @app.route("/api/gmx/auto-scan")
@@ -5085,7 +5162,7 @@ def api_gmx_health():
             "block": adapter._w3.eth.block_number if rpc_ok else None,
         }
     except Exception as e:
-        health["checks"]["rpc"] = {"ok": False, "error": str(e)}
+        health["checks"]["rpc"] = {"ok": False, "error": sanitize_error(e)}
 
     # Check 2: Contracts loaded
     contracts_ok = bool(adapter._contracts)
@@ -5107,7 +5184,7 @@ def api_gmx_health():
             "warning": "Gas elevated" if not gas_ok else None,
         }
     except Exception as e:
-        health["checks"]["gas"] = {"ok": False, "error": str(e)}
+        health["checks"]["gas"] = {"ok": False, "error": sanitize_error(e)}
 
     # Check 4: Account
     has_signer = adapter._has_signer()
@@ -5135,7 +5212,7 @@ def api_gmx_health():
             "alerts": cb_alerts,
         }
     except Exception as e:
-        health["checks"]["circuit_breaker"] = {"ok": True, "error": str(e)}
+        health["checks"]["circuit_breaker"] = {"ok": True, "error": sanitize_error(e)}
 
     # Overall status
     all_checks = health["checks"]
@@ -5345,7 +5422,7 @@ def api_scheduled_orders_list():
         conn.close()
         return jsonify({"orders": [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/scheduled-orders/<int:order_id>", methods=["DELETE"])
@@ -5370,7 +5447,7 @@ def api_scheduled_orders_cancel(order_id):
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 # ===========================================================================
@@ -5409,7 +5486,7 @@ def api_alerts_create():
         conn.close()
         return jsonify({"success": True, "id": alert_id})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/alerts", methods=["GET"])
@@ -5421,7 +5498,7 @@ def api_alerts_list():
         conn.close()
         return jsonify({"alerts": [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/alerts/<int:alert_id>", methods=["DELETE"])
@@ -5433,7 +5510,7 @@ def api_alerts_delete(alert_id):
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/alerts/check")
@@ -5512,7 +5589,7 @@ def api_alerts_check():
             "triggered_count": len(triggered_alerts),
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 def _eval_condition(current, operator, target):
@@ -5593,7 +5670,7 @@ def api_portfolio():
             "worst_trade": {"symbol": worst["symbol"], "pnl": round(worst["pnl"], 2), "date": worst["closed_at"]} if worst else None,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/equity-curve")
@@ -5629,7 +5706,7 @@ def api_equity_curve():
             "curve": curve,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/bot/performance")
@@ -5786,7 +5863,7 @@ def api_bot_performance():
             "monthly": monthly,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": sanitize_error(e)}), 500
 
 
 @app.route("/api/mtf-signals")

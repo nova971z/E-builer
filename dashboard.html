@@ -3368,6 +3368,11 @@ function fmtK(n) {
 
 function $(id) { return document.getElementById(id); }
 
+function escapeHtml(s) {
+    if (typeof s !== 'string') return String(s);
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function epochToLocal(ts) {
     return ts - new Date().getTimezoneOffset() * 60;
 }
@@ -4348,7 +4353,7 @@ async function loadTicker() {
                         spark = buildSparklineSVG(sparkPrices, 40, 14, sparkColor);
                     }
                     html += '<span class="ft-ticker-item">'
-                        + '<span class="sym">' + t.symbol + '</span>'
+                        + '<span class="sym">' + escapeHtml(t.symbol) + '</span>'
                         + '<span class="val ' + cls + '">' + fmt(parseFloat(t.price)) + ' ' + sign + parseFloat(t.change_pct).toFixed(2) + '%</span>'
                         + spark
                         + '</span>';
@@ -4596,8 +4601,8 @@ async function loadPositions() {
             const roe = p.roe_pct || 0;
 
             html += '<tr>'
-                + '<td class="col-symbol">' + p.symbol + '</td>'
-                + '<td class="' + sideClass + '">' + p.side + '</td>'
+                + '<td class="col-symbol">' + escapeHtml(p.symbol) + '</td>'
+                + '<td class="' + sideClass + '">' + escapeHtml(p.side) + '</td>'
                 + '<td>' + fmt(p.size, 4) + '</td>'
                 + '<td>' + fmt(p.entry_price) + '</td>'
                 + '<td>' + fmt(p.mark_price || p.entry_price) + '</td>'
@@ -4606,7 +4611,7 @@ async function loadPositions() {
                 + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
                 + '<td class="' + pnlClass + '">' + (roe >= 0 ? '+' : '') + roe.toFixed(2) + '%</td>'
                 + '<td>' + (p.tp ? fmt(p.tp) : '--') + '/' + (p.sl ? fmt(p.sl) : '--') + '</td>'
-                + '<td><button class="btn-close-pos" onclick="closePosition(\'' + p.id + '\')">Close</button></td>'
+                + '<td><button class="btn-close-pos" onclick="closePosition(\'' + escapeHtml(p.id) + '\')">Close</button></td>'
                 + '</tr>';
         }
         html += '</tbody></table>';
@@ -4641,14 +4646,14 @@ async function loadPaperHistory() {
             const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
 
             html += '<tr>'
-                + '<td>' + new Date(t.opened_at).toLocaleString() + '</td>'
-                + '<td class="col-symbol">' + t.symbol + '</td>'
-                + '<td class="' + (t.side === 'LONG' ? 'col-long' : 'col-short') + '">' + t.side + '</td>'
+                + '<td>' + escapeHtml(new Date(t.opened_at).toLocaleString()) + '</td>'
+                + '<td class="col-symbol">' + escapeHtml(t.symbol) + '</td>'
+                + '<td class="' + (t.side === 'LONG' ? 'col-long' : 'col-short') + '">' + escapeHtml(t.side) + '</td>'
                 + '<td>' + fmt(t.size, 4) + '</td>'
                 + '<td>' + fmt(t.entry_price) + '</td>'
                 + '<td>' + (t.exit_price ? fmt(t.exit_price) : '--') + '</td>'
                 + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
-                + '<td>' + (t.status || 'open') + '</td>'
+                + '<td>' + escapeHtml(t.status || 'open') + '</td>'
                 + '</tr>';
         }
         html += '</tbody></table>';
@@ -5357,9 +5362,9 @@ async function loadExchangeList() {
         for (let i = 0; i < list.length; i++) {
             const ex = list[i];
             html += '<div class="exchange-item">'
-                + '<span class="ex-name">' + (ex.name || ex.exchange) + '</span>'
-                + '<span class="ex-status">' + (ex.status || 'connected') + '</span>'
-                + '<button onclick="removeExchange(' + ex.id + ')">Remove</button>'
+                + '<span class="ex-name">' + escapeHtml(ex.name || ex.exchange) + '</span>'
+                + '<span class="ex-status">' + escapeHtml(ex.status || 'connected') + '</span>'
+                + '<button onclick="removeExchange(' + parseInt(ex.id) + ')">Remove</button>'
                 + '</div>';
         }
         el.innerHTML = html;
@@ -5815,13 +5820,13 @@ async function loadScheduledOrders() {
             var o = orders[i];
             var sideClass = o.side === 'long' ? 'col-long' : 'col-short';
             html += '<tr>'
-                + '<td>' + o.parent_type.toUpperCase() + '</td>'
-                + '<td>' + o.symbol + '</td>'
-                + '<td class="' + sideClass + '">' + o.side.toUpperCase() + '</td>'
+                + '<td>' + escapeHtml(String(o.parent_type).toUpperCase()) + '</td>'
+                + '<td>' + escapeHtml(o.symbol) + '</td>'
+                + '<td class="' + sideClass + '">' + escapeHtml(String(o.side).toUpperCase()) + '</td>'
                 + '<td>' + fmt(o.price || o.trigger_price || 0) + '</td>'
-                + '<td>' + (o.quantity ? o.quantity.toFixed(6) : '--') + '</td>'
-                + '<td>' + o.status + '</td>'
-                + '<td><button onclick="cancelScheduledOrder(' + o.id + ')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">&times;</button></td>'
+                + '<td>' + (o.quantity ? parseFloat(o.quantity).toFixed(6) : '--') + '</td>'
+                + '<td>' + escapeHtml(o.status) + '</td>'
+                + '<td><button onclick="cancelScheduledOrder(' + parseInt(o.id) + ')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">&times;</button></td>'
                 + '</tr>';
         }
         html += '</tbody></table>';
@@ -6163,9 +6168,9 @@ async function loadAlertList() {
             var a = alerts[i];
             var status = a.triggered ? '<span style="color:var(--yellow)">triggered</span>' : '<span style="color:var(--green)">active</span>';
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:3px;background:var(--surface-2);margin-bottom:3px;font-size:11px">'
-                + '<span>' + a.symbol + ' ' + a.condition_type + ' ' + a.operator + ' ' + a.value + '</span>'
+                + '<span>' + escapeHtml(a.symbol) + ' ' + escapeHtml(a.condition_type) + ' ' + escapeHtml(a.operator) + ' ' + escapeHtml(a.value) + '</span>'
                 + '<span style="display:flex;align-items:center;gap:6px">' + status
-                + '<button onclick="deleteAlert(' + a.id + ')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">&times;</button></span>'
+                + '<button onclick="deleteAlert(' + parseInt(a.id) + ')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">&times;</button></span>'
                 + '</div>';
         }
         listEl.innerHTML = html;
@@ -6391,12 +6396,12 @@ async function loadMTF() {
             var dirArrow = info.direction === 'LONG' ? '&#9650;' : (info.direction === 'SHORT' ? '&#9660;' : '&#9670;');
 
             html += '<div class="mtf-row">'
-                + '<span class="mtf-tf">' + tf + '</span>'
-                + '<span class="mtf-cell" style="color:' + rsiColor + '">RSI ' + info.rsi + '</span>'
+                + '<span class="mtf-tf">' + escapeHtml(tf) + '</span>'
+                + '<span class="mtf-cell" style="color:' + rsiColor + '">RSI ' + parseInt(info.rsi) + '</span>'
                 + '<span class="mtf-cell"><span class="mtf-dot ' + macdCls + '"></span>MACD</span>'
-                + '<span class="mtf-cell"><span class="mtf-dot ' + regimeCls + '"></span>' + info.regime + '</span>'
-                + '<span class="mtf-cell mtf-dir ' + dirCls + '">' + dirArrow + ' ' + info.direction + '</span>'
-                + '<span class="mtf-cell" style="color:var(--text-dim)">' + info.confidence + '%</span>'
+                + '<span class="mtf-cell"><span class="mtf-dot ' + regimeCls + '"></span>' + escapeHtml(info.regime) + '</span>'
+                + '<span class="mtf-cell mtf-dir ' + dirCls + '">' + dirArrow + ' ' + escapeHtml(info.direction) + '</span>'
+                + '<span class="mtf-cell" style="color:var(--text-dim)">' + parseInt(info.confidence) + '%</span>'
                 + '</div>';
         }
         gridEl.innerHTML = html;
@@ -6404,7 +6409,7 @@ async function loadMTF() {
         if (confEl && data.confluence) {
             var c = data.confluence;
             var barColor = c.pct >= 75 ? 'var(--green)' : (c.pct >= 50 ? 'var(--yellow)' : 'var(--red)');
-            confEl.innerHTML = '<span>Confluence: ' + c.direction + ' ' + c.agreement + '/' + c.total + '</span>'
+            confEl.innerHTML = '<span>Confluence: ' + escapeHtml(c.direction) + ' ' + parseInt(c.agreement) + '/' + parseInt(c.total) + '</span>'
                 + '<div class="mtf-confluence-bar">'
                 + '<div class="mtf-confluence-fill" style="width:' + c.pct + '%;background:' + barColor + '"></div>'
                 + '</div>'
@@ -6532,14 +6537,14 @@ function loadGMXPositions() {
             var p = positions[i];
             var pnlClass = p.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
             var pnlSign = p.pnl >= 0 ? '+' : '';
-            var sym = p.symbol.replace('USDT', '');
+            var sym = escapeHtml(String(p.symbol).replace('USDT', ''));
             html += '<tr>'
                 + '<td>' + sym + '</td>'
-                + '<td style="color:' + (p.side === 'long' ? 'var(--green)' : 'var(--red)') + '">' + p.side.toUpperCase() + '</td>'
+                + '<td style="color:' + (p.side === 'long' ? 'var(--green)' : 'var(--red)') + '">' + escapeHtml(String(p.side).toUpperCase()) + '</td>'
                 + '<td>$' + fmtK(p.size_usd) + '</td>'
                 + '<td>' + p.leverage.toFixed(0) + 'x</td>'
                 + '<td class="' + pnlClass + '">' + pnlSign + '$' + p.pnl.toFixed(2) + '</td>'
-                + '<td><button onclick="closeGMXPosition(\'' + p.symbol + '\')" style="background:var(--red);color:#fff;border:none;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:10px">Close</button></td>'
+                + '<td><button onclick="closeGMXPosition(\'' + escapeHtml(p.symbol) + '\')" style="background:var(--red);color:#fff;border:none;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:10px">Close</button></td>'
                 + '</tr>';
         }
         body.innerHTML = html;
@@ -6660,12 +6665,12 @@ function loadGMXEntryPlan() {
         }
 
         var dirColor = plan.direction === 'long' ? 'var(--green)' : 'var(--red)';
-        var signals = (plan.signals || []).slice(0, 4).join('<br>');
+        var signals = (plan.signals || []).slice(0, 4).map(escapeHtml).join('<br>');
 
         container.innerHTML = '<div class="gmx-entry-alert">'
             + '<div class="alert-header">'
-            + '<span class="alert-title" style="color:' + dirColor + '">' + plan.direction.toUpperCase() + ' ' + symbol.replace('USDT', '') + '</span>'
-            + '<span class="alert-score">Score: ' + plan.score + '</span>'
+            + '<span class="alert-title" style="color:' + dirColor + '">' + escapeHtml(String(plan.direction).toUpperCase()) + ' ' + escapeHtml(symbol.replace('USDT', '')) + '</span>'
+            + '<span class="alert-score">Score: ' + parseInt(plan.score) + '</span>'
             + '</div>'
             + '<div class="alert-details">'
             + plan.leverage + 'x | Entry: $' + fmt(plan.entry_price) + ' | TP: $' + fmt(plan.take_profit) + ' | SL: $' + fmt(plan.stop_loss)
@@ -6720,19 +6725,19 @@ function runGMXAutoScan() {
             var dc = o.direction === 'long' ? 'var(--green)' : 'var(--red)';
             html += '<div class="gmx-entry-alert" style="margin-bottom:6px">'
                 + '<div class="alert-header">'
-                + '<span class="alert-title" style="color:' + dc + '">' + o.direction.toUpperCase() + ' ' + o.symbol.replace('USDT', '') + '</span>'
-                + '<span class="alert-score">Score: ' + o.score + '</span>'
+                + '<span class="alert-title" style="color:' + dc + '">' + escapeHtml(String(o.direction).toUpperCase()) + ' ' + escapeHtml(String(o.symbol).replace('USDT', '')) + '</span>'
+                + '<span class="alert-score">Score: ' + parseInt(o.score) + '</span>'
                 + '</div>'
                 + '<div class="alert-details">'
-                + o.leverage + 'x | R:R ' + o.risk_reward_ratio.toFixed(1) + ' | Size: $' + fmtK(o.size_usd)
+                + parseInt(o.leverage) + 'x | R:R ' + parseFloat(o.risk_reward_ratio).toFixed(1) + ' | Size: $' + fmtK(o.size_usd)
                 + '</div>'
-                + '<button class="btn-execute" onclick="applyScanResult(' + i + ')">&#9889; Select</button>'
+                + '<button class="btn-execute" onclick="applyScanResult(' + parseInt(i) + ')">&#9889; Select</button>'
                 + '</div>';
         }
         container.innerHTML = html;
         window._gmxScanResults = opps;
     }).catch(function(err) {
-        container.innerHTML = '<div style="font-size:11px;color:var(--red);padding:8px 0">Scan error: ' + err.message + '</div>';
+        container.innerHTML = '<div style="font-size:11px;color:var(--red);padding:8px 0">Scan error: ' + escapeHtml(err.message) + '</div>';
     });
 }
 
@@ -7015,11 +7020,13 @@ function renderWatchlist() {
         var chgClass = (p.change || 0) >= 0 ? 'up' : 'down';
         var chgSign = (p.change || 0) >= 0 ? '+' : '';
         var isActive = sym === currentSymbol ? ' active' : '';
-        html += '<div class="wl-coin' + isActive + '" draggable="true" data-idx="' + i + '" data-sym="' + sym + '" '
-            + 'onclick="watchlistSelect(\'' + sym + '\')" '
+        var safeBase = escapeHtml(base);
+        var safeSym = escapeHtml(sym);
+        html += '<div class="wl-coin' + isActive + '" draggable="true" data-idx="' + i + '" data-sym="' + safeSym + '" '
+            + 'onclick="watchlistSelect(\'' + safeSym + '\')" '
             + 'ondragstart="wlDragStart(event,' + i + ')" ondragover="wlDragOver(event)" ondrop="wlDrop(event,' + i + ')" ondragend="wlDragEnd(event)">'
-            + '<div class="wl-coin-icon">' + base.substring(0, 3) + '</div>'
-            + '<div class="wl-coin-info"><span class="wl-coin-sym">' + base + '/USDT</span>'
+            + '<div class="wl-coin-icon">' + safeBase.substring(0, 3) + '</div>'
+            + '<div class="wl-coin-info"><span class="wl-coin-sym">' + safeBase + '/USDT</span>'
             + '<span class="wl-coin-price">' + price + '</span></div>'
             + '<span class="wl-coin-change ' + chgClass + '">' + chgSign + chg + '%</span>'
             + '<button class="wl-coin-del" onclick="event.stopPropagation();removeFromWatchlist(\'' + sym + '\')" title="Remove">&times;</button>'
@@ -7061,8 +7068,8 @@ async function filterWatchlistDropdown(query) {
         var r = results[i];
         var chgClass = r.change >= 0 ? 'up' : 'down';
         var chgSign = r.change >= 0 ? '+' : '';
-        html += '<div class="wl-drop-item" onclick="addFromSearch(\'' + r.symbol + '\')">'
-            + r.symbol.replace('USDT', '/USDT') + ' <span class="wl-coin-change ' + chgClass + '" style="margin-left:6px">' + chgSign + r.change.toFixed(2) + '%</span></div>';
+        html += '<div class="wl-drop-item" onclick="addFromSearch(\'' + escapeHtml(r.symbol) + '\')">'
+            + escapeHtml(String(r.symbol).replace('USDT', '/USDT')) + ' <span class="wl-coin-change ' + chgClass + '" style="margin-left:6px">' + chgSign + r.change.toFixed(2) + '%</span></div>';
     }
     drop.innerHTML = html;
     drop.style.display = '';
@@ -7205,10 +7212,10 @@ function renderMarkets() {
     var html = '';
     for (var i = 0; i < filtered.length; i++) {
         var m = filtered[i];
-        var sym = m.symbol.replace('USDT', '');
+        var sym = escapeHtml(String(m.symbol).replace('USDT', ''));
         var chgClass = m.change >= 0 ? 'up' : 'down';
         var chgSign = m.change >= 0 ? '+' : '';
-        html += '<div class="market-card" onclick="selectMarket(\'' + m.symbol + '\')">'
+        html += '<div class="market-card" onclick="selectMarket(\'' + escapeHtml(m.symbol) + '\')">'
             + '<div class="mc-left"><span class="mc-symbol">' + sym + '/USDT</span><span class="mc-vol">Vol: ' + fmtK(m.volume) + '</span></div>'
             + '<div class="mc-right"><span class="mc-price">' + fmt(m.price) + '</span><span class="mc-change ' + chgClass + '">' + chgSign + m.change.toFixed(2) + '%</span></div>'
             + '</div>';
@@ -7379,7 +7386,7 @@ function renderSymbolTable(bySymbol) {
         var e = entries[i];
         var wr = e.data.trades > 0 ? Math.round(e.data.wins / e.data.trades * 100) : 0;
         var pnlClass = e.data.pnl >= 0 ? 'up' : 'down';
-        var sym = e.symbol.replace('USDT', '');
+        var sym = escapeHtml(String(e.symbol).replace('USDT', ''));
         html += '<tr><td style="font-weight:600">' + sym + '</td><td>' + e.data.trades + '</td><td>' + wr + '%</td><td class="col-pnl-' + pnlClass + '">$' + e.data.pnl.toFixed(2) + '</td></tr>';
     }
     tbody.innerHTML = html || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No trades yet</td></tr>';
