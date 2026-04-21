@@ -3190,13 +3190,13 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 41 | S3.0 | Coffre-fort GMX Wallet | `[x]` FAIT | — | 2026-04-21 |
 | 42 | S4.0 | CORS & Headers HTTP | `[x]` FAIT | — | 2026-04-21 |
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[x]` FAIT | — | 2026-04-21 |
-| 44 | S6.0 | Blindage du chiffrement | `[ ]` EN ATTENTE | — | — |
+| 44 | S6.0 | Blindage du chiffrement | `[x]` FAIT | — | 2026-04-21 |
 | 45 | S7.0 | Validation entrées & erreurs | `[ ]` EN ATTENTE | — | — |
 | 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[ ]` EN ATTENTE | — | — |
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 5 / 10 étapes terminées**
+**Progression sécurité : 6 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,86 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S6.0 — Blindage du chiffrement (Step 44) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S6.1 | Suppression fallback base64 dans `encrypt_string()` / `decrypt_string()` — `raise RuntimeError` si pas de Fernet | `[x]` |
+| S6.2 | `decrypt_string()` : try/except avec log d'erreur (sans la donnée), retourne `None` au lieu de crash | `[x]` |
+| S6.3 | `check_fernet_integrity()` : round-trip encrypt/decrypt au démarrage, log CRITICAL si échec | `[x]` |
+| S6.4 | `check_key_file_permissions()` : vérifie `0o600` au démarrage, auto-fix + warning si trop permissif | `[x]` |
+| S6.5 | Route `GET /api/security/status` (auth + rate_limit) : fernet_ok, permissions, integrity, blocked IPs | `[x]` |
+| S6.6 | `require_fernet()` guard sur 5 routes sensibles — retourne 503 si `HAS_FERNET=False` | `[x]` |
+| S6.7 | Startup critique si `HAS_FERNET=False` : bannière CRITICAL dans les logs | `[x]` |
+| S6.8 | Fallbacks base64 supprimés aussi dans `vault_encrypt()` / `vault_decrypt()` — RuntimeError à la place | `[x]` |
+
+**Vulnérabilités corrigées** : M-05 (fallback base64 = pas de chiffrement réel), H-06 (pas de vérification intégrité clé)
+
+**Flux de chiffrement sécurisé** :
+```
+DÉMARRAGE
+  ├── HAS_FERNET = False?
+  │   └── CRITICAL: bannière d'avertissement, routes sensibles bloquées (503)
+  └── HAS_FERNET = True
+      ├── get_fernet() → charge/crée secret.key (0o600)
+      ├── check_fernet_integrity() → round-trip test
+      │   ├── OK → log INFO "Encryption integrity check passed"
+      │   └── FAIL → log CRITICAL "secret.key may be corrupted"
+      └── check_key_file_permissions()
+          ├── 0o600 → OK
+          └── autre → auto-fix + WARNING
+
+ENCRYPT_STRING(plaintext)
+  ├── get_fernet() → None? → RuntimeError (plus de fallback base64)
+  └── Fernet.encrypt(plaintext) → ciphertext
+
+DECRYPT_STRING(ciphertext)
+  ├── get_fernet() → None? → RuntimeError
+  └── try: Fernet.decrypt(ciphertext)
+      ├── OK → plaintext
+      └── Exception → log.error("data corrupted or key mismatch") → return None
+
+VAULT_ENCRYPT(plaintext, pin) — double encryption
+  ├── HAS_FERNET = False? → RuntimeError
+  └── inner = Fernet(PBKDF2(pin, salt)).encrypt(plaintext)
+      outer = encrypt_string(salt + ":" + inner)
+
+ROUTES SENSIBLES (anthropic-key, gmx/setup, exchanges/add)
+  └── require_fernet() → 503 si pas de cryptography
+```
+
+**Routes protégées par `require_fernet()`** :
+- `POST /api/settings/anthropic-key`
+- `DELETE /api/settings/anthropic-key`
+- `POST /api/wallet/gmx/setup`
+- `DELETE /api/wallet/gmx`
+- `POST /api/exchanges/add`
+
+**Route `/api/security/status` — Réponse** :
+```json
+{
+  "fernet_available": true,
+  "fernet_integrity": true,
+  "key_file_exists": true,
+  "key_file_permissions": "0o600",
+  "key_file_permissions_ok": true,
+  "encryption_test_passed": true,
+  "pin_configured": false,
+  "rate_limiter_active": true,
+  "blocked_ips_count": 0
+}
+```
+
+**Tests passés** :
+- `python3 -m py_compile server.py` → OK ✓
+- Startup logs : "Encryption integrity check passed" ✓
+- `GET /api/security/status` → toutes les clés présentes, valeurs correctes ✓
+- `GET /api/status` → fernet_available: true ✓
+- Aucun fallback base64 restant dans le code ✓
+- `require_fernet()` bloque routes sensibles si `HAS_FERNET=False` ✓
 
 ---
 

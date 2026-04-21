@@ -608,15 +608,53 @@ def get_fernet():
 def encrypt_string(plaintext):
     f = get_fernet()
     if not f:
-        return b64encode(plaintext.encode()).decode()
+        raise RuntimeError("Encryption unavailable: cryptography package not installed")
     return f.encrypt(plaintext.encode()).decode()
 
 
 def decrypt_string(ciphertext):
     f = get_fernet()
     if not f:
-        return b64decode(ciphertext.encode()).decode()
-    return f.decrypt(ciphertext.encode()).decode()
+        raise RuntimeError("Decryption unavailable: cryptography package not installed")
+    try:
+        return f.decrypt(ciphertext.encode()).decode()
+    except Exception:
+        log.error("Decryption failed — data corrupted or key mismatch")
+        return None
+
+
+def check_fernet_integrity():
+    """Round-trip encrypt/decrypt test. Returns True if OK."""
+    try:
+        f = get_fernet()
+        if not f:
+            return False
+        token = f.encrypt(b"jarvis-integrity-check")
+        result = f.decrypt(token)
+        return result == b"jarvis-integrity-check"
+    except Exception:
+        log.critical("Fernet integrity check FAILED — encryption key corrupted")
+        return False
+
+
+def check_key_file_permissions():
+    """Check secret.key file permissions. Returns (ok, octal_mode_str)."""
+    if not SECRET_KEY_FILE.exists():
+        return True, "N/A"
+    try:
+        mode = SECRET_KEY_FILE.stat().st_mode & 0o777
+        mode_str = oct(mode)
+        if mode != 0o600:
+            log.warning("secret.key has permissive permissions %s (should be 0o600)", mode_str)
+            try:
+                os.chmod(str(SECRET_KEY_FILE), 0o600)
+                log.info("Auto-fixed secret.key permissions to 0o600")
+                return True, "0o600 (fixed)"
+            except OSError:
+                return False, mode_str
+        return True, mode_str
+    except OSError:
+        return False, "error"
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +709,9 @@ def vault_encrypt(plaintext, pin):
     """Double encrypt: Fernet(system key) wrapping Fernet(PIN-derived key)."""
     salt = secrets.token_hex(16)
     pin_key = _vault_derive_key(pin, salt)
-    inner = Fernet(pin_key).encrypt(plaintext.encode()).decode() if HAS_FERNET else b64encode(plaintext.encode()).decode()
+    if not HAS_FERNET:
+        raise RuntimeError("Vault encryption unavailable: cryptography package not installed")
+    inner = Fernet(pin_key).encrypt(plaintext.encode()).decode()
     outer = encrypt_string(salt + ":" + inner)
     return outer
 
@@ -683,11 +723,10 @@ def vault_decrypt(ciphertext, pin):
         return None
     salt, inner = raw.split(":", 1)
     pin_key = _vault_derive_key(pin, salt)
+    if not HAS_FERNET:
+        raise RuntimeError("Vault decryption unavailable: cryptography package not installed")
     try:
-        if HAS_FERNET:
-            return Fernet(pin_key).decrypt(inner.encode()).decode()
-        else:
-            return b64decode(inner.encode()).decode()
+        return Fernet(pin_key).decrypt(inner.encode()).decode()
     except Exception:
         return None
 
@@ -785,6 +824,13 @@ def require_auth():
     token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
     if not validate_session(token):
         return jsonify({"error": "Authentication required", "auth_required": True}), 401
+    return None
+
+
+def require_fernet():
+    """Block route if Fernet encryption is unavailable."""
+    if not HAS_FERNET:
+        return jsonify({"error": "Encryption unavailable — install cryptography package"}), 503
     return None
 
 
@@ -4490,6 +4536,8 @@ def api_auth_logout():
 @app.route("/api/settings/anthropic-key", methods=["POST"])
 @rate_limit("settings")
 def api_set_anthropic_key():
+    blocked = require_fernet()
+    if blocked: return blocked
     denied = require_auth()
     if denied: return denied
     body = request.get_json(force=True)
@@ -4529,6 +4577,8 @@ def api_anthropic_key_status():
 @app.route("/api/settings/anthropic-key", methods=["DELETE"])
 @rate_limit("settings")
 def api_delete_anthropic_key():
+    blocked = require_fernet()
+    if blocked: return blocked
     denied = require_auth()
     if denied: return denied
     enc = get_setting("anthropic_api_key_enc")
@@ -4546,6 +4596,8 @@ def api_delete_anthropic_key():
 @app.route("/api/wallet/gmx/setup", methods=["POST"])
 @rate_limit("settings")
 def api_gmx_wallet_setup():
+    blocked = require_fernet()
+    if blocked: return blocked
     denied = require_auth()
     if denied: return denied
     body = request.get_json(force=True)
@@ -4594,6 +4646,8 @@ def api_gmx_wallet_status():
 @app.route("/api/wallet/gmx", methods=["DELETE"])
 @rate_limit("settings")
 def api_gmx_wallet_delete():
+    blocked = require_fernet()
+    if blocked: return blocked
     denied = require_auth()
     if denied: return denied
     body = request.get_json(force=True)
@@ -4619,6 +4673,8 @@ def api_gmx_wallet_delete():
 @app.route("/api/exchanges/add", methods=["POST"])
 @rate_limit("settings")
 def api_exchanges_add():
+    blocked = require_fernet()
+    if blocked: return blocked
     denied = require_auth()
     if denied: return denied
     body = request.get_json(force=True)
@@ -5238,6 +5294,27 @@ def api_status():
     })
 
 
+@app.route("/api/security/status")
+@rate_limit("settings")
+def api_security_status():
+    denied = require_auth()
+    if denied:
+        return denied
+    fernet_ok = check_fernet_integrity()
+    perms_ok, perms_str = check_key_file_permissions()
+    return jsonify({
+        "fernet_available": HAS_FERNET,
+        "fernet_integrity": fernet_ok,
+        "key_file_exists": SECRET_KEY_FILE.exists(),
+        "key_file_permissions": perms_str,
+        "key_file_permissions_ok": perms_ok,
+        "encryption_test_passed": fernet_ok,
+        "pin_configured": is_pin_configured(),
+        "rate_limiter_active": True,
+        "blocked_ips_count": len(_rate_limiter._blocked),
+    })
+
+
 @app.route("/api/sparklines")
 def api_sparklines():
     pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
@@ -5797,6 +5874,22 @@ def serve_static(path):
 if __name__ == "__main__":
     init_db()
     exchange_manager.load_from_db()
+
+    # --- Security checks at startup ---
+    if not HAS_FERNET:
+        log.critical("=" * 60)
+        log.critical("CRYPTOGRAPHY NOT INSTALLED — encryption disabled!")
+        log.critical("Sensitive routes (keys, wallet, exchanges) will be blocked.")
+        log.critical("Fix: pip install cryptography")
+        log.critical("=" * 60)
+    else:
+        if not check_fernet_integrity():
+            log.critical("Fernet integrity check FAILED — secret.key may be corrupted")
+        else:
+            log.info("Encryption integrity check passed")
+        perms_ok, perms_str = check_key_file_permissions()
+        if not perms_ok:
+            log.warning("secret.key permissions issue: %s", perms_str)
 
     from werkzeug.serving import WSGIRequestHandler
     WSGIRequestHandler.server_version = "JARVIS"
