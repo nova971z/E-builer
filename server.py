@@ -3491,7 +3491,7 @@ class MicroPositionEngine:
 
 class PaperTrader:
 
-    REQUIRED_TRADES = 50
+    REQUIRED_TRADES = 0
 
     def execute(self, symbol, side, quantity, price, leverage=1, tp=None, sl=None):
         conn = get_db()
