@@ -4859,8 +4859,56 @@ def api_exchanges_test():
 
 
 # ===========================================================================
-# API ROUTES — GMX V2 Dedicated (5 routes)
+# API ROUTES — GMX V2 Dedicated (6 routes)
 # ===========================================================================
+
+
+@app.route("/api/gmx/connect", methods=["POST"])
+@rate_limit("auth")
+def api_gmx_connect():
+    """Unlock GMX wallet vault and connect the adapter to Arbitrum."""
+    denied = require_auth()
+    if denied:
+        return denied
+
+    addr = get_gmx_wallet_address()
+    if not addr:
+        return jsonify({"error": "No GMX wallet configured — go to Settings first"}), 400
+
+    existing = exchange_manager.get_adapter_by_type("gmx")
+    if existing and existing._initialized:
+        return jsonify({"success": True, "address": addr, "already_connected": True})
+
+    body = request.get_json(force=True)
+    pin = body.get("pin", "").strip()
+    if not pin:
+        return jsonify({"error": "PIN is required to unlock the vault"}), 400
+    if not verify_pin(pin):
+        return jsonify({"error": "Invalid PIN"}), 401
+
+    enc = get_setting("gmx_wallet_enc")
+    if not enc:
+        return jsonify({"error": "Wallet vault is empty"}), 400
+
+    private_key = vault_decrypt(enc, pin)
+    if not private_key:
+        return jsonify({"error": "Failed to decrypt wallet — wrong PIN or corrupted data"}), 400
+
+    try:
+        adapter = GMXAdapter(private_key=private_key, testnet=False)
+        _wipe_string(private_key)
+        exchange_manager._adapters["gmx_wallet"] = adapter
+        log_audit("wallet_setup", f"GMX adapter connected: {addr[:10]}...")
+        return jsonify({
+            "success": True,
+            "address": addr,
+            "initialized": adapter._initialized,
+            "network": "Arbitrum One",
+        })
+    except Exception as e:
+        _wipe_string(private_key)
+        log.error("GMX connect failed: %s", sanitize_error(e))
+        return jsonify({"error": "Failed to initialize GMX adapter"}), 500
 
 @app.route("/api/gmx/markets")
 def api_gmx_markets():

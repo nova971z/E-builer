@@ -2971,6 +2971,7 @@ button:active { opacity: 0.7; }
             <div class="gmx-wallet-row"><span class="label">USDC</span><span class="value" id="gmx-usdc-bal">--</span></div>
             <div class="gmx-wallet-row"><span class="label">Collateral Locked</span><span class="value" id="gmx-collateral">--</span></div>
         </div>
+        <button id="gmx-connect-btn" onclick="connectGmxAdapter()" style="width:100%;padding:8px;margin-top:8px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px;font-weight:600">Connect Wallet</button>
         <div class="gmx-gas-bar">
             <span>Network: <span id="gmx-network">Arbitrum</span></span>
             <span>Block: <span id="gmx-block">--</span></span>
@@ -6529,17 +6530,46 @@ function onGMXMarketChange() {
     loadGMXEntryPlan();
 }
 
+function connectGmxAdapter() {
+    var pin = prompt('Enter PIN to unlock GMX wallet:');
+    if (!pin) return;
+    $('gmx-connect-btn').textContent = 'Connecting...';
+    $('gmx-connect-btn').disabled = true;
+    fetch('/api/gmx/connect', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sessionToken},
+        body: JSON.stringify({pin: pin})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.success) {
+            showToast('GMX adapter connected: ' + escapeHtml(data.address || ''), 'success');
+            $('gmx-connect-btn').style.display = 'none';
+            loadGMXWallet();
+        } else {
+            showToast(escapeHtml(data.error || 'Connection failed'), 'error');
+            $('gmx-connect-btn').textContent = 'Connect Wallet';
+            $('gmx-connect-btn').disabled = false;
+        }
+    }).catch(function() {
+        showToast('Network error connecting GMX', 'error');
+        $('gmx-connect-btn').textContent = 'Connect Wallet';
+        $('gmx-connect-btn').disabled = false;
+    });
+}
+
 function loadGMXWallet() {
     fetch('/api/gmx/positions').then(function(r) { return r.json(); }).then(function(data) {
         if (data.account) {
             $('gmx-account').textContent = data.account.substring(0, 6) + '...' + data.account.substring(38);
             $('gmx-header').classList.remove('disconnected');
+            $('gmx-connect-btn').style.display = 'none';
         } else {
             $('gmx-account').textContent = data.error || 'Not connected';
             $('gmx-header').classList.add('disconnected');
+            $('gmx-connect-btn').style.display = 'block';
         }
     }).catch(function() {
         $('gmx-account').textContent = 'Not connected';
+        $('gmx-connect-btn').style.display = 'block';
     });
 
     fetch('/api/balance').then(function(r) { return r.json(); }).then(function(data) {
