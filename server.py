@@ -5701,6 +5701,380 @@ capital_protector = CapitalProtector(initial_capital=100.0, cb_system=circuit_br
 
 
 # ---------------------------------------------------------------------------
+# Advanced Position Manager — Dynamic risk adjustments for open positions
+# ---------------------------------------------------------------------------
+
+class AdvancedPositionManager:
+    """Manages open positions with dynamic stops, correlation checks, and CB integration."""
+
+    _CORRELATION_GROUPS = [
+        {"BTCUSDT", "ETHUSDT"},
+        {"SOLUSDT", "ETHUSDT"},
+    ]
+
+    _ADVERSE_REGIMES = {
+        "long": {"WEAK_BEAR", "STRONG_BEAR", "CRISIS"},
+        "short": {"STRONG_BULL", "WEAK_BULL"},
+    }
+
+    MAX_PORTFOLIO_HEAT_PCT = 10.0
+    MAX_TIME_NO_PROFIT_H = 24
+    BREAK_EVEN_THRESHOLD = 1.0
+    PARTIAL_TP_RATIO = 1.0
+    PARTIAL_TP_CLOSE_PCT = 0.50
+    CORRELATION_PENALTY = 1.5
+
+    def __init__(self, cb_system, cap_protector):
+        self._positions = {}
+        self._cb = cb_system
+        self._cp = cap_protector
+        self._lock = threading.Lock()
+
+    def add_position(self, pos_id, symbol, side, entry_price, size_usd,
+                     leverage, stop_loss, take_profit, trailing_pct=0,
+                     strategy="", capital=100.0):
+        """Register a new position with computed risk parameters."""
+        if entry_price <= 0 or size_usd <= 0:
+            return {"accepted": False, "reason": "invalid price or size"}
+
+        if stop_loss and stop_loss > 0:
+            if side == "long":
+                risk_pct = (entry_price - stop_loss) / entry_price * 100
+            else:
+                risk_pct = (stop_loss - entry_price) / entry_price * 100
+        else:
+            risk_pct = 3.0
+
+        risk_usd = size_usd * (risk_pct / 100.0) * leverage
+        max_loss = size_usd * leverage
+
+        heat = self.get_portfolio_heat(capital)
+        if heat + (risk_usd / capital * 100 if capital > 0 else 0) > self.MAX_PORTFOLIO_HEAT_PCT:
+            log.warning("[PM] Position rejected — portfolio heat %.1f%% + new %.1f%% > %.1f%%",
+                        heat, risk_usd / capital * 100 if capital > 0 else 0,
+                        self.MAX_PORTFOLIO_HEAT_PCT)
+            return {"accepted": False, "reason": f"portfolio heat would exceed {self.MAX_PORTFOLIO_HEAT_PCT}%"}
+
+        with self._lock:
+            self._positions[pos_id] = {
+                "symbol": symbol,
+                "side": side,
+                "entry_price": entry_price,
+                "size_usd": size_usd,
+                "leverage": leverage,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "trailing_pct": trailing_pct,
+                "strategy": strategy,
+                "initial_risk_pct": round(risk_pct, 2),
+                "risk_usd": round(risk_usd, 4),
+                "max_loss": round(max_loss, 4),
+                "current_price": entry_price,
+                "unrealized_pnl": 0.0,
+                "unrealized_pnl_pct": 0.0,
+                "hwm_price": entry_price,
+                "opened_at": time.time(),
+                "partial_tp_done": False,
+                "break_even_set": False,
+            }
+
+        log.info("[PM] Position registered | %s %s %s | $%.2f @%.2f | risk=%.2f%%",
+                 pos_id, side, symbol, size_usd, entry_price, risk_pct)
+        return {"accepted": True, "risk_pct": round(risk_pct, 2), "risk_usd": round(risk_usd, 4)}
+
+    def remove_position(self, pos_id):
+        """Unregister a closed position."""
+        with self._lock:
+            self._positions.pop(pos_id, None)
+
+    def update_position(self, pos_id, current_price):
+        """Update position state with latest market price."""
+        with self._lock:
+            pos = self._positions.get(pos_id)
+            if not pos:
+                return None
+
+            pos["current_price"] = current_price
+            entry = pos["entry_price"]
+            side = pos["side"]
+
+            if side == "long":
+                pnl_pct = (current_price - entry) / entry * 100
+            else:
+                pnl_pct = (entry - current_price) / entry * 100
+
+            pos["unrealized_pnl_pct"] = round(pnl_pct, 2)
+            pos["unrealized_pnl"] = round(pos["size_usd"] * pnl_pct / 100 * pos["leverage"], 4)
+
+            if side == "long" and current_price > pos["hwm_price"]:
+                pos["hwm_price"] = current_price
+            elif side == "short" and current_price < pos["hwm_price"]:
+                pos["hwm_price"] = current_price
+
+            return dict(pos)
+
+    def should_close(self, pos_id, current_price, regime="RANGE", rsi_value=None):
+        """Determine if position should be closed. Returns (should_close, reason) tuple."""
+        with self._lock:
+            pos = self._positions.get(pos_id)
+            if not pos:
+                return False, ""
+            pos = dict(pos)
+
+        entry = pos["entry_price"]
+        side = pos["side"]
+        sl = pos["stop_loss"]
+        tp = pos["take_profit"]
+        trailing = pos["trailing_pct"]
+
+        if side == "long":
+            pnl_pct = (current_price - entry) / entry * 100
+        else:
+            pnl_pct = (entry - current_price) / entry * 100
+
+        # 1. Stop loss
+        if sl and sl > 0:
+            if side == "long" and current_price <= sl:
+                return True, f"SL hit @{sl:.2f} ({pnl_pct:.1f}%)"
+            if side == "short" and current_price >= sl:
+                return True, f"SL hit @{sl:.2f} ({pnl_pct:.1f}%)"
+
+        # 2. Take profit
+        if tp and tp > 0:
+            if side == "long" and current_price >= tp:
+                return True, f"TP hit @{tp:.2f} ({pnl_pct:.1f}%)"
+            if side == "short" and current_price <= tp:
+                return True, f"TP hit @{tp:.2f} ({pnl_pct:.1f}%)"
+
+        # 3. Trailing stop
+        if trailing > 0 and pnl_pct > trailing:
+            hwm = pos["hwm_price"]
+            if side == "long":
+                hwm_pnl = (hwm - entry) / entry * 100
+            else:
+                hwm_pnl = (entry - hwm) / entry * 100
+            if hwm_pnl - pnl_pct >= trailing:
+                return True, f"Trailing stop ({trailing}%), HWM {hwm_pnl:.1f}% → {pnl_pct:.1f}%"
+
+        # 4. Adverse regime change
+        adverse = self._ADVERSE_REGIMES.get(side, set())
+        if regime in adverse and pnl_pct < 0.5:
+            return True, f"Regime {regime} adverse for {side} (pnl={pnl_pct:.1f}%)"
+
+        # 5. Time-based: >24h without significant profit
+        age_h = (time.time() - pos["opened_at"]) / 3600
+        if age_h > self.MAX_TIME_NO_PROFIT_H and pnl_pct < 1.0:
+            return True, f"Open {age_h:.0f}h without profit ({pnl_pct:.1f}%)"
+
+        # 6. Divergence: RSI invalidation
+        if rsi_value is not None:
+            if side == "long" and rsi_value > 70 and pnl_pct > 0:
+                return True, f"RSI overbought {rsi_value:.0f} — taking profit ({pnl_pct:.1f}%)"
+            if side == "short" and rsi_value < 30 and pnl_pct > 0:
+                return True, f"RSI oversold {rsi_value:.0f} — taking profit ({pnl_pct:.1f}%)"
+
+        # 7. Circuit breaker L3+
+        cb_action = self._cb.get_max_allowed_action()
+        if cb_action in ("close_only", "blocked"):
+            return True, f"CB forced close (allowed={cb_action})"
+
+        # 8. Correlation loss check
+        corr_loss = self._check_correlation_loss(pos_id, pos["symbol"], side)
+        if corr_loss:
+            return True, corr_loss
+
+        # Default SL/TP
+        if pnl_pct <= -3.0:
+            return True, f"Default SL ({pnl_pct:.1f}%)"
+        if pnl_pct >= 5.0 and not tp:
+            return True, f"Default TP ({pnl_pct:.1f}%)"
+
+        return False, ""
+
+    def adjust_stops(self, pos_id, current_price):
+        """Dynamically adjust stop loss: trailing, break-even, partial TP."""
+        actions = []
+        with self._lock:
+            pos = self._positions.get(pos_id)
+            if not pos:
+                return actions
+
+            entry = pos["entry_price"]
+            side = pos["side"]
+            initial_risk = pos["initial_risk_pct"]
+
+            if side == "long":
+                pnl_pct = (current_price - entry) / entry * 100
+            else:
+                pnl_pct = (entry - current_price) / entry * 100
+
+            # Break-even: move SL to entry when profit >= 1× initial risk
+            if not pos["break_even_set"] and initial_risk > 0 and pnl_pct >= initial_risk * self.BREAK_EVEN_THRESHOLD:
+                pos["stop_loss"] = entry
+                pos["break_even_set"] = True
+                actions.append({"action": "break_even", "new_sl": entry})
+                log.info("[PM] Break-even set | %s | SL → entry @%.2f", pos_id, entry)
+
+            # Partial TP: signal to close 50% at 1× risk profit
+            if not pos["partial_tp_done"] and initial_risk > 0 and pnl_pct >= initial_risk * self.PARTIAL_TP_RATIO:
+                pos["partial_tp_done"] = True
+                actions.append({"action": "partial_tp", "close_pct": self.PARTIAL_TP_CLOSE_PCT,
+                                "pnl_pct": round(pnl_pct, 2)})
+                log.info("[PM] Partial TP signal | %s | close %.0f%% at pnl=%.1f%%",
+                         pos_id, self.PARTIAL_TP_CLOSE_PCT * 100, pnl_pct)
+
+            # Trailing: ratchet SL forward
+            trailing = pos["trailing_pct"]
+            if trailing > 0 and pnl_pct > trailing:
+                if side == "long":
+                    new_sl = current_price * (1 - trailing / 100)
+                    if pos["stop_loss"] is None or new_sl > pos["stop_loss"]:
+                        pos["stop_loss"] = round(new_sl, 2)
+                        actions.append({"action": "trailing_update", "new_sl": pos["stop_loss"]})
+                else:
+                    new_sl = current_price * (1 + trailing / 100)
+                    if pos["stop_loss"] is None or new_sl < pos["stop_loss"]:
+                        pos["stop_loss"] = round(new_sl, 2)
+                        actions.append({"action": "trailing_update", "new_sl": pos["stop_loss"]})
+
+        return actions
+
+    def get_portfolio_heat(self, capital=None):
+        """Total risk exposure as % of capital."""
+        if capital is None or capital <= 0:
+            capital = self._cp.high_water_mark if self._cp else 100.0
+        with self._lock:
+            total_risk = sum(p["risk_usd"] for p in self._positions.values())
+        return round(total_risk / capital * 100, 2) if capital > 0 else 0.0
+
+    def get_correlation_risk(self):
+        """Check if positions are too correlated and compute effective risk."""
+        with self._lock:
+            positions = list(self._positions.values())
+
+        if len(positions) < 2:
+            return {"correlated": False, "groups": [], "effective_risk_multiplier": 1.0}
+
+        active_symbols = {}
+        for p in positions:
+            sym = p["symbol"]
+            if sym not in active_symbols:
+                active_symbols[sym] = []
+            active_symbols[sym].append(p)
+
+        correlated_groups = []
+        total_risk = sum(p["risk_usd"] for p in positions)
+        penalty_risk = 0.0
+
+        for group in self._CORRELATION_GROUPS:
+            in_group = group & set(active_symbols.keys())
+            if len(in_group) >= 2:
+                group_syms = list(in_group)
+                same_side = True
+                sides = set()
+                group_risk = 0.0
+                for sym in group_syms:
+                    for p in active_symbols[sym]:
+                        sides.add(p["side"])
+                        group_risk += p["risk_usd"]
+                same_side = len(sides) == 1
+                if same_side:
+                    penalty_risk += group_risk * (self.CORRELATION_PENALTY - 1.0)
+                    correlated_groups.append({
+                        "symbols": group_syms,
+                        "same_direction": True,
+                        "combined_risk": round(group_risk, 4),
+                        "effective_risk": round(group_risk * self.CORRELATION_PENALTY, 4),
+                    })
+
+        effective_mult = ((total_risk + penalty_risk) / total_risk) if total_risk > 0 else 1.0
+
+        return {
+            "correlated": len(correlated_groups) > 0,
+            "groups": correlated_groups,
+            "effective_risk_multiplier": round(effective_mult, 2),
+            "total_risk_usd": round(total_risk, 4),
+            "effective_risk_usd": round(total_risk + penalty_risk, 4),
+        }
+
+    def get_position_summary(self):
+        """Dashboard-friendly summary of all managed positions."""
+        with self._lock:
+            positions = {pid: dict(p) for pid, p in self._positions.items()}
+
+        if not positions:
+            return {"count": 0, "positions": [], "total_unrealized_pnl": 0,
+                    "best": None, "worst": None}
+
+        summaries = []
+        total_pnl = 0.0
+        best_pnl = -999
+        worst_pnl = 999
+        best_id = worst_id = None
+
+        for pid, p in positions.items():
+            pnl = p["unrealized_pnl_pct"]
+            total_pnl += p["unrealized_pnl"]
+            age_h = (time.time() - p["opened_at"]) / 3600
+            summaries.append({
+                "id": pid,
+                "symbol": p["symbol"],
+                "side": p["side"],
+                "entry": p["entry_price"],
+                "current": p["current_price"],
+                "size_usd": p["size_usd"],
+                "leverage": p["leverage"],
+                "pnl_pct": round(pnl, 2),
+                "pnl_usd": round(p["unrealized_pnl"], 4),
+                "stop_loss": p["stop_loss"],
+                "take_profit": p["take_profit"],
+                "risk_pct": p["initial_risk_pct"],
+                "age_hours": round(age_h, 1),
+                "break_even_set": p["break_even_set"],
+                "partial_tp_done": p["partial_tp_done"],
+                "strategy": p["strategy"],
+            })
+            if pnl > best_pnl:
+                best_pnl = pnl
+                best_id = pid
+            if pnl < worst_pnl:
+                worst_pnl = pnl
+                worst_id = pid
+
+        return {
+            "count": len(summaries),
+            "positions": summaries,
+            "total_unrealized_pnl": round(total_pnl, 4),
+            "best": {"id": best_id, "pnl_pct": round(best_pnl, 2)} if best_id else None,
+            "worst": {"id": worst_id, "pnl_pct": round(worst_pnl, 2)} if worst_id else None,
+        }
+
+    def _check_correlation_loss(self, pos_id, symbol, side):
+        """Check if a correlated position has suffered a big loss."""
+        correlated_syms = set()
+        for group in self._CORRELATION_GROUPS:
+            if symbol in group:
+                correlated_syms |= group
+        correlated_syms.discard(symbol)
+        if not correlated_syms:
+            return None
+
+        with self._lock:
+            for pid, p in self._positions.items():
+                if pid == pos_id:
+                    continue
+                if p["symbol"] in correlated_syms and p["side"] == side:
+                    if p["unrealized_pnl_pct"] < -5.0:
+                        return (f"Correlated {p['symbol']} at {p['unrealized_pnl_pct']:.1f}%"
+                                f" — cutting {symbol}")
+        return None
+
+
+position_manager = AdvancedPositionManager(cb_system=circuit_breakers,
+                                            cap_protector=capital_protector)
+
+
+# ---------------------------------------------------------------------------
 # Autonomous Trading Engine — Background loop that scans markets and executes
 # trades without human intervention.
 # ---------------------------------------------------------------------------
@@ -5719,7 +6093,8 @@ class AutonomousEngine:
                          "dip_hunter", "momentum_scalp", "macro_event")
 
     def __init__(self, exchange_mgr, sig_engine, risk_eng,
-                 dip_top, regime_det, micro_eng, paper_trd):
+                 dip_top, regime_det, micro_eng, paper_trd,
+                 cb_system=None, cap_protector=None, pos_manager=None):
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
@@ -5731,6 +6106,9 @@ class AutonomousEngine:
         self._regime = regime_det
         self._micro = micro_eng
         self._paper = paper_trd
+        self._cb = cb_system
+        self._cp = cap_protector
+        self._pm = pos_manager
 
         self._config = {
             "enabled": False,
@@ -5760,6 +6138,7 @@ class AutonomousEngine:
             "last_scan_duration": 0.0,
         }
 
+        self._price_history = {}
         self._trade_log = []
 
     # ----- lifecycle --------------------------------------------------------
@@ -5794,6 +6173,35 @@ class AutonomousEngine:
             scan_start = time.time()
             try:
                 self._maybe_reset_daily_counters()
+
+                # --- Circuit breaker evaluation (every iteration) ---
+                if self._cb:
+                    balance = self._get_available_balance()
+                    initial = self._cp.initial_capital if self._cp else 100.0
+                    dd_status = self._risk_engine.get_drawdown_status()
+                    market_data = self._build_flash_crash_data()
+                    cb_result = self._cb.check({
+                        "daily_pnl_pct": abs(self._state["daily_pnl"] / balance * 100) if balance > 0 else 0,
+                        "drawdown_pct": dd_status.get("drawdown_pct", 0),
+                        "initial_capital": initial,
+                        "current_capital": balance,
+                        "consecutive_losses": self._cb._consecutive_losses,
+                    }, market_data=market_data)
+
+                    self._state["cb_level"] = cb_result.get("max_level", 0)
+                    self._state["cb_allowed"] = cb_result.get("allowed", "full")
+
+                    if self._cp:
+                        self._cp.update(balance)
+
+                    if cb_result.get("max_level", 0) >= 3:
+                        log.critical("[BOT] Circuit breaker L%d — closing all + stopping",
+                                     cb_result["max_level"])
+                        self._manage_open_positions(force_close_pct=100)
+                        if cb_result.get("max_level", 0) >= 4:
+                            self._activate_kill_switch("CB Level %d" % cb_result["max_level"])
+                        self._running = False
+                        break
 
                 if not self._check_daily_limits():
                     log.info("[BOT] Daily limits reached — sleeping")
@@ -5840,6 +6248,8 @@ class AutonomousEngine:
             except Exception as exc:
                 self._record_error(f"Loop: {exc}")
                 log.error("[BOT] Critical loop error | %s", exc)
+                if self._cb:
+                    self._cb.trigger_execution_error(phantom_order=False)
 
             sleep_time = max(5, self._config["scan_interval"] - (time.time() - scan_start))
             time.sleep(sleep_time)
@@ -5928,8 +6338,14 @@ class AutonomousEngine:
             else:
                 exit_conds = {"take_profit": 0, "stop_loss": 0, "trailing_pct": 0}
 
+            if self._cb:
+                leverage = max(1, int(leverage * self._cb.get_leverage_multiplier()))
+
+            sl_price = exit_conds.get("stop_loss", 0) or 0
             balance = self._get_available_balance()
-            size = self._calculate_position_size(signal_info, balance)
+            size = self._calculate_position_size(signal_info, balance,
+                                                  entry_price=current_price,
+                                                  stop_loss=sl_price)
 
             if size > 0:
                 self._execute_trade(symbol, direction, size, current_price,
@@ -5941,6 +6357,9 @@ class AutonomousEngine:
     def _should_trade(self, signal, regime_info, risk_check, dip_top_info,
                       strat_pick=None, macro_score=0):
         if not risk_check.get("approved", False):
+            return False
+
+        if self._cb and not self._cb.is_new_trade_allowed():
             return False
 
         score = abs(signal.get("score", 0))
@@ -6004,9 +6423,19 @@ class AutonomousEngine:
             return pick
         return "trend"
 
-    def _calculate_position_size(self, signal, balance):
+    def _calculate_position_size(self, signal, balance, entry_price=0, stop_loss=0):
         if balance <= 0:
             return 0.0
+
+        if self._cp and entry_price > 0 and stop_loss > 0:
+            heat = self._pm.get_portfolio_heat(balance) if self._pm else 0.0
+            size = self._cp.get_position_size(
+                signal.get("confidence", 50), balance,
+                entry_price, stop_loss, portfolio_heat_pct=heat)
+            if size > 0:
+                size = max(size, MicroPositionEngine.DEFAULT_SIZE_USD)
+                size = min(size, balance * 0.2)
+                return round(size, 2)
 
         paper_status = self._paper.get_status()
         total_trades = paper_status.get("total_trades", 0)
@@ -6029,6 +6458,9 @@ class AutonomousEngine:
 
         risk_pct = self._config["risk_per_trade_pct"] / 100.0
         size = balance * kelly * risk_pct
+
+        cb_mult = self._cb.get_size_multiplier() if self._cb else 1.0
+        size *= cb_mult
 
         max_size = balance * (MicroPositionEngine.MAX_CAPITAL_PCT / 100.0)
         size = min(size, max_size)
@@ -6094,6 +6526,16 @@ class AutonomousEngine:
             if isinstance(result, dict) and result.get("success"):
                 log.info("[BOT] Trade opened | %s %s | $%.2f | %s",
                          direction.upper(), symbol, size_usd, strategy)
+                if self._pm:
+                    trade_id = result.get("trade_id")
+                    if trade_id:
+                        balance = self._get_available_balance()
+                        self._pm.add_position(
+                            pos_id=trade_id, symbol=symbol, side=direction,
+                            entry_price=price, size_usd=size_usd, leverage=leverage,
+                            stop_loss=sl or 0, take_profit=tp or 0,
+                            trailing_pct=exit_conditions.get("trailing_pct", 0),
+                            strategy=strategy, capital=balance)
             else:
                 err = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
                 log.warning("[BOT] Trade failed | %s %s | %s", symbol, direction, err)
@@ -6102,6 +6544,8 @@ class AutonomousEngine:
             trade_record["result"] = {"success": False, "error": str(exc)}
             self._record_error(f"Execute {symbol}: {exc}")
             log.error("[BOT] Execution error | %s | %s", symbol, exc)
+            if self._cb:
+                self._cb.trigger_execution_error(phantom_order=True)
 
         with self._lock:
             self._trade_log.append(trade_record)
@@ -6130,17 +6574,21 @@ class AutonomousEngine:
             for pos in paper_positions:
                 try:
                     symbol = pos.get("symbol", "")
+                    trade_id = pos.get("id")
                     price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=5)
                     if price_data:
                         current = float(price_data.get("price", 0))
                         if current > 0:
-                            result = self._paper.close(pos["id"], current)
+                            result = self._paper.close(trade_id, current)
                             pnl = result.get("pnl", 0)
                             self._state["daily_pnl"] += pnl
-                            log.info("[BOT] Macro force-close | %s | pnl=%.4f", symbol, pnl)
+                            self._on_trade_closed(trade_id, pnl, "force_close")
+                            log.info("[BOT] Force-close | %s | pnl=%.4f", symbol, pnl)
                 except Exception as exc:
                     log.warning("[BOT] Force-close error %s: %s", pos.get("symbol", "?"), exc)
             return
+
+        regime = self._state.get("_last_regime", "RANGE")
 
         for pos in paper_positions:
             try:
@@ -6154,9 +6602,44 @@ class AutonomousEngine:
                 price_data = fetch_binance("/api/v3/ticker/price",
                                            {"symbol": symbol}, ttl=5)
                 if not price_data:
+                    if self._cb:
+                        self._cb.check({"data_stale_seconds": 301, "exchange_error": False,
+                                        "daily_pnl_pct": 0, "drawdown_pct": 0,
+                                        "initial_capital": 100, "current_capital": 100})
                     continue
                 current = float(price_data.get("price", 0))
                 if current <= 0:
+                    continue
+
+                self._record_price(symbol, current)
+
+                if self._pm:
+                    self._pm.update_position(trade_id, current)
+                    self._pm.adjust_stops(trade_id, current)
+
+                    rsi_val = None
+                    try:
+                        raw = fetch_binance("/api/v3/klines",
+                                            {"symbol": symbol, "interval": "1h", "limit": 50}, ttl=30)
+                        if raw:
+                            ohlcv_mini = transform_klines(raw)
+                            closes = [c["close"] for c in ohlcv_mini]
+                            rsi_list = calc_rsi(closes)
+                            rsi_val = rsi_list[-1] if rsi_list else None
+                    except Exception:
+                        pass
+
+                    close_it, close_reason = self._pm.should_close(
+                        trade_id, current, regime=regime, rsi_value=rsi_val)
+
+                    if close_it:
+                        result = self._paper.close(trade_id, current)
+                        pnl = result.get("pnl", 0)
+                        self._state["daily_pnl"] += pnl
+                        strat_name = self._pm._positions.get(trade_id, {}).get("strategy", "")
+                        self._on_trade_closed(trade_id, pnl, strat_name)
+                        log.info("[BOT] Closed | %s %s | pnl=%.4f | %s | strategy=%s",
+                                 side, symbol, pnl, close_reason, strat_name)
                     continue
 
                 if side == "long":
@@ -6206,10 +6689,7 @@ class AutonomousEngine:
                     result = self._paper.close(trade_id, current)
                     pnl = result.get("pnl", 0)
                     self._state["daily_pnl"] += pnl
-                    if pnl < 0:
-                        self._state["last_loss_time"] = time.time()
-                    if strat_name:
-                        strategy_selector.record_result(strat_name, pnl)
+                    self._on_trade_closed(trade_id, pnl, strat_name)
                     log.info("[BOT] Closed position | %s %s | pnl=%.4f | %s | strategy=%s",
                              side, symbol, pnl, close_reason, strat_name)
 
@@ -6293,6 +6773,58 @@ class AutonomousEngine:
             if len(self._state["errors"]) > 100:
                 self._state["errors"] = self._state["errors"][-100:]
 
+    def _on_trade_closed(self, trade_id, pnl, strat_name):
+        """Central handler for trade close: update CB, PM, strategy tracker."""
+        if pnl < 0:
+            self._state["last_loss_time"] = time.time()
+            if self._cb:
+                self._cb.record_loss()
+        else:
+            if self._cb:
+                self._cb.record_win()
+        if strat_name:
+            strategy_selector.record_result(strat_name, pnl)
+        if self._pm:
+            self._pm.remove_position(trade_id)
+
+    def _record_price(self, symbol, price):
+        """Track recent prices per symbol for flash crash detection."""
+        now = time.time()
+        if symbol not in self._price_history:
+            self._price_history[symbol] = []
+        self._price_history[symbol].append((now, price))
+        cutoff = now - 600
+        self._price_history[symbol] = [
+            (t, p) for t, p in self._price_history[symbol] if t > cutoff
+        ]
+
+    def _build_flash_crash_data(self):
+        """Build market_data dict for CB flash crash detection."""
+        now = time.time()
+        data = {}
+        for symbol, history in self._price_history.items():
+            if not history:
+                continue
+            current = history[-1][1]
+            cutoff = now - 300
+            old_prices = [p for t, p in history if t <= cutoff]
+            if old_prices:
+                data[symbol] = {"price_5m_ago": old_prices[-1], "price_now": current}
+        return data
+
+    def _activate_kill_switch(self, reason):
+        """Activate the database kill switch."""
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO killswitch (id, active, activated_at, reason) VALUES (1, 1, ?, ?)",
+                (datetime.now(timezone.utc).isoformat(), reason))
+            conn.commit()
+            conn.close()
+            log.critical("[BOT] Kill switch activated — %s", reason)
+        except Exception as exc:
+            log.error("[BOT] Failed to activate kill switch: %s", exc)
+
     @staticmethod
     def _last_valid(series):
         if not series:
@@ -6306,7 +6838,7 @@ class AutonomousEngine:
 
     def get_status(self):
         with self._lock:
-            return {
+            status = {
                 "running": self._running,
                 "config": dict(self._config),
                 "state": {
@@ -6321,9 +6853,18 @@ class AutonomousEngine:
                     "active_strategies": dict(self._state["active_strategies"]),
                     "in_cooldown": self._is_in_cooldown(),
                     "macro_score": self._state.get("macro_score", 0),
+                    "cb_level": self._state.get("cb_level", 0),
+                    "cb_allowed": self._state.get("cb_allowed", "full"),
                 },
                 "recent_trades": self._trade_log[-20:],
             }
+        if self._cb:
+            status["circuit_breakers"] = self._cb.get_status()
+        if self._pm:
+            status["portfolio_heat"] = self._pm.get_portfolio_heat()
+        if self._cp:
+            status["capital_protector"] = self._cp.get_status()
+        return status
 
     def update_config(self, new_config):
         errors = []
@@ -6377,6 +6918,9 @@ auto_engine = AutonomousEngine(
     regime_det=regime_detector,
     micro_eng=micro_engine,
     paper_trd=paper_trader,
+    cb_system=circuit_breakers,
+    cap_protector=capital_protector,
+    pos_manager=position_manager,
 )
 
 
@@ -9166,6 +9710,60 @@ def api_bot_config():
     if result.get("success"):
         log_audit("bot_config_updated", str({k: v for k, v in body.items() if k != "symbols"}))
     return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Risk management routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/risk/circuit-breakers")
+@rate_limit("bot")
+def api_risk_circuit_breakers():
+    return jsonify(circuit_breakers.get_status())
+
+
+@app.route("/api/risk/acknowledge", methods=["POST"])
+@rate_limit("bot")
+def api_risk_acknowledge():
+    denied = require_auth()
+    if denied:
+        return denied
+    body = request.get_json(force=True)
+    if not body or "level" not in body:
+        return jsonify({"error": "JSON body with 'level' required"}), 400
+    try:
+        level = int(body["level"])
+    except (ValueError, TypeError):
+        return jsonify({"error": "level must be an integer"}), 400
+    result = circuit_breakers.acknowledge(level)
+    if result.get("success"):
+        log_audit("cb_acknowledge", f"Level {level} reset manually")
+    return jsonify(result)
+
+
+@app.route("/api/risk/portfolio")
+@rate_limit("bot")
+def api_risk_portfolio():
+    balance = 100.0
+    try:
+        paper_status = paper_trader.get_status()
+        balance = 100.0 + paper_status.get("total_pnl", 0)
+    except Exception:
+        pass
+    heat = position_manager.get_portfolio_heat(balance)
+    correlation = position_manager.get_correlation_risk()
+    positions = position_manager.get_position_summary()
+    dd = risk_engine.get_drawdown_status()
+    cp_status = capital_protector.get_status()
+    return jsonify({
+        "portfolio_heat_pct": heat,
+        "max_heat_pct": AdvancedPositionManager.MAX_PORTFOLIO_HEAT_PCT,
+        "correlation": correlation,
+        "positions": positions,
+        "drawdown": dd,
+        "capital_protector": cp_status,
+    })
 
 
 # ---------------------------------------------------------------------------
