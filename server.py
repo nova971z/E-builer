@@ -5264,6 +5264,443 @@ macro_engine = MacroDataEngine()
 
 
 # ---------------------------------------------------------------------------
+# Circuit Breaker System — 7-level institutional risk protection
+# ---------------------------------------------------------------------------
+
+class CircuitBreakerSystem:
+    """Multi-level circuit breaker inspired by institutional trading desks.
+
+    7 independent levels, each with its own trigger, action, and reset logic.
+    Levels 4-5 require manual acknowledgement to reset.
+    """
+
+    _LEVEL_META = {
+        1: {"name": "YELLOW",      "label": "Attention",  "auto_reset_s": 1800},
+        2: {"name": "ORANGE",      "label": "Caution",    "auto_reset_s": 3600},
+        3: {"name": "RED",         "label": "Danger",     "auto_reset_s": 7200},
+        4: {"name": "DARK_RED",    "label": "Critical",   "auto_reset_s": None},
+        5: {"name": "BLACK",       "label": "Emergency",  "auto_reset_s": None},
+        6: {"name": "FLASH_CRASH", "label": "Flash Crash", "auto_reset_s": 1800},
+        7: {"name": "SYSTEM_FAULT", "label": "System Fault", "auto_reset_s": 0},
+    }
+
+    _CORRELATED_PAIRS = {
+        "BTCUSDT": ["ETHUSDT"],
+        "ETHUSDT": ["BTCUSDT"],
+        "SOLUSDT": ["ETHUSDT"],
+    }
+
+    def __init__(self):
+        self._levels = {i: False for i in range(1, 8)}
+        self._triggered_at = {}
+        self._actions_log = []
+        self._consecutive_losses = 0
+        self._last_loss_time = 0
+        self._last_drawdown_increase_time = 0
+        self._prev_daily_dd = 0.0
+        self._lock = threading.Lock()
+
+    def check(self, portfolio_state, market_data=None):
+        """Evaluate all 7 circuit breakers independently.
+
+        portfolio_state: {daily_pnl_pct, drawdown_pct, initial_capital,
+                          current_capital, consecutive_losses}
+        market_data:     {symbol: {price_5m_ago, price_now}} for flash crash detection
+        """
+        actions = []
+        now = time.time()
+
+        daily_dd = abs(portfolio_state.get("daily_pnl_pct", 0))
+        total_dd = portfolio_state.get("drawdown_pct", 0)
+        consec = portfolio_state.get("consecutive_losses", self._consecutive_losses)
+        initial_cap = portfolio_state.get("initial_capital", 100)
+        current_cap = portfolio_state.get("current_capital", initial_cap)
+        capital_loss_pct = ((initial_cap - current_cap) / initial_cap * 100) if initial_cap > 0 else 0
+
+        with self._lock:
+            self._consecutive_losses = consec
+
+            if daily_dd > self._prev_daily_dd:
+                self._last_drawdown_increase_time = now
+            self._prev_daily_dd = daily_dd
+
+            self._try_auto_reset(now)
+
+            # --- Level 1: YELLOW ---
+            if daily_dd > 2.0 or consec >= 3:
+                if not self._levels[1]:
+                    self._trigger(1, now, f"daily_dd={daily_dd:.1f}% consec_losses={consec}")
+                actions.append({"level": 1, "action": "reduce_leverage_50pct"})
+
+            # --- Level 2: ORANGE ---
+            if daily_dd > 3.5 or consec >= 5:
+                if not self._levels[2]:
+                    self._trigger(2, now, f"daily_dd={daily_dd:.1f}% consec_losses={consec}")
+                actions.append({"level": 2, "action": "reduce_size_50pct_pause_15m"})
+
+            # --- Level 3: RED ---
+            if daily_dd > 5.0 or total_dd > 10.0:
+                if not self._levels[3]:
+                    self._trigger(3, now, f"daily_dd={daily_dd:.1f}% total_dd={total_dd:.1f}%")
+                actions.append({"level": 3, "action": "close_all_block_1h"})
+
+            # --- Level 4: DARK_RED ---
+            if total_dd > 15.0 or capital_loss_pct > 50.0:
+                if not self._levels[4]:
+                    self._trigger(4, now, f"total_dd={total_dd:.1f}% capital_loss={capital_loss_pct:.1f}%")
+                actions.append({"level": 4, "action": "kill_switch"})
+
+            # --- Level 6: FLASH_CRASH ---
+            if market_data:
+                for sym, md in market_data.items():
+                    p_ago = md.get("price_5m_ago", 0)
+                    p_now = md.get("price_now", 0)
+                    if p_ago > 0 and p_now > 0:
+                        move_pct = abs(p_now - p_ago) / p_ago * 100
+                        if move_pct > 10.0:
+                            if not self._levels[6]:
+                                self._trigger(6, now, f"{sym} moved {move_pct:.1f}% in <5min")
+                            actions.append({"level": 6, "action": "emergency_close",
+                                            "symbol": sym, "move_pct": round(move_pct, 1)})
+
+            # --- Level 7: SYSTEM_FAULT ---
+            stale = portfolio_state.get("data_stale_seconds", 0)
+            exchange_err = portfolio_state.get("exchange_error", False)
+            if stale > 300 or exchange_err:
+                if not self._levels[7]:
+                    reason = f"stale={stale}s" if stale > 300 else "exchange_error"
+                    self._trigger(7, now, reason)
+                actions.append({"level": 7, "action": "block_new_positions"})
+            else:
+                if self._levels[7]:
+                    self._reset_level(7, "connectivity_restored")
+
+        active = {lvl for lvl, on in self._levels.items() if on}
+        return {
+            "active_levels": sorted(active),
+            "actions": actions,
+            "max_level": max(active) if active else 0,
+            "allowed": self.get_max_allowed_action(),
+        }
+
+    def trigger_execution_error(self, slippage_pct=0, phantom_order=False):
+        """Level 5 — BLACK: called by execution layer on critical errors."""
+        now = time.time()
+        with self._lock:
+            if slippage_pct > 5.0 or phantom_order:
+                reason = f"slippage={slippage_pct:.1f}%" if slippage_pct > 5.0 else "phantom_order"
+                self._trigger(5, now, reason)
+                return {"level": 5, "action": "kill_switch_stop_bot", "reason": reason}
+        return None
+
+    def record_loss(self):
+        """Increment consecutive loss counter and record timing."""
+        with self._lock:
+            self._consecutive_losses += 1
+            self._last_loss_time = time.time()
+
+    def record_win(self):
+        """Reset consecutive loss counter on a winning trade."""
+        with self._lock:
+            self._consecutive_losses = 0
+
+    def get_max_allowed_action(self):
+        """Determine the most restrictive action from all active levels.
+
+        Returns: 'full' | 'reduced' | 'close_only' | 'blocked'
+        """
+        with self._lock:
+            active = {lvl for lvl, on in self._levels.items() if on}
+
+        if not active:
+            return "full"
+        if active & {4, 5}:
+            return "blocked"
+        if active & {3}:
+            return "close_only"
+        if active & {1, 2, 6, 7}:
+            return "reduced"
+        return "full"
+
+    def is_new_trade_allowed(self):
+        """Quick check: can the bot open a new position right now?"""
+        allowed = self.get_max_allowed_action()
+        if allowed in ("blocked", "close_only"):
+            return False
+        with self._lock:
+            if self._levels[2]:
+                elapsed = time.time() - self._triggered_at.get(2, 0)
+                if elapsed < 900:
+                    return False
+            if self._levels[3]:
+                elapsed = time.time() - self._triggered_at.get(3, 0)
+                if elapsed < 3600:
+                    return False
+        return True
+
+    def get_leverage_multiplier(self):
+        """Returns multiplier to apply to requested leverage (0.0 to 1.0)."""
+        with self._lock:
+            if self._levels[4] or self._levels[5]:
+                return 0.0
+            if self._levels[3]:
+                return 0.0
+            if self._levels[2]:
+                return 0.25
+            if self._levels[1]:
+                return 0.5
+        return 1.0
+
+    def get_size_multiplier(self):
+        """Returns multiplier to apply to position size (0.0 to 1.0)."""
+        with self._lock:
+            if self._levels[4] or self._levels[5] or self._levels[3]:
+                return 0.0
+            if self._levels[2]:
+                return 0.5
+            if self._levels[1]:
+                return 0.75
+        return 1.0
+
+    def acknowledge(self, level):
+        """Manual reset of a circuit breaker level. Required for L4-L5."""
+        level = int(level)
+        if level not in self._levels:
+            return {"success": False, "error": f"Invalid level {level}"}
+        with self._lock:
+            if not self._levels[level]:
+                return {"success": False, "error": f"Level {level} is not active"}
+            self._reset_level(level, "manual_acknowledge")
+            self._consecutive_losses = 0
+        return {"success": True, "level": level, "reset": True}
+
+    def get_status(self):
+        """Full status for dashboard display."""
+        with self._lock:
+            levels_info = {}
+            for lvl in range(1, 8):
+                meta = self._LEVEL_META[lvl]
+                levels_info[lvl] = {
+                    "active": self._levels[lvl],
+                    "name": meta["name"],
+                    "label": meta["label"],
+                    "triggered_at": self._triggered_at.get(lvl),
+                    "auto_reset": meta["auto_reset_s"] is not None and meta["auto_reset_s"] > 0,
+                    "auto_reset_seconds": meta["auto_reset_s"],
+                }
+                if self._levels[lvl] and self._triggered_at.get(lvl):
+                    elapsed = time.time() - self._triggered_at[lvl]
+                    levels_info[lvl]["active_for_seconds"] = round(elapsed, 0)
+            return {
+                "levels": levels_info,
+                "max_level": max((l for l, on in self._levels.items() if on), default=0),
+                "allowed_action": self.get_max_allowed_action(),
+                "consecutive_losses": self._consecutive_losses,
+                "leverage_multiplier": self.get_leverage_multiplier(),
+                "size_multiplier": self.get_size_multiplier(),
+                "new_trade_allowed": self.is_new_trade_allowed(),
+                "recent_log": list(self._actions_log[-20:]),
+            }
+
+    # ----- internal helpers ---------------------------------------------------
+
+    def _trigger(self, level, ts, reason):
+        self._levels[level] = True
+        self._triggered_at[level] = ts
+        meta = self._LEVEL_META[level]
+        entry = {
+            "time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            "level": level,
+            "name": meta["name"],
+            "event": "TRIGGERED",
+            "reason": reason,
+        }
+        self._actions_log.append(entry)
+        if len(self._actions_log) > 200:
+            self._actions_log = self._actions_log[-200:]
+        log.warning("[CB] Level %d (%s) TRIGGERED — %s", level, meta["name"], reason)
+
+    def _reset_level(self, level, reason):
+        self._levels[level] = False
+        meta = self._LEVEL_META[level]
+        entry = {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "name": meta["name"],
+            "event": "RESET",
+            "reason": reason,
+        }
+        self._actions_log.append(entry)
+        if len(self._actions_log) > 200:
+            self._actions_log = self._actions_log[-200:]
+        log.info("[CB] Level %d (%s) RESET — %s", level, meta["name"], reason)
+
+    def _try_auto_reset(self, now):
+        """Auto-reset levels whose cooldown has expired. L4-L5 are manual only."""
+        for lvl in (1, 2, 3, 6):
+            if not self._levels[lvl]:
+                continue
+            triggered = self._triggered_at.get(lvl, 0)
+            cooldown = self._LEVEL_META[lvl]["auto_reset_s"]
+            if cooldown is None:
+                continue
+            elapsed = now - triggered
+            if elapsed < cooldown:
+                continue
+            if lvl in (1, 2):
+                time_since_loss = now - self._last_loss_time if self._last_loss_time else elapsed
+                if time_since_loss < cooldown:
+                    continue
+            if lvl == 3:
+                time_since_dd = now - self._last_drawdown_increase_time if self._last_drawdown_increase_time else elapsed
+                if time_since_dd < cooldown:
+                    continue
+            self._reset_level(lvl, f"auto_reset after {elapsed:.0f}s")
+
+
+circuit_breakers = CircuitBreakerSystem()
+
+
+# ---------------------------------------------------------------------------
+# Capital Protector — Progressive risk reduction with drawdown tracking
+# ---------------------------------------------------------------------------
+
+class CapitalProtector:
+    """Protects capital via progressive risk reduction and drawdown-aware sizing.
+
+    HWM tracking, Kelly-simplified sizing, and integration with CircuitBreakerSystem
+    for hard stops at extreme drawdown levels.
+    """
+
+    _RISK_TIERS = [
+        (5.0,  0.020),
+        (10.0, 0.010),
+        (15.0, 0.005),
+    ]
+
+    def __init__(self, initial_capital, cb_system=None):
+        self._lock = threading.Lock()
+        self.initial_capital = float(initial_capital)
+        self.high_water_mark = float(initial_capital)
+        self.max_drawdown_ever = 0.0
+        self._current_drawdown_pct = 0.0
+        self._cb = cb_system
+
+    def update(self, current_capital):
+        """Update high-water mark and drawdown tracking."""
+        current_capital = float(current_capital)
+        with self._lock:
+            if current_capital > self.high_water_mark:
+                self.high_water_mark = current_capital
+
+            if self.high_water_mark > 0:
+                dd = (self.high_water_mark - current_capital) / self.high_water_mark * 100
+            else:
+                dd = 0.0
+            dd = max(0.0, dd)
+
+            self._current_drawdown_pct = dd
+            if dd > self.max_drawdown_ever:
+                self.max_drawdown_ever = dd
+
+            return {
+                "high_water_mark": round(self.high_water_mark, 4),
+                "current_drawdown_pct": round(dd, 2),
+                "max_drawdown_ever": round(self.max_drawdown_ever, 2),
+            }
+
+    def get_allowed_risk(self, current_capital):
+        """Progressive risk per trade as a fraction of capital."""
+        current_capital = float(current_capital)
+        with self._lock:
+            dd = self._current_drawdown_pct
+
+        if dd > 15.0:
+            return 0.0
+
+        risk_frac = 0.020
+        for threshold, frac in self._RISK_TIERS:
+            if dd < threshold:
+                risk_frac = frac
+                break
+        else:
+            risk_frac = 0.005
+
+        max_from_initial = (self.initial_capital * 0.020)
+        max_absolute = current_capital * risk_frac
+        return min(max_absolute, max_from_initial)
+
+    def get_position_size(self, signal_confidence, available_capital,
+                          entry_price, stop_loss_price, portfolio_heat_pct=0.0):
+        """Calculate position size using risk budget and simplified Kelly.
+
+        Returns size in USD.  Never exceeds get_allowed_risk().
+        """
+        if entry_price <= 0 or stop_loss_price <= 0:
+            return 0.0
+
+        risk_budget = self.get_allowed_risk(available_capital)
+        if risk_budget <= 0:
+            return 0.0
+
+        risk_per_unit_pct = abs(entry_price - stop_loss_price) / entry_price
+        if risk_per_unit_pct <= 0:
+            return 0.0
+
+        confidence = max(0, min(100, signal_confidence))
+        win_prob = 0.40 + (confidence / 100.0) * 0.25
+        avg_win_ratio = 1.5
+        avg_loss_ratio = 1.0
+        edge = win_prob * avg_win_ratio - (1.0 - win_prob) * avg_loss_ratio
+        kelly = edge / avg_win_ratio if avg_win_ratio > 0 else 0.0
+        kelly = max(0.0, min(kelly, 0.25))
+
+        half_kelly = kelly * 0.5
+
+        heat_remaining = max(0.0, 10.0 - portfolio_heat_pct) / 10.0
+        adjusted_budget = risk_budget * half_kelly * heat_remaining if half_kelly > 0 else risk_budget * 0.02
+
+        adjusted_budget = min(adjusted_budget, risk_budget)
+
+        size_usd = adjusted_budget / risk_per_unit_pct
+
+        max_size = available_capital * 0.20
+        size_usd = min(size_usd, max_size)
+        size_usd = max(size_usd, 0.0)
+
+        cb_mult = 1.0
+        if self._cb:
+            cb_mult = self._cb.get_size_multiplier()
+        size_usd *= cb_mult
+
+        return round(size_usd, 2)
+
+    def get_status(self):
+        """Current protector state for dashboard."""
+        with self._lock:
+            return {
+                "initial_capital": round(self.initial_capital, 2),
+                "high_water_mark": round(self.high_water_mark, 4),
+                "current_drawdown_pct": round(self._current_drawdown_pct, 2),
+                "max_drawdown_ever": round(self.max_drawdown_ever, 2),
+                "risk_tier": self._get_tier_label(),
+            }
+
+    def _get_tier_label(self):
+        dd = self._current_drawdown_pct
+        if dd > 15.0:
+            return "STOPPED"
+        if dd > 10.0:
+            return "MINIMAL (0.5%)"
+        if dd > 5.0:
+            return "REDUCED (1%)"
+        return "NORMAL (2%)"
+
+
+capital_protector = CapitalProtector(initial_capital=100.0, cb_system=circuit_breakers)
+
+
+# ---------------------------------------------------------------------------
 # Autonomous Trading Engine — Background loop that scans markets and executes
 # trades without human intervention.
 # ---------------------------------------------------------------------------
