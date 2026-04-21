@@ -6308,7 +6308,14 @@ function toggleDrawer() {
         drawer.classList.add('open');
         if (handle) handle.classList.add('open');
     } else {
+        // Reset position before hiding so transform works correctly
+        drawer.style.top = '';
+        drawer.style.right = '';
+        drawer.style.left = '';
+        drawer.style.bottom = '';
+        drawerMoved = false;
         drawer.classList.remove('open');
+        drawer.classList.remove('dragging');
         if (handle) handle.classList.remove('open');
     }
 }
