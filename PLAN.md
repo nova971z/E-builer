@@ -3192,11 +3192,11 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[x]` FAIT | — | 2026-04-21 |
 | 44 | S6.0 | Blindage du chiffrement | `[x]` FAIT | — | 2026-04-21 |
 | 45 | S7.0 | Validation entrées & erreurs | `[x]` FAIT | — | 2026-04-21 |
-| 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[ ]` EN ATTENTE | — | — |
-| 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
+| 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[x]` FAIT | Couvert par S7.7/S7.8 (escapeHtml) | 2026-04-21 |
+| 47 | S9.0 | Audit Trail & Logging sécurisé | `[x]` FAIT | — | 2026-04-21 |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 7 / 10 étapes terminées**
+**Progression sécurité : 9 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,64 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S9.0 — Audit Trail & Logging sécurisé (Step 47) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S9.1 | Table SQLite `audit_log` (id, timestamp, event_type, ip_address, details, success) | `[x]` |
+| S9.2 | `log_audit(event_type, details, success, ip)` — écrit DB + log formaté `AUDIT event | OK/FAIL | details` | `[x]` |
+| S9.3 | 13 event types tracés : auth_setup, auth_login, auth_failed, auth_logout, key_added, key_removed, wallet_setup, wallet_removed, trade_executed, trade_closed, killswitch_toggled, exchange_added, exchange_removed | `[x]` |
+| S9.4 | Route `GET /api/audit-log` (auth + rate_limit) — 100 derniers événements | `[x]` |
+| S9.5 | Audit logs : aucune clé API, private key, mot de passe, ou token dans les log.* (vérifié par grep) | `[x]` |
+| S9.6 | `_mask_sensitive()` : regex masque `sk-ant-*`, `0x*` (64 hex), `eyJ*` (JWT) — `sk-ant-api0***masked***` | `[x]` |
+| S9.7 | Frontend : onglet "Security Log" dans bottom panel avec table audit (time, event, details, IP, status) | `[x]` |
+| S9.8 | Test : PIN setup + failed login + login + trade → 4 événements dans `/api/audit-log` ✓ | `[x]` |
+
+**Vulnérabilités corrigées** : M-07 (aucun audit trail), M-08 (données sensibles dans les logs)
+
+**Events tracés (13)** :
+```
+auth_setup          → PIN configuré
+auth_login          → Session créée (succès)
+auth_failed         → Tentative échouée + remaining
+auth_logout         → Session terminée
+key_added           → Clé Anthropic ajoutée (****last4)
+key_removed         → Clé Anthropic supprimée
+wallet_setup        → GMX wallet configuré (0xabcd...)
+wallet_removed      → GMX wallet supprimé
+trade_executed      → paper/live side symbol qty @price
+trade_closed        → paper/live #id symbol @exit_price
+killswitch_toggled  → ACTIVATED/DEACTIVATED + reason
+exchange_added      → type exchange 'name'
+exchange_removed    → Exchange #id removed
+```
+
+**Masquage sensible** :
+```
+sk-ant-api03-abcdef123456    → sk-ant-api0***masked***
+0xabcd1234...90abcd          → 0xabcd***masked***
+eyJhbGci...                  → eyJh***masked***
+```
+
+**Tests passés** :
+- `python3 -m py_compile server.py` → OK ✓
+- PIN setup → `auth_setup` event ✓
+- Failed login → `auth_failed` event (WARNING level) ✓
+- Successful login → `auth_login` event ✓
+- Paper trade → `trade_executed` event ✓
+- `/api/audit-log` retourne les 4 events dans l'ordre ✓
+- `_mask_sensitive()` masque correctement les patterns sensibles ✓
+- Aucun log.* ne contient de donnée sensible (audit grep clean) ✓
+- Frontend : onglet "Security Log" avec `escapeHtml` sur toutes les données ✓
+
+---
+
+#### Étape S8.0 — Sécurité Frontend XSS & DOM (Step 46) ✅
+
+Couvert par S7.7/S7.8 : `escapeHtml()` ajouté avec 34+ appels sur tous les innerHTML affichant des données externes. Voir le détail dans la section S7.0 ci-dessous.
 
 ---
 

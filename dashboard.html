@@ -2784,6 +2784,7 @@ button:active { opacity: 0.7; }
             <button onclick="switchBPTab('paper')">Paper Trades</button>
             <button onclick="switchBPTab('portfolio')">Portfolio</button>
             <button onclick="switchBPTab('journal')">Journal</button>
+            <button onclick="switchBPTab('audit')">Security Log</button>
         </div>
         <div class="bp-table-wrap" id="bp-content">
             <div class="bp-empty">No open positions</div>
@@ -4566,7 +4567,8 @@ function switchBPTab(tab) {
     else if (tab === 'open-orders') loadScheduledOrders();
     else if (tab === 'paper') loadPaperHistory();
     else if (tab === 'portfolio') loadPortfolio();
-    else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + tab + '</div>';
+    else if (tab === 'audit') loadAuditLog();
+    else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + escapeHtml(tab) + '</div>';
 }
 
 // ========== POSITIONS TABLE ==========
@@ -4661,6 +4663,47 @@ async function loadPaperHistory() {
 
     } catch (err) {
         console.error('loadPaperHistory error:', err);
+    }
+}
+
+// ========== AUDIT LOG ==========
+async function loadAuditLog() {
+    var content = $('bp-content');
+    if (!content) return;
+    try {
+        var resp = await fetch(API + '/api/audit-log?limit=100');
+        if (!resp.ok) {
+            content.innerHTML = '<div class="bp-empty">Authentication required to view audit log</div>';
+            return;
+        }
+        var data = await resp.json();
+        var events = data.events || [];
+
+        if (!events.length) {
+            content.innerHTML = '<div class="bp-empty">No audit events yet</div>';
+            return;
+        }
+
+        var html = '<table class="bp-table"><thead><tr>'
+            + '<th>Time</th><th>Event</th><th>Details</th><th>IP</th><th>Status</th>'
+            + '</tr></thead><tbody>';
+
+        for (var i = 0; i < events.length; i++) {
+            var e = events[i];
+            var statusIcon = e.success ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--red)">&#10007;</span>';
+            var evtColor = e.event_type.indexOf('failed') >= 0 ? 'var(--red)' : 'var(--text)';
+            html += '<tr>'
+                + '<td style="white-space:nowrap">' + escapeHtml(e.timestamp || '') + '</td>'
+                + '<td style="color:' + evtColor + ';font-weight:600">' + escapeHtml(e.event_type) + '</td>'
+                + '<td>' + escapeHtml(e.details) + '</td>'
+                + '<td style="font-family:monospace;font-size:10px">' + escapeHtml(e.ip || '') + '</td>'
+                + '<td style="text-align:center">' + statusIcon + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    } catch (err) {
+        content.innerHTML = '<div class="bp-empty">Error loading audit log</div>';
     }
 }
 

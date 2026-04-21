@@ -576,6 +576,15 @@ def init_db():
         executed_at TEXT
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT DEFAULT (datetime('now')),
+        event_type TEXT NOT NULL,
+        ip_address TEXT DEFAULT '',
+        details TEXT DEFAULT '',
+        success INTEGER DEFAULT 1
+    )""")
+
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
@@ -707,6 +716,43 @@ def sanitize_error(e):
             return msg
     log.debug("Sanitized error: %s", msg)
     return "Internal server error"
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
+
+_MASK_RE = re.compile(r"(sk-ant-[a-zA-Z0-9-]{4})[a-zA-Z0-9-]+|"
+                       r"(0x[a-fA-F0-9]{4})[a-fA-F0-9]{56,}|"
+                       r"(eyJ[a-zA-Z0-9]{4})[a-zA-Z0-9_.-]+")
+
+
+def _mask_sensitive(text):
+    """Replace API keys, private keys, and tokens with masked versions."""
+    return _MASK_RE.sub(lambda m: (m.group(1) or m.group(2) or m.group(3)) + "***masked***", str(text))
+
+
+def log_audit(event_type, details="", success=True, ip=None):
+    """Write audit event to DB and log."""
+    if ip is None:
+        try:
+            ip = request.remote_addr or ""
+        except RuntimeError:
+            ip = ""
+    safe_details = _mask_sensitive(details)
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO audit_log (event_type, ip_address, details, success) VALUES (?, ?, ?, ?)",
+            (event_type, ip, safe_details, 1 if success else 0),
+        )
+        conn.execute("DELETE FROM audit_log WHERE id NOT IN (SELECT id FROM audit_log ORDER BY id DESC LIMIT 5000)")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    level = logging.INFO if success else logging.WARNING
+    log.log(level, "AUDIT %s | %s | %s", event_type, "OK" if success else "FAIL", safe_details)
 
 
 # ---------------------------------------------------------------------------
@@ -4368,6 +4414,7 @@ def api_execute():
 
         conn.commit()
         conn.close()
+        log_audit("trade_executed", f"{order_type} {symbol} {side} qty={quantity}")
         return jsonify({"success": True, "order_ids": order_ids, "type": order_type, "mode": "paper"})
 
     # Paper trading (standard limit/market)
@@ -4384,6 +4431,7 @@ def api_execute():
         conn.commit()
         conn.close()
 
+        log_audit("trade_executed", f"paper {trade_side} {symbol} qty={quantity} @{price}")
         return jsonify(result)
 
     # Live trading
@@ -4414,6 +4462,7 @@ def api_execute():
 
     adapter = list(exchange_manager._adapters.values())[0]
     result = adapter.place_order(symbol, ccxt_side, order_type, quantity, price if order_type == "limit" else None, leverage, tp, sl)
+    log_audit("trade_executed", f"live {side} {symbol} qty={quantity} @{price}")
     return jsonify(result)
 
 
@@ -4501,7 +4550,9 @@ def api_close():
                 exit_price = float(price_data.get("price", 0))
             if exit_price <= 0:
                 return jsonify({"error": "Could not determine exit price"}), 502
-        return jsonify(paper_trader.close(int(trade_id), exit_price))
+        result = paper_trader.close(int(trade_id), exit_price)
+        log_audit("trade_closed", f"paper #{trade_id} {symbol} @{exit_price}")
+        return jsonify(result)
 
     if not symbol:
         return jsonify({"error": "symbol required for live close"}), 400
@@ -4509,7 +4560,9 @@ def api_close():
         return jsonify({"error": "No exchange configured"}), 400
 
     adapter = list(exchange_manager._adapters.values())[0]
-    return jsonify(adapter.close_position(symbol))
+    result = adapter.close_position(symbol)
+    log_audit("trade_closed", f"live {symbol}")
+    return jsonify(result)
 
 
 @app.route("/api/paper/status")
@@ -4556,7 +4609,7 @@ def api_auth_setup():
     conn.close()
 
     token = create_session(request.remote_addr)
-    log.info("PIN configured, first session created for %s", request.remote_addr)
+    log_audit("auth_setup", "PIN configured")
     return jsonify({"success": True, "token": token})
 
 
@@ -4579,18 +4632,18 @@ def api_auth_login():
         blocked = _rate_limiter.record_login_fail(ip, max_fails=5, block_seconds=900)
         fails = _rate_limiter.get_login_fails(ip)
         remaining = max(0, 5 - fails) if not blocked else 0
-        log.warning("Failed login attempt from %s (%d remaining)", ip, remaining)
         msg = "Invalid PIN"
         if blocked:
             msg = "Too many failed attempts — IP blocked for 15 minutes"
         elif remaining <= 2:
             msg = f"Invalid PIN — {remaining} attempt(s) remaining"
+        log_audit("auth_failed", f"{remaining} attempts remaining", success=False, ip=ip)
         return jsonify({"error": msg}), (429 if blocked else 401)
 
     _rate_limiter.reset_login_fails(ip)
     cleanup_expired_sessions()
     token = create_session(ip)
-    log.info("Login success from %s", ip)
+    log_audit("auth_login", "Session created", ip=ip)
     return jsonify({"success": True, "token": token})
 
 
@@ -4603,6 +4656,7 @@ def api_auth_logout():
         conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
         conn.commit()
         conn.close()
+    log_audit("auth_logout", "Session ended")
     return jsonify({"success": True})
 
 
@@ -4629,7 +4683,7 @@ def api_set_anthropic_key():
     encrypted = encrypt_string(key)
     set_setting("anthropic_api_key_enc", encrypted)
     last4 = key[-4:]
-    log.info("Anthropic API key configured (****%s)", last4)
+    log_audit("key_added", "Anthropic API key configured (****" + last4 + ")")
     return jsonify({"success": True, "masked": "sk-ant-****" + last4})
 
 
@@ -4662,7 +4716,7 @@ def api_delete_anthropic_key():
     if not enc:
         return jsonify({"error": "No stored key to delete (env var keys cannot be deleted from here)"}), 404
     delete_setting("anthropic_api_key_enc")
-    log.info("Anthropic API key removed from DB")
+    log_audit("key_removed", "Anthropic API key removed")
     return jsonify({"success": True})
 
 
@@ -4707,7 +4761,7 @@ def api_gmx_wallet_setup():
     set_setting("gmx_wallet_address", address)
 
     _wipe_string(private_key)
-    log.info("GMX wallet configured: %s", address)
+    log_audit("wallet_setup", "GMX wallet configured: " + address[:8] + "...")
     return jsonify({"success": True, "address": address})
 
 
@@ -4739,7 +4793,7 @@ def api_gmx_wallet_delete():
 
     delete_setting("gmx_wallet_enc")
     delete_setting("gmx_wallet_address")
-    log.info("GMX wallet removed from vault")
+    log_audit("wallet_removed", "GMX wallet removed from vault")
     return jsonify({"success": True})
 
 
@@ -4769,6 +4823,7 @@ def api_exchanges_add():
         return jsonify({"error": f"Unsupported exchange type: {exchange_type}. Supported: mexc, gmx"}), 400
 
     result = exchange_manager.add_exchange(name, exchange_type, api_key, api_secret, passphrase, testnet)
+    log_audit("exchange_added", f"{exchange_type} exchange '{name}'")
     return jsonify(result)
 
 
@@ -4786,7 +4841,9 @@ def api_exchanges_remove():
     exchange_id = body.get("id")
     if not exchange_id:
         return jsonify({"error": "id is required"}), 400
-    return jsonify(exchange_manager.remove_exchange(int(exchange_id)))
+    result = exchange_manager.remove_exchange(int(exchange_id))
+    log_audit("exchange_removed", f"Exchange #{exchange_id} removed")
+    return jsonify(result)
 
 
 @app.route("/api/exchanges/test", methods=["POST"])
@@ -5284,7 +5341,7 @@ def api_killswitch():
     conn.close()
 
     status = "ACTIVATED" if active else "DEACTIVATED"
-    log.warning("Kill switch %s: %s", status, reason)
+    log_audit("killswitch_toggled", f"Kill switch {status}: {reason}")
 
     return jsonify({"active": active, "reason": reason, "status": status})
 
@@ -5389,6 +5446,37 @@ def api_security_status():
         "pin_configured": is_pin_configured(),
         "rate_limiter_active": True,
         "blocked_ips_count": len(_rate_limiter._blocked),
+    })
+
+
+@app.route("/api/audit-log")
+@rate_limit("settings")
+def api_audit_log():
+    denied = require_auth()
+    if denied:
+        return denied
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, timestamp, event_type, ip_address, details, success FROM audit_log ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        "events": [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "event_type": r["event_type"],
+                "ip": r["ip_address"],
+                "details": r["details"],
+                "success": bool(r["success"]),
+            }
+            for r in rows
+        ]
     })
 
 
