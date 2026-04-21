@@ -24,6 +24,7 @@ import subprocess
 import time
 import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from functools import wraps
 from base64 import b64encode, b64decode
 from datetime import datetime, timezone, timedelta
@@ -1474,128 +1475,549 @@ def compute_all_indicators(ohlcv):
 
 
 # ---------------------------------------------------------------------------
-# Market Regime Detector — 4 states: BULL, BEAR, RANGE, CRISIS
-# Uses trend (EMA50 vs EMA200), volatility (ATR percentile),
-# directional strength (ADX), and Bollinger width.
+# Advanced Market Regime Detector — 6 states with transition probabilities,
+# volatility clustering, momentum divergence, and regime memory.
+# Backward-compatible: output always includes "regime" mapped to the 4 legacy
+# states (BULL/BEAR/RANGE/CRISIS) so SignalEngine/RiskEngine work unchanged.
 # ---------------------------------------------------------------------------
 
-class MarketRegimeDetector:
+_REGIME_TO_LEGACY = {
+    "STRONG_BULL": "BULL",
+    "WEAK_BULL":   "BULL",
+    "RANGE":       "RANGE",
+    "WEAK_BEAR":   "BEAR",
+    "STRONG_BEAR": "BEAR",
+    "CRISIS":      "CRISIS",
+}
 
-    REGIMES = ("BULL", "BEAR", "RANGE", "CRISIS")
+_REGIME_RISK_MULT = {
+    "STRONG_BULL": 1.0,
+    "WEAK_BULL":   0.75,
+    "RANGE":       0.6,
+    "WEAK_BEAR":   0.75,
+    "STRONG_BEAR": 1.0,
+    "CRISIS":      0.0,
+}
+
+_BASE_TRANSITION = {
+    "STRONG_BULL": {"STRONG_BULL": 0.60, "WEAK_BULL": 0.25, "RANGE": 0.08, "WEAK_BEAR": 0.04, "STRONG_BEAR": 0.01, "CRISIS": 0.02},
+    "WEAK_BULL":   {"STRONG_BULL": 0.20, "WEAK_BULL": 0.35, "RANGE": 0.25, "WEAK_BEAR": 0.12, "STRONG_BEAR": 0.03, "CRISIS": 0.05},
+    "RANGE":       {"STRONG_BULL": 0.10, "WEAK_BULL": 0.18, "RANGE": 0.40, "WEAK_BEAR": 0.18, "STRONG_BEAR": 0.10, "CRISIS": 0.04},
+    "WEAK_BEAR":   {"STRONG_BULL": 0.03, "WEAK_BULL": 0.12, "RANGE": 0.25, "WEAK_BEAR": 0.35, "STRONG_BEAR": 0.20, "CRISIS": 0.05},
+    "STRONG_BEAR": {"STRONG_BULL": 0.01, "WEAK_BULL": 0.04, "RANGE": 0.08, "WEAK_BEAR": 0.25, "STRONG_BEAR": 0.55, "CRISIS": 0.07},
+    "CRISIS":      {"STRONG_BULL": 0.05, "WEAK_BULL": 0.10, "RANGE": 0.15, "WEAK_BEAR": 0.15, "STRONG_BEAR": 0.25, "CRISIS": 0.30},
+}
+
+SMOOTHING_THRESHOLD = 3
+
+
+class AdvancedRegimeDetector:
+    """6-state regime detector with transition probabilities and memory."""
+
+    REGIMES = ("STRONG_BULL", "WEAK_BULL", "RANGE", "WEAK_BEAR", "STRONG_BEAR", "CRISIS")
+
+    def __init__(self):
+        self._regime_history = deque(maxlen=100)
+        self._current_regime = "RANGE"
+        self._previous_regime = "RANGE"
+        self._regime_duration = 0
+        self._pending_regime = None
+        self._pending_count = 0
+        self._lock = threading.Lock()
 
     def detect(self, ohlcv, raw_indicators):
-        closes = raw_indicators["closes"]
+        closes = raw_indicators.get("closes", [])
         if len(closes) < 50:
-            return {"regime": "RANGE", "confidence": 0, "reasons": ["Insufficient data"]}
+            return self._default_result("Insufficient data")
 
-        ema50 = raw_indicators["ema50"]
-        ema200 = raw_indicators["ema200"]
-        atr = raw_indicators["atr"]
-        adx_data = raw_indicators["adx"]
-        bb = raw_indicators["bb"]
+        try:
+            trend_score, trend_reasons = self._detect_trend_state(ohlcv, raw_indicators)
+            vol_regime, vol_ratio, vol_reasons = self._detect_volatility_regime(ohlcv, raw_indicators)
+            div_score, div_reasons = self._detect_momentum_divergence(ohlcv, raw_indicators)
+            micro, micro_reasons = self._detect_market_microstructure(ohlcv)
+            crisis_score, crisis_reasons = self._detect_crisis(ohlcv, raw_indicators)
+        except Exception as exc:
+            log.debug("AdvancedRegimeDetector sub-detection error: %s", exc)
+            return self._default_result(f"Detection error: {exc}")
 
-        score = {"BULL": 0, "BEAR": 0, "RANGE": 0, "CRISIS": 0}
+        raw_regime, confidence, reasons = self._classify(
+            trend_score, vol_regime, vol_ratio, div_score, micro,
+            crisis_score, trend_reasons + vol_reasons + div_reasons + micro_reasons + crisis_reasons,
+        )
+
+        with self._lock:
+            smoothed = self._smooth_regime(raw_regime)
+            self._previous_regime = self._current_regime
+            if smoothed != self._current_regime:
+                self._current_regime = smoothed
+                self._regime_duration = 1
+            else:
+                self._regime_duration += 1
+            self._regime_history.append(smoothed)
+
+            trans_prob = self._estimate_transition_probabilities(
+                smoothed, trend_score, div_score, vol_ratio)
+
+            return {
+                "regime": _REGIME_TO_LEGACY.get(smoothed, smoothed),
+                "regime_detailed": smoothed,
+                "previous_regime": _REGIME_TO_LEGACY.get(self._previous_regime, self._previous_regime),
+                "previous_regime_detailed": self._previous_regime,
+                "confidence": confidence,
+                "transition_prob": trans_prob,
+                "regime_duration": self._regime_duration,
+                "reasons": reasons,
+                "risk_multiplier": _REGIME_RISK_MULT.get(smoothed, 0.5),
+                "volatility_regime": vol_regime,
+                "volatility_ratio": round(vol_ratio, 2),
+                "trend_strength": max(0, min(100, abs(trend_score))),
+                "divergence_score": div_score,
+                "crisis_score": crisis_score,
+                "microstructure": micro,
+            }
+
+    # ----- sub-detectors ----------------------------------------------------
+
+    def _detect_trend_state(self, ohlcv, ind):
+        closes = ind["closes"]
+        price = closes[-1]
+        score = 0.0
         reasons = []
 
-        # --- Trend: EMA 50 vs EMA 200 ---
-        e50 = self._last_valid(ema50)
-        e200 = self._last_valid(ema200)
-        price = closes[-1]
-        if e50 is not None and e200 is not None:
-            if e50 > e200 and price > e50:
-                score["BULL"] += 30
-                reasons.append("Price above EMA50 > EMA200 (golden alignment)")
-            elif e50 < e200 and price < e50:
-                score["BEAR"] += 30
-                reasons.append("Price below EMA50 < EMA200 (death alignment)")
-            else:
-                score["RANGE"] += 15
-                reasons.append("EMAs mixed — no clear trend")
-        elif e50 is not None:
-            if price > e50:
-                score["BULL"] += 15
-            else:
-                score["BEAR"] += 15
+        ema9 = calc_ema(closes, 9)
+        ema21 = calc_ema(closes, 21)
+        ema50 = ind.get("ema50", [])
+        ema200 = ind.get("ema200", [])
 
-        # --- Momentum: price position relative to recent range ---
-        lookback = min(50, len(closes))
-        recent = closes[-lookback:]
-        hi = max(recent)
-        lo = min(recent)
-        if hi != lo:
-            position = (price - lo) / (hi - lo)
-            if position > 0.75:
-                score["BULL"] += 20
-                reasons.append(f"Price at {position:.0%} of 50-bar range (upper)")
-            elif position < 0.25:
-                score["BEAR"] += 20
-                reasons.append(f"Price at {position:.0%} of 50-bar range (lower)")
-            else:
-                score["RANGE"] += 15
-                reasons.append(f"Price at {position:.0%} of 50-bar range (middle)")
+        e9 = self._lv(ema9)
+        e21 = self._lv(ema21)
+        e50 = self._lv(ema50)
+        e200 = self._lv(ema200)
 
-        # --- Directional strength: ADX ---
-        adx_val = self._last_valid(adx_data["adx"])
+        aligned = 0
+        if e9 is not None and e21 is not None and e50 is not None and e200 is not None:
+            if price > e9 > e21 > e50 > e200:
+                aligned = 4
+                score += 40
+                reasons.append("Full 4-EMA bullish alignment")
+            elif price > e9 > e21 > e50:
+                aligned = 3
+                score += 30
+                reasons.append("3-EMA bullish (9>21>50)")
+            elif price > e9 > e21:
+                aligned = 2
+                score += 15
+                reasons.append("2-EMA bullish (9>21)")
+            elif price < e9 < e21 < e50 < e200:
+                aligned = -4
+                score -= 40
+                reasons.append("Full 4-EMA bearish alignment")
+            elif price < e9 < e21 < e50:
+                aligned = -3
+                score -= 30
+                reasons.append("3-EMA bearish (9<21<50)")
+            elif price < e9 < e21:
+                aligned = -2
+                score -= 15
+                reasons.append("2-EMA bearish (9<21)")
+
+        if e50 is not None and len(ema50) >= 10:
+            recent_e50 = [v for v in ema50[-10:] if v is not None]
+            if len(recent_e50) >= 5:
+                slope = (recent_e50[-1] - recent_e50[0]) / max(recent_e50[0], 1e-9) * 100
+                if slope > 0.5:
+                    score += 15
+                    reasons.append(f"EMA50 slope +{slope:.2f}% (accelerating)")
+                elif slope < -0.5:
+                    score -= 15
+                    reasons.append(f"EMA50 slope {slope:.2f}% (decelerating)")
+
+        adx_data = ind.get("adx", {})
+        adx_val = self._lv(adx_data.get("adx", []))
+        dmi_p = self._lv(adx_data.get("dmi_plus", []))
+        dmi_m = self._lv(adx_data.get("dmi_minus", []))
         if adx_val is not None:
             if adx_val > 25:
-                dmi_p = self._last_valid(adx_data["dmi_plus"])
-                dmi_m = self._last_valid(adx_data["dmi_minus"])
-                if dmi_p is not None and dmi_m is not None:
-                    if dmi_p > dmi_m:
-                        score["BULL"] += 25
-                        reasons.append(f"ADX {adx_val:.0f} strong + DMI+ leads")
-                    else:
-                        score["BEAR"] += 25
-                        reasons.append(f"ADX {adx_val:.0f} strong + DMI- leads")
+                direction_bonus = 20 if (dmi_p and dmi_m and dmi_p > dmi_m) else -20
+                score += direction_bonus
+                reasons.append(f"ADX {adx_val:.0f} directional, DMI+{'>' if direction_bonus > 0 else '<'}DMI-")
+            elif adx_val < 15:
+                score *= 0.5
+                reasons.append(f"ADX {adx_val:.0f} very weak — trend fading")
+
+        highs = ind.get("highs", [])
+        lows = ind.get("lows", [])
+        if len(highs) >= 20 and len(lows) >= 20:
+            hh_count, ll_count = 0, 0
+            for i in range(-15, -1, 3):
+                try:
+                    if highs[i] > highs[i - 3]:
+                        hh_count += 1
+                    if lows[i] < lows[i - 3]:
+                        ll_count += 1
+                except IndexError:
+                    continue
+            if hh_count >= 3:
+                score += 10
+                reasons.append(f"Higher highs pattern ({hh_count}x)")
+            if ll_count >= 3:
+                score -= 10
+                reasons.append(f"Lower lows pattern ({ll_count}x)")
+
+        score = max(-100, min(100, score))
+        return score, reasons
+
+    def _detect_volatility_regime(self, ohlcv, ind):
+        atr_vals = ind.get("atr", [])
+        closes = ind["closes"]
+        price = closes[-1] if closes else 1
+        reasons = []
+
+        valid_atr = [v for v in atr_vals if v is not None]
+        if len(valid_atr) < 20:
+            return "normal", 1.0, ["Not enough ATR data"]
+
+        current_atr = valid_atr[-1]
+        avg_50 = sum(valid_atr[-50:]) / min(len(valid_atr), 50) if valid_atr else current_atr
+        vol_ratio = current_atr / avg_50 if avg_50 > 0 else 1.0
+
+        bb = ind.get("bb", {})
+        upper_list = bb.get("upper", [])
+        lower_list = bb.get("lower", [])
+        middle_list = bb.get("middle", [])
+        bb_widths = []
+        n = min(len(upper_list), len(lower_list), len(middle_list), 100)
+        for i in range(-n, 0):
+            try:
+                u, l, m = upper_list[i], lower_list[i], middle_list[i]
+                if u is not None and l is not None and m is not None and m > 0:
+                    bb_widths.append((u - l) / m)
+            except IndexError:
+                continue
+
+        squeeze = False
+        if len(bb_widths) >= 10:
+            sorted_w = sorted(bb_widths)
+            current_w = bb_widths[-1] if bb_widths else 0.05
+            rank = sum(1 for w in sorted_w if w <= current_w)
+            percentile = rank / len(sorted_w) * 100
+            if percentile < 10:
+                squeeze = True
+                reasons.append(f"BB width percentile {percentile:.0f}% — squeeze detected")
+
+            mean_w = sum(bb_widths) / len(bb_widths)
+            variance = sum((w - mean_w) ** 2 for w in bb_widths) / len(bb_widths)
+            std_w = math.sqrt(variance) if variance > 0 else 0
+            if current_w > mean_w + 2 * std_w:
+                reasons.append(f"Volatility clustering: BB width > 2σ above mean")
+                vol_ratio = max(vol_ratio, 2.0)
+
+        if vol_ratio < 0.5:
+            regime = "low"
+            reasons.append(f"ATR ratio {vol_ratio:.2f}x — low volatility")
+        elif vol_ratio < 1.5:
+            regime = "normal"
+        elif vol_ratio < 3.0:
+            regime = "high"
+            reasons.append(f"ATR ratio {vol_ratio:.2f}x — high volatility")
+        else:
+            regime = "extreme"
+            reasons.append(f"ATR ratio {vol_ratio:.2f}x — extreme volatility")
+
+        if squeeze:
+            regime = "low"
+
+        return regime, vol_ratio, reasons
+
+    def _detect_momentum_divergence(self, ohlcv, ind):
+        closes = ind["closes"]
+        rsi_vals = ind.get("rsi", [])
+        macd_data = ind.get("macd", {})
+        hist = macd_data.get("histogram", [])
+        obv_vals = ind.get("obv", [])
+        score = 0
+        reasons = []
+
+        lookback = 20
+        if len(closes) < lookback + 5 or len(rsi_vals) < lookback:
+            return 0, []
+
+        segment_c = closes[-lookback:]
+        segment_r = [v for v in rsi_vals[-lookback:] if v is not None]
+
+        if len(segment_r) >= 10:
+            c_max_idx = segment_c.index(max(segment_c))
+            c_min_idx = segment_c.index(min(segment_c))
+
+            if c_max_idx > len(segment_c) * 0.6:
+                r_second_half = segment_r[len(segment_r) // 2:]
+                if r_second_half:
+                    r_max_recent = max(r_second_half)
+                    r_max_all = max(segment_r)
+                    if r_max_recent < r_max_all * 0.9 and max(segment_c) == segment_c[-1]:
+                        score += 35
+                        reasons.append("Bearish divergence: price new high, RSI weakening")
+
+            if c_min_idx > len(segment_c) * 0.6:
+                r_second_half = segment_r[len(segment_r) // 2:]
+                if r_second_half:
+                    r_min_recent = min(r_second_half)
+                    r_min_all = min(segment_r)
+                    if r_min_recent > r_min_all * 1.1 and min(segment_c) == segment_c[-1]:
+                        score += 35
+                        reasons.append("Bullish divergence: price new low, RSI strengthening")
+
+        valid_hist = [v for v in hist[-10:] if v is not None]
+        if len(valid_hist) >= 5:
+            c_trend = closes[-1] - closes[-5]
+            h_trend = valid_hist[-1] - valid_hist[0]
+            if c_trend > 0 and h_trend < 0:
+                score += 20
+                reasons.append("MACD histogram declining while price rising")
+            elif c_trend < 0 and h_trend > 0:
+                score += 20
+                reasons.append("MACD histogram rising while price falling")
+
+        valid_obv = [v for v in obv_vals[-10:] if v is not None]
+        if len(valid_obv) >= 5:
+            obv_trend = valid_obv[-1] - valid_obv[0]
+            c_trend = closes[-1] - closes[-5]
+            if c_trend > 0 and obv_trend < 0:
+                score += 15
+                reasons.append("OBV divergence: price up but volume declining")
+            elif c_trend < 0 and obv_trend > 0:
+                score += 15
+                reasons.append("OBV divergence: price down but volume accumulating")
+
+        return min(score, 100), reasons
+
+    def _detect_market_microstructure(self, ohlcv):
+        if len(ohlcv) < 20:
+            return {}, []
+
+        reasons = []
+        result = {}
+
+        closes = [c["close"] for c in ohlcv]
+        volumes = [c["volume"] for c in ohlcv]
+        highs = [c["high"] for c in ohlcv]
+        lows = [c["low"] for c in ohlcv]
+
+        cum_vp = 0.0
+        cum_vol = 0.0
+        for i in range(-20, 0):
+            try:
+                typical = (highs[i] + lows[i] + closes[i]) / 3
+                cum_vp += typical * volumes[i]
+                cum_vol += volumes[i]
+            except IndexError:
+                continue
+        vwap = cum_vp / cum_vol if cum_vol > 0 else closes[-1]
+        result["vwap"] = round(vwap, 4)
+        price = closes[-1]
+        if price > vwap * 1.01:
+            reasons.append(f"Price above VWAP ({price:.0f} > {vwap:.0f}) — buyers in control")
+        elif price < vwap * 0.99:
+            reasons.append(f"Price below VWAP ({price:.0f} < {vwap:.0f}) — sellers in control")
+
+        buy_vol = 0.0
+        sell_vol = 0.0
+        for bar in ohlcv[-20:]:
+            body = bar["close"] - bar["open"]
+            total_range = bar["high"] - bar["low"]
+            if total_range > 0:
+                buy_pct = max(0, body) / total_range
+                buy_vol += bar["volume"] * buy_pct
+                sell_vol += bar["volume"] * (1 - buy_pct)
             else:
-                score["RANGE"] += 25
-                reasons.append(f"ADX {adx_val:.0f} weak — no directional bias")
+                buy_vol += bar["volume"] * 0.5
+                sell_vol += bar["volume"] * 0.5
+        total = buy_vol + sell_vol
+        ofi = (buy_vol - sell_vol) / total if total > 0 else 0
+        result["order_flow_imbalance"] = round(ofi, 4)
+        if ofi > 0.15:
+            reasons.append(f"Buy pressure dominant (OFI +{ofi:.2f})")
+        elif ofi < -0.15:
+            reasons.append(f"Sell pressure dominant (OFI {ofi:.2f})")
 
-        # --- Volatility: ATR as % of price ---
-        atr_val = self._last_valid(atr)
-        if atr_val is not None and price > 0:
-            vol_pct = atr_val / price * 100
-            atr_valid = [v for v in atr if v is not None]
-            if len(atr_valid) >= 30:
-                avg_atr = sum(atr_valid[-30:]) / 30
-                vol_ratio = atr_val / avg_atr if avg_atr > 0 else 1.0
-                if vol_ratio > 3.0:
-                    score["CRISIS"] += 50
-                    reasons.append(f"Volatility {vol_ratio:.1f}x average — CRISIS")
-                elif vol_ratio > 2.0:
-                    score["CRISIS"] += 25
-                    reasons.append(f"Volatility {vol_ratio:.1f}x average — elevated")
-                elif vol_ratio < 0.5:
-                    score["RANGE"] += 15
-                    reasons.append(f"Volatility {vol_ratio:.1f}x average — compressed")
+        for bar in ohlcv[-5:]:
+            body_size = abs(bar["close"] - bar["open"])
+            total_range = bar["high"] - bar["low"]
+            if total_range > 0 and bar["volume"] > 0:
+                avg_vol = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else bar["volume"]
+                if bar["volume"] > avg_vol * 2.5 and body_size < total_range * 0.3:
+                    result["absorption_detected"] = True
+                    reasons.append("Absorption: high volume, small body — accumulation/distribution")
+                    break
 
-        # --- Bollinger Band width ---
-        bb_upper = self._last_valid(bb["upper"])
-        bb_lower = self._last_valid(bb["lower"])
-        bb_mid = self._last_valid(bb["middle"])
-        if bb_upper and bb_lower and bb_mid and bb_mid > 0:
-            bb_width = (bb_upper - bb_lower) / bb_mid * 100
-            if bb_width < 2.0:
-                score["RANGE"] += 15
-                reasons.append(f"BB width {bb_width:.1f}% — squeeze")
-            elif bb_width > 8.0:
-                score["CRISIS"] += 10
-                reasons.append(f"BB width {bb_width:.1f}% — expansion")
+        return result, reasons
 
-        # --- Pick winner ---
-        regime = max(score, key=score.get)
-        total = sum(score.values())
-        confidence = int(score[regime] / total * 100) if total > 0 else 0
+    def _detect_crisis(self, ohlcv, ind):
+        closes = ind["closes"]
+        volumes = ind.get("volumes", [])
+        atr_vals = ind.get("atr", [])
+        rsi_vals = ind.get("rsi", [])
+        bb = ind.get("bb", {})
+        score = 0
+        reasons = []
 
+        valid_atr = [v for v in atr_vals if v is not None]
+        if len(valid_atr) >= 30:
+            current_atr = valid_atr[-1]
+            avg_atr = sum(valid_atr[-30:]) / 30
+            if avg_atr > 0 and current_atr > avg_atr * 4:
+                score += 35
+                reasons.append(f"ATR {current_atr / avg_atr:.1f}x average — extreme")
+
+        if len(ohlcv) >= 2:
+            last = ohlcv[-1]
+            bar_range = abs(last["close"] - last["open"])
+            if valid_atr:
+                avg_atr = sum(valid_atr[-20:]) / min(len(valid_atr), 20)
+                if avg_atr > 0 and bar_range > avg_atr * 3:
+                    score += 25
+                    reasons.append(f"Single candle move > 3× ATR ({bar_range / avg_atr:.1f}x)")
+
+        if len(volumes) >= 20:
+            avg_vol = sum(volumes[-20:]) / 20
+            if avg_vol > 0 and volumes[-1] > avg_vol * 5:
+                score += 20
+                reasons.append(f"Volume {volumes[-1] / avg_vol:.1f}x average — panic")
+
+        rsi = self._lv(rsi_vals)
+        if rsi is not None:
+            if rsi < 15 or rsi > 85:
+                score += 15
+                reasons.append(f"RSI extreme ({rsi:.0f})")
+
+        bb_u = self._lv(bb.get("upper", []))
+        bb_l = self._lv(bb.get("lower", []))
+        bb_m = self._lv(bb.get("middle", []))
+        price = closes[-1] if closes else 0
+        if bb_u and bb_l and bb_m and bb_m > 0:
+            bb_width = (bb_u - bb_l) / bb_m * 100
+            if bb_width > 12:
+                score += 10
+                reasons.append(f"BB width {bb_width:.1f}% — extreme expansion")
+            if price > bb_u * 1.02 or price < bb_l * 0.98:
+                score += 10
+                reasons.append("Price outside BB by >2%")
+
+        return min(score, 100), reasons
+
+    # ----- classification ---------------------------------------------------
+
+    def _classify(self, trend, vol_regime, vol_ratio, div_score, micro, crisis, reasons):
+        if crisis >= 70:
+            return "CRISIS", min(95, 50 + crisis // 2), reasons
+
+        ofi = micro.get("order_flow_imbalance", 0) if isinstance(micro, dict) else 0
+
+        if trend >= 50:
+            if div_score < 30 and vol_regime in ("normal", "high"):
+                return "STRONG_BULL", min(95, 50 + trend // 2), reasons
+            else:
+                return "WEAK_BULL", min(80, 40 + trend // 3), reasons
+        elif trend >= 15:
+            if div_score >= 40:
+                return "WEAK_BULL", min(70, 35 + trend // 3), reasons
+            else:
+                return "WEAK_BULL", min(75, 40 + trend // 2), reasons
+        elif trend <= -50:
+            if div_score < 30 and vol_regime in ("normal", "high"):
+                return "STRONG_BEAR", min(95, 50 + abs(trend) // 2), reasons
+            else:
+                return "WEAK_BEAR", min(80, 40 + abs(trend) // 3), reasons
+        elif trend <= -15:
+            if div_score >= 40:
+                return "WEAK_BEAR", min(70, 35 + abs(trend) // 3), reasons
+            else:
+                return "WEAK_BEAR", min(75, 40 + abs(trend) // 2), reasons
+        else:
+            conf = 60
+            if vol_regime == "low":
+                conf = 75
+            return "RANGE", conf, reasons
+
+    # ----- smoothing & transitions ------------------------------------------
+
+    def _smooth_regime(self, raw_regime):
+        if raw_regime == "CRISIS":
+            self._pending_regime = None
+            self._pending_count = 0
+            return "CRISIS"
+
+        if raw_regime == self._current_regime:
+            self._pending_regime = None
+            self._pending_count = 0
+            return self._current_regime
+
+        if raw_regime == self._pending_regime:
+            self._pending_count += 1
+        else:
+            self._pending_regime = raw_regime
+            self._pending_count = 1
+
+        if self._pending_count >= SMOOTHING_THRESHOLD:
+            self._pending_regime = None
+            self._pending_count = 0
+            return raw_regime
+
+        return self._current_regime
+
+    def _estimate_transition_probabilities(self, current, trend_score, div_score, vol_ratio):
+        base = dict(_BASE_TRANSITION.get(current, _BASE_TRANSITION["RANGE"]))
+
+        if div_score > 50:
+            if current in ("STRONG_BULL", "WEAK_BULL"):
+                base["WEAK_BULL"] = base.get("WEAK_BULL", 0) + 0.10
+                base["RANGE"] = base.get("RANGE", 0) + 0.05
+                base[current] = max(0.05, base.get(current, 0) - 0.15)
+            elif current in ("STRONG_BEAR", "WEAK_BEAR"):
+                base["WEAK_BEAR"] = base.get("WEAK_BEAR", 0) + 0.10
+                base["RANGE"] = base.get("RANGE", 0) + 0.05
+                base[current] = max(0.05, base.get(current, 0) - 0.15)
+
+        if vol_ratio > 3.0:
+            base["CRISIS"] = base.get("CRISIS", 0) + 0.15
+            for k in base:
+                if k != "CRISIS":
+                    base[k] = max(0.01, base[k] - 0.03)
+
+        if abs(trend_score) > 60:
+            if trend_score > 0:
+                base["STRONG_BULL"] = base.get("STRONG_BULL", 0) + 0.10
+            else:
+                base["STRONG_BEAR"] = base.get("STRONG_BEAR", 0) + 0.10
+
+        total = sum(base.values())
+        if total > 0:
+            base = {k: round(v / total, 3) for k, v in base.items()}
+        return base
+
+    # ----- helpers ----------------------------------------------------------
+
+    def _default_result(self, reason):
         return {
-            "regime": regime,
-            "confidence": confidence,
-            "scores": score,
-            "reasons": reasons,
+            "regime": "RANGE",
+            "regime_detailed": "RANGE",
+            "previous_regime": "RANGE",
+            "previous_regime_detailed": "RANGE",
+            "confidence": 0,
+            "transition_prob": {},
+            "regime_duration": 0,
+            "reasons": [reason],
+            "risk_multiplier": 0.6,
+            "volatility_regime": "normal",
+            "volatility_ratio": 1.0,
+            "trend_strength": 0,
+            "divergence_score": 0,
+            "crisis_score": 0,
+            "microstructure": {},
         }
 
     @staticmethod
-    def _last_valid(series):
+    def _lv(series):
         if not series:
             return None
         for v in reversed(series):
@@ -1604,7 +2026,7 @@ class MarketRegimeDetector:
         return None
 
 
-regime_detector = MarketRegimeDetector()
+regime_detector = AdvancedRegimeDetector()
 
 
 # ---------------------------------------------------------------------------
@@ -1614,7 +2036,10 @@ regime_detector = MarketRegimeDetector()
 
 class SignalEngine:
 
-    REGIME_MULTIPLIER = {"BULL": 1.0, "BEAR": 1.0, "RANGE": 0.6, "CRISIS": 0.3}
+    REGIME_MULTIPLIER = {
+        "BULL": 1.0, "BEAR": 1.0, "RANGE": 0.6, "CRISIS": 0.3,
+        "STRONG_BULL": 1.0, "WEAK_BULL": 0.8, "WEAK_BEAR": 0.8, "STRONG_BEAR": 1.0,
+    }
 
     def generate(self, raw_indicators, regime_info, sentiment=None, whales=None):
         closes = raw_indicators["closes"]
@@ -4179,7 +4604,7 @@ class AutonomousEngine:
     """Background autonomous trading loop.
 
     Ties together every intelligence component (SignalEngine, RiskEngine,
-    DipTopDetector, MarketRegimeDetector) with execution via PaperTrader or
+    DipTopDetector, AdvancedRegimeDetector) with execution via PaperTrader or
     live ExchangeManager adapters.  Runs in a daemon thread so it dies with
     the Flask process.
     """
@@ -4784,7 +5209,9 @@ class AutonomousEngine:
                 if key == "symbols" and isinstance(val, list):
                     val = [s.upper() for s in val if isinstance(s, str) and len(s) <= 20][:10]
                 if key == "allowed_regimes" and isinstance(val, list):
-                    val = [r for r in val if r in ("BULL", "BEAR", "RANGE", "CRISIS")]
+                    val = [r for r in val if r in (
+                        "BULL", "BEAR", "RANGE", "CRISIS",
+                        "STRONG_BULL", "WEAK_BULL", "WEAK_BEAR", "STRONG_BEAR")]
 
                 self._config[key] = val
 
@@ -5104,6 +5531,33 @@ def api_dip_top():
     indicators = compute_all_indicators(ohlcv)
     analysis = dip_top_detector.analyze(symbol, ohlcv, indicators["_raw"])
     return jsonify(analysis)
+
+
+@app.route("/api/regime")
+@rate_limit("market_data")
+def api_regime():
+    symbol = request.args.get("symbol", "BTCUSDT").upper()
+    interval = request.args.get("interval", "1h")
+    limit = min(int(request.args.get("limit", 200)), 1000)
+
+    sym_info = SUPPORTED_SYMBOLS.get(symbol)
+    if sym_info and sym_info["source"] == "stooq":
+        ohlcv = generate_gold_silver_candles(sym_info, limit)
+    else:
+        raw = fetch_binance("/api/v3/klines",
+                            {"symbol": symbol, "interval": interval, "limit": limit}, ttl=15)
+        if not raw:
+            return jsonify({"error": "Failed to fetch candles"}), 502
+        ohlcv = transform_klines(raw)
+
+    if len(ohlcv) < 50:
+        return jsonify({"error": "Need at least 50 candles for regime detection"}), 400
+
+    indicators = compute_all_indicators(ohlcv)
+    result = regime_detector.detect(ohlcv, indicators["_raw"])
+    result["symbol"] = symbol
+    result["interval"] = interval
+    return jsonify(result)
 
 
 @app.route("/api/whales")

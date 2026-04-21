@@ -3857,3 +3857,72 @@ weighted by historical performance.
 - [x] py_compile verified ✓
 
 ---
+
+## 13. ADVANCED 6-STATE REGIME DETECTOR
+
+### 13.0 Overview
+
+Replaces the basic 4-state MarketRegimeDetector with AdvancedRegimeDetector:
+6 granular states, transition probabilities, volatility clustering, momentum
+divergence, market microstructure, and regime memory with smoothing.
+
+### 13.1 States (server.py L:1514)
+
+| State | Legacy Map | Risk Mult | Description |
+|-------|-----------|-----------|-------------|
+| STRONG_BULL | BULL | 1.0 | Full EMA alignment, ADX>30, sustained momentum |
+| WEAK_BULL | BULL | 0.75 | Uptrend fading, divergences appearing |
+| RANGE | RANGE | 0.6 | Lateral, BB squeeze, ADX<20 |
+| WEAK_BEAR | BEAR | 0.75 | Early downtrend, supports breaking |
+| STRONG_BEAR | BEAR | 1.0 | Full bearish alignment, capitulation |
+| CRISIS | CRISIS | 0.0 | Extreme volatility, black swan |
+
+### 13.2 Sub-Detectors
+
+| Method | Score | What It Detects |
+|--------|-------|-----------------|
+| `_detect_trend_state` | -100 to +100 | 4-level EMA alignment, EMA slope, ADX/DMI, HH/HL patterns |
+| `_detect_volatility_regime` | low/normal/high/extreme | ATR ratio, BB width percentile, volatility clustering (>2σ), squeeze |
+| `_detect_momentum_divergence` | 0-100 | RSI divergence, MACD histogram divergence, OBV divergence |
+| `_detect_market_microstructure` | dict | VWAP, Order Flow Imbalance, absorption detection |
+| `_detect_crisis` | 0-100 | ATR >4x, single candle >3 ATR, volume >5x, RSI extreme |
+
+### 13.3 Transition Probabilities
+
+Empirical base matrix (6×6) hardcoded from crypto market behavior, dynamically
+adjusted by: divergence score (+P(transition)), volatility ratio (+P(CRISIS)),
+trend score (+P(STRONG_BULL/BEAR)).
+
+### 13.4 Regime Memory & Smoothing
+
+- `_regime_history`: deque(maxlen=100) of past detections
+- Smoothing filter: new regime must be detected 3 consecutive times to switch
+  (except CRISIS which is immediate)
+- `regime_duration`: count of bars in current regime
+
+### 13.5 Backward Compatibility
+
+- Output `"regime"` key always contains legacy value (BULL/BEAR/RANGE/CRISIS)
+- `"regime_detailed"` contains the 6-state value
+- SignalEngine.REGIME_MULTIPLIER updated with all 8 possible values
+- All strategies and AutonomousEngine work unchanged
+
+### 13.6 API Route
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/api/regime` | GET | Full regime detection: detailed state, transitions, volatility, microstructure |
+
+### 13.7 Status: `[FAIT]`
+
+- [x] AdvancedRegimeDetector class (~500 lines)
+- [x] 5 sub-detectors (trend, volatility, divergence, microstructure, crisis)
+- [x] 6×6 transition probability matrix with dynamic adjustment
+- [x] Regime smoothing with 3-bar confirmation (CRISIS immediate)
+- [x] Backward-compatible output (legacy "regime" key preserved)
+- [x] SignalEngine REGIME_MULTIPLIER updated for 8 states
+- [x] GET /api/regime route
+- [x] deque import added
+- [x] py_compile verified ✓
+
+---
