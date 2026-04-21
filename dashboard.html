@@ -6613,8 +6613,18 @@ function connectGmxAdapter() {
         body: JSON.stringify({pin: pin})
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.success) {
-            showToast('GMX adapter connected: ' + escapeHtml(data.address || ''), 'success');
+            showToast('GMX connected: ' + escapeHtml(data.address || ''), 'success');
             $('gmx-connect-btn').style.display = 'none';
+            $('gmx-account').textContent = (data.address || '').substring(0, 6) + '...' + (data.address || '').slice(-4);
+            if (data.balance) {
+                var b = data.balance;
+                if (b.ETH) $('gmx-eth-bal').textContent = b.ETH.total.toFixed(4);
+                if (b.USDC) {
+                    _gmxUsdcBalance = b.USDC.total;
+                    $('gmx-usdc-bal').textContent = '$' + fmt(b.USDC.total);
+                }
+                if (b.GMX_COLLATERAL) $('gmx-collateral').textContent = '$' + fmt(b.GMX_COLLATERAL.used);
+            }
             loadGMXWallet();
         } else {
             showToast(escapeHtml(data.error || 'Connection failed'), 'error');
@@ -6645,7 +6655,7 @@ function loadGMXWallet() {
     });
 
     fetch('/api/balance').then(function(r) { return r.json(); }).then(function(data) {
-        var balances = data.balances || [];
+        var balances = data.balances || data.live || [];
         for (var i = 0; i < balances.length; i++) {
             if (balances[i].exchange === 'GMX') {
                 var assets = balances[i].assets || {};
@@ -6658,11 +6668,14 @@ function loadGMXWallet() {
                 return;
             }
         }
-    }).catch(function() {});
+    }).catch(function(e) {
+        console.warn('Balance fetch failed:', e);
+    });
 
-    fetch('/api/gmx/prices').then(function(r) { return r.json(); }).then(function(data) {
-        if (data.timestamp) {
+    fetch('/api/gmx/health').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.checks && data.checks.rpc && data.checks.rpc.ok) {
             $('gmx-network').textContent = 'Arbitrum';
+            $('gmx-block').textContent = data.checks.rpc.block || '--';
         }
     }).catch(function() {});
 }

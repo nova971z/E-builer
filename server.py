@@ -2835,7 +2835,7 @@ class GMXAdapter(ExchangeAdapter):
                     assets["GMX_COLLATERAL"] = {"total": round(collateral_locked, 4), "free": 0.0, "used": round(collateral_locked, 4)}
                     total_usdt += collateral_locked
         except Exception as e:
-            log.debug("GMX collateral read skipped: %s", e)
+            log.warning("GMX collateral read failed: %s", e)
 
         if "USDC" in assets:
             total_usdt = max(total_usdt, assets["USDC"]["total"])
@@ -4456,11 +4456,17 @@ def api_execute():
 
     # Route to exchange
     ccxt_side = "buy" if side in ("long", "buy") else "sell"
-    positions = exchange_manager.get_all_positions()
-    if not exchange_manager._adapters:
-        return jsonify({"error": "No exchange configured. Add one in Settings."}), 400
+    requested_exchange = body.get("exchange", "").lower()
 
-    adapter = list(exchange_manager._adapters.values())[0]
+    if requested_exchange == "gmx":
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+    elif exchange_manager._adapters:
+        adapter = list(exchange_manager._adapters.values())[0]
+    else:
+        adapter = None
+
+    if not adapter:
+        return jsonify({"error": "No exchange configured. Add one in Settings or connect GMX wallet."}), 400
     result = adapter.place_order(symbol, ccxt_side, order_type, quantity, price if order_type == "limit" else None, leverage, tp, sl)
     log_audit("trade_executed", f"live {side} {symbol} qty={quantity} @{price}")
     return jsonify(result)
@@ -4519,7 +4525,7 @@ def api_balance():
         "available": round(available, 4),
         "unrealized_pnl": round(unrealized_pnl, 4),
         "margin_used": round(margin_used, 4),
-        "live": live_balances,
+        "balances": live_balances,
         "paper": {
             "total_pnl": paper_status["total_pnl"],
             "open_positions": paper_status["open_positions"],
@@ -4897,13 +4903,27 @@ def api_gmx_connect():
     try:
         adapter = GMXAdapter(private_key=private_key, testnet=False)
         _wipe_string(private_key)
+
+        if not adapter._initialized:
+            log.error("GMX adapter created but RPC connection failed")
+            return jsonify({"error": "Cannot connect to Arbitrum RPC — check network"}), 502
+
         exchange_manager._adapters["gmx_wallet"] = adapter
+
+        balance_info = {}
+        try:
+            bal = adapter.get_balance()
+            balance_info = bal.get("assets", {})
+        except Exception:
+            pass
+
         log_audit("wallet_setup", f"GMX adapter connected: {addr[:10]}...")
         return jsonify({
             "success": True,
             "address": addr,
-            "initialized": adapter._initialized,
+            "initialized": True,
             "network": "Arbitrum One",
+            "balance": balance_info,
         })
     except Exception as e:
         _wipe_string(private_key)
