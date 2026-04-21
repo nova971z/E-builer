@@ -3188,7 +3188,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 39 | S1.0 | Authentification PIN & Sessions | `[x]` FAIT | — | 2026-04-21 |
 | 40 | S2.0 | Stockage sécurisé clé Anthropic | `[x]` FAIT | — | 2026-04-21 |
 | 41 | S3.0 | Coffre-fort GMX Wallet | `[x]` FAIT | — | 2026-04-21 |
-| 42 | S4.0 | CORS & Headers HTTP | `[ ]` EN ATTENTE | — | — |
+| 42 | S4.0 | CORS & Headers HTTP | `[x]` FAIT | — | 2026-04-21 |
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[ ]` EN ATTENTE | — | — |
 | 44 | S6.0 | Blindage du chiffrement | `[ ]` EN ATTENTE | — | — |
 | 45 | S7.0 | Validation entrées & erreurs | `[ ]` EN ATTENTE | — | — |
@@ -3196,7 +3196,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 3 / 10 étapes terminées**
+**Progression sécurité : 4 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,50 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S4.0 — CORS & Headers HTTP (Step 42) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S4.1 | CORS restreint via `ALLOWED_ORIGINS` env var (défaut: localhost + 127.0.0.1 + SERVER_IP) | `[x]` |
+| S4.2 | Header `X-Frame-Options: DENY` — anti-clickjacking | `[x]` |
+| S4.3 | Header `X-Content-Type-Options: nosniff` — anti-MIME sniffing | `[x]` |
+| S4.4 | Header `Referrer-Policy: strict-origin-when-cross-origin` | `[x]` |
+| S4.5 | Header `Permissions-Policy: camera=(), microphone=(), geolocation=()` | `[x]` |
+| S4.6 | Header `Content-Security-Policy` avec whitelist connect-src (Binance WS, APIs) | `[x]` |
+| S4.7 | Header `Strict-Transport-Security` conditionnel si `HTTPS=1` env var | `[x]` |
+| S4.8 | Header `Server: JARVIS` — masque Werkzeug/Python version (WSGI handler patch) | `[x]` |
+| S4.9 | Dashboard fonctionne avec CSP (inline scripts/styles autorisés, WebSocket Binance autorisé) | `[x]` |
+
+**Vulnérabilités corrigées** : C-02 (CORS wildcard), C-08 (pas de CSP), H-04 (aucun header sécu)
+
+**CSP Whitelist connect-src** :
+```
+'self'
+wss://stream.binance.com:*   ← WebSocket candles temps réel
+https://api.binance.com       ← Market data
+https://fapi.binance.com      ← Futures data
+https://api.alternative.me    ← Fear & Greed
+https://stooq.com             ← Gold/Silver fallback
+https://api.anthropic.com     ← JARVIS AI
+```
+
+**Variables d'environnement ajoutées** :
+```
+ALLOWED_ORIGINS=http://monip:5000,http://autre:5000   (optionnel, défaut: même origine)
+HTTPS=1                                                (optionnel, active HSTS)
+SERVER_IP=178.104.233.254                              (optionnel, ajouté à CORS auto)
+```
+
+**Tests passés** :
+- Headers présents sur toutes les réponses ✓
+- CORS bloque `Origin: http://evil.com` ✓
+- CORS autorise `Origin: http://localhost:5000` ✓
+- `Server: JARVIS` au lieu de `Werkzeug/3.x.x Python/3.x.x` ✓
+- Dashboard charge normalement ✓
+- API routes fonctionnelles ✓
 
 ---
 

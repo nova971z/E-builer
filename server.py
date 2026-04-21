@@ -68,6 +68,8 @@ WHALE_ALERT_BASE = "https://api.whale-alert.io/v1"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 WHALE_ALERT_KEY = os.environ.get("WHALE_ALERT_API_KEY", "")
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+HTTPS_ENABLED = os.environ.get("HTTPS", "0") == "1"
 
 START_TIME = time.time()
 
@@ -383,12 +385,36 @@ log = logging.getLogger("jarvis")
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__, static_folder=str(BASE_DIR))
-CORS(app)
+
+if ALLOWED_ORIGINS:
+    CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
+else:
+    CORS(app, origins=[
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+        f"http://{os.environ.get('SERVER_IP', '0.0.0.0')}:5000",
+    ], supports_credentials=True)
 
 import gzip as _gzip
 
 @app.after_request
-def _compress(response):
+def _security_headers(response):
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' wss://stream.binance.com:* https://api.binance.com https://fapi.binance.com https://api.alternative.me https://stooq.com https://api.anthropic.com; "
+        "font-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    if HTTPS_ENABLED:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
     if (response.status_code < 200 or response.status_code >= 300
         or 'Content-Encoding' in response.headers
         or 'gzip' not in request.headers.get('Accept-Encoding', '')
@@ -5617,5 +5643,10 @@ def serve_static(path):
 if __name__ == "__main__":
     init_db()
     exchange_manager.load_from_db()
+
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.server_version = "JARVIS"
+    WSGIRequestHandler.sys_version = ""
+
     log.info("J.A.R.V.I.S. Trading System v%s starting on port 5000", APP_VERSION)
     app.run(host="0.0.0.0", port=5000, debug=False)
