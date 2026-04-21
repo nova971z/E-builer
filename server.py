@@ -3576,6 +3576,601 @@ paper_trader = PaperTrader()
 
 
 # ---------------------------------------------------------------------------
+# Trading Strategies — Modular framework with independent entry/exit logic
+# ---------------------------------------------------------------------------
+
+class TradingStrategy:
+    """Base class for all trading strategies."""
+    name = "base"
+    description = ""
+    suitable_regimes = []
+    min_adx = 0
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        """Returns (direction, confidence, reason) or None if no entry."""
+        raise NotImplementedError
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        """Returns dict with take_profit, stop_loss, trailing_pct."""
+        raise NotImplementedError
+
+    def get_leverage(self, confidence, regime):
+        """Returns recommended leverage (int, 1-20)."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _lv(series):
+        """Last valid non-None value from a list."""
+        if not series:
+            return None
+        for v in reversed(series):
+            if v is not None:
+                return v
+        return None
+
+
+class TrendFollowingStrategy(TradingStrategy):
+    name = "trend"
+    description = "Follow strong directional trends using EMA alignment + ADX"
+    suitable_regimes = ["BULL", "BEAR"]
+    min_adx = 25
+
+    EMA_FAST = 9
+    EMA_MID = 21
+    EMA_SLOW = 50
+    ADX_THRESHOLD = 25
+    RSI_LONG_MIN = 40
+    RSI_LONG_MAX = 70
+    RSI_SHORT_MIN = 30
+    RSI_SHORT_MAX = 60
+    TP_ATR_MULT = 2.0
+    SL_ATR_MULT = 1.0
+    TRAILING_PCT = 1.5
+    LEV_HIGH = 5
+    LEV_LOW = 3
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        regime = regime_info.get("regime", "RANGE")
+        if regime not in self.suitable_regimes:
+            return None
+
+        closes = raw_ind["closes"]
+        if len(closes) < self.EMA_SLOW + 10:
+            return None
+
+        ema9 = calc_ema(closes, self.EMA_FAST)
+        ema21 = calc_ema(closes, self.EMA_MID)
+        ema50 = raw_ind.get("ema50", [])
+
+        e9 = self._lv(ema9)
+        e21 = self._lv(ema21)
+        e50 = self._lv(ema50)
+        if e9 is None or e21 is None or e50 is None:
+            return None
+
+        adx_data = raw_ind.get("adx", {})
+        last_adx = self._lv(adx_data.get("adx", []))
+        if last_adx is None or last_adx < self.ADX_THRESHOLD:
+            return None
+
+        rsi = self._lv(raw_ind.get("rsi", []))
+        if rsi is None:
+            return None
+
+        macd = raw_ind.get("macd", {})
+        hist = macd.get("histogram", [])
+        h_now = self._lv(hist)
+        h_prev = self._lv(hist[:-1]) if len(hist) > 1 else None
+
+        if e9 > e21 > e50:
+            if self.RSI_LONG_MIN <= rsi <= self.RSI_LONG_MAX:
+                if h_now is not None and h_now > 0:
+                    rising = h_prev is not None and h_now > h_prev
+                    conf = 80 if rising else 65
+                    return ("long", conf, f"EMA aligned bullish, ADX {last_adx:.0f}, RSI {rsi:.0f}")
+
+        if e9 < e21 < e50:
+            if self.RSI_SHORT_MIN <= rsi <= self.RSI_SHORT_MAX:
+                if h_now is not None and h_now < 0:
+                    falling = h_prev is not None and h_now < h_prev
+                    conf = 80 if falling else 65
+                    return ("short", conf, f"EMA aligned bearish, ADX {last_adx:.0f}, RSI {rsi:.0f}")
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        atr_val = self._lv(raw_ind.get("atr", []))
+        if atr_val is None or atr_val <= 0:
+            atr_val = entry_price * 0.015
+        if direction == "long":
+            tp = entry_price + atr_val * self.TP_ATR_MULT
+            sl = entry_price - atr_val * self.SL_ATR_MULT
+        else:
+            tp = entry_price - atr_val * self.TP_ATR_MULT
+            sl = entry_price + atr_val * self.SL_ATR_MULT
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": self.TRAILING_PCT}
+
+    def get_leverage(self, confidence, regime):
+        if confidence >= 75 and regime in ("BULL", "BEAR"):
+            return self.LEV_HIGH
+        return self.LEV_LOW
+
+
+class MeanReversionStrategy(TradingStrategy):
+    name = "mean_reversion"
+    description = "Fade extremes in ranging markets using BB + RSI + StochRSI"
+    suitable_regimes = ["RANGE"]
+    min_adx = 0
+
+    RSI_OVERSOLD = 30
+    RSI_OVERBOUGHT = 70
+    STOCH_OVERSOLD = 20
+    STOCH_OVERBOUGHT = 80
+    SL_BAND_MULT = 1.5
+    MAX_LEVERAGE = 3
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        regime = regime_info.get("regime", "RANGE")
+        if regime not in self.suitable_regimes:
+            return None
+
+        closes = raw_ind["closes"]
+        if len(closes) < 30:
+            return None
+        price = closes[-1]
+
+        bb = raw_ind.get("bb", {})
+        upper = self._lv(bb.get("upper", []))
+        lower = self._lv(bb.get("lower", []))
+        middle = self._lv(bb.get("middle", []))
+        if upper is None or lower is None or middle is None:
+            return None
+
+        rsi = self._lv(raw_ind.get("rsi", []))
+        stoch = raw_ind.get("stoch_rsi", {})
+        sk = self._lv(stoch.get("k", []))
+        if rsi is None:
+            return None
+
+        if price < lower and rsi < self.RSI_OVERSOLD:
+            if sk is not None and sk < self.STOCH_OVERSOLD:
+                conf = 75
+            else:
+                conf = 60
+            return ("long", conf, f"Price below BB lower, RSI {rsi:.0f}")
+
+        if price > upper and rsi > self.RSI_OVERBOUGHT:
+            if sk is not None and sk > self.STOCH_OVERBOUGHT:
+                conf = 75
+            else:
+                conf = 60
+            return ("short", conf, f"Price above BB upper, RSI {rsi:.0f}")
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        bb = raw_ind.get("bb", {})
+        middle = self._lv(bb.get("middle", []))
+        upper = self._lv(bb.get("upper", []))
+        lower = self._lv(bb.get("lower", []))
+        if middle is None:
+            middle = entry_price
+
+        if direction == "long":
+            tp = middle
+            band_dist = abs(entry_price - (lower or entry_price * 0.98))
+            sl = entry_price - band_dist * self.SL_BAND_MULT
+        else:
+            tp = middle
+            band_dist = abs((upper or entry_price * 1.02) - entry_price)
+            sl = entry_price + band_dist * self.SL_BAND_MULT
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": 0}
+
+    def get_leverage(self, confidence, regime):
+        return self.MAX_LEVERAGE
+
+
+class BreakoutStrategy(TradingStrategy):
+    name = "breakout"
+    description = "Catch volatility expansion after BB squeeze with volume confirmation"
+    suitable_regimes = ["RANGE", "BULL", "BEAR"]
+    min_adx = 0
+
+    BB_SQUEEZE_THRESHOLD = 0.02
+    SQUEEZE_MIN_BARS = 10
+    VOL_SPIKE_MULT = 2.0
+    VOL_LOOKBACK = 20
+    TP_ATR_MULT = 3.0
+    SL_ATR_MULT = 0.5
+    TRAILING_PCT = 2.0
+    LEV_HIGH = 8
+    LEV_LOW = 5
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        closes = raw_ind["closes"]
+        volumes = raw_ind["volumes"]
+        if len(closes) < 50 or len(volumes) < self.VOL_LOOKBACK + 1:
+            return None
+
+        bb = raw_ind.get("bb", {})
+        upper_list = bb.get("upper", [])
+        lower_list = bb.get("lower", [])
+        middle_list = bb.get("middle", [])
+        if len(upper_list) < self.SQUEEZE_MIN_BARS + 5:
+            return None
+
+        squeeze_count = 0
+        for i in range(-self.SQUEEZE_MIN_BARS - 5, -1):
+            try:
+                u = upper_list[i]
+                l = lower_list[i]
+                m = middle_list[i]
+                if u is None or l is None or m is None or m <= 0:
+                    continue
+                width = (u - l) / m
+                if width < self.BB_SQUEEZE_THRESHOLD:
+                    squeeze_count += 1
+            except IndexError:
+                continue
+
+        if squeeze_count < self.SQUEEZE_MIN_BARS:
+            return None
+
+        avg_vol = sum(volumes[-self.VOL_LOOKBACK - 1:-1]) / self.VOL_LOOKBACK
+        if avg_vol <= 0 or volumes[-1] < avg_vol * self.VOL_SPIKE_MULT:
+            return None
+
+        price = closes[-1]
+        upper = self._lv(upper_list)
+        lower = self._lv(lower_list)
+        if upper is None or lower is None:
+            return None
+
+        adx_data = raw_ind.get("adx", {})
+        adx_list = adx_data.get("adx", [])
+        adx_now = self._lv(adx_list)
+        adx_prev = self._lv(adx_list[:-1]) if len(adx_list) > 1 else None
+        adx_rising = (adx_now is not None and adx_prev is not None and adx_now > adx_prev)
+
+        if price > upper:
+            conf = 80 if adx_rising else 65
+            vol_ratio = volumes[-1] / avg_vol
+            return ("long", conf, f"BB breakout UP, vol {vol_ratio:.1f}x, ADX rising={adx_rising}")
+
+        if price < lower:
+            conf = 80 if adx_rising else 65
+            vol_ratio = volumes[-1] / avg_vol
+            return ("short", conf, f"BB breakout DOWN, vol {vol_ratio:.1f}x, ADX rising={adx_rising}")
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        atr_val = self._lv(raw_ind.get("atr", []))
+        if atr_val is None or atr_val <= 0:
+            atr_val = entry_price * 0.02
+        if direction == "long":
+            tp = entry_price + atr_val * self.TP_ATR_MULT
+            sl = entry_price - atr_val * self.SL_ATR_MULT
+        else:
+            tp = entry_price - atr_val * self.TP_ATR_MULT
+            sl = entry_price + atr_val * self.SL_ATR_MULT
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": self.TRAILING_PCT}
+
+    def get_leverage(self, confidence, regime):
+        return self.LEV_HIGH if confidence >= 75 else self.LEV_LOW
+
+
+class DipHunterStrategy(TradingStrategy):
+    name = "dip_hunter"
+    description = "Contrarian entries on dips/tops using DipTopDetector confluence"
+    suitable_regimes = ["BULL", "BEAR"]
+    min_adx = 0
+
+    CONFLUENCE_THRESHOLD = 70
+    TP_ATR_MULT = 2.0
+    SL_ATR_MULT = 2.0
+    TRAILING_PCT = 1.0
+    MAX_LEVERAGE = 3
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        regime = regime_info.get("regime", "RANGE")
+        if regime not in self.suitable_regimes:
+            return None
+        if not dip_top:
+            return None
+
+        confluence = dip_top.get("confluence", {})
+        score = confluence.get("score", 0) if isinstance(confluence, dict) else 0
+
+        if score < self.CONFLUENCE_THRESHOLD:
+            return None
+
+        rsi_div = dip_top.get("rsi_divergence", {})
+        vol_climax = dip_top.get("volume_climax", {})
+
+        if regime == "BULL" and dip_top.get("is_dip"):
+            bullish_div = rsi_div.get("bullish", False)
+            selling_climax = vol_climax.get("selling_climax", False)
+            if bullish_div or selling_climax:
+                conf = min(85, 60 + score // 5)
+                return ("long", conf, f"Dip detected in BULL, confluence {score}")
+            return None
+
+        if regime == "BEAR" and dip_top.get("is_top"):
+            bearish_div = rsi_div.get("bearish", False)
+            buying_climax = vol_climax.get("buying_climax", False)
+            if bearish_div or buying_climax:
+                conf = min(85, 60 + score // 5)
+                return ("short", conf, f"Top detected in BEAR, confluence {score}")
+            return None
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        atr_val = self._lv(raw_ind.get("atr", []))
+        if atr_val is None or atr_val <= 0:
+            atr_val = entry_price * 0.02
+
+        closes = raw_ind.get("closes", [])
+        highs = raw_ind.get("highs", [])
+        lows = raw_ind.get("lows", [])
+
+        if direction == "long":
+            swing_hi = max(highs[-20:]) if len(highs) >= 20 else entry_price * 1.03
+            tp = swing_hi
+            sl = entry_price - atr_val * self.SL_ATR_MULT
+        else:
+            swing_lo = min(lows[-20:]) if len(lows) >= 20 else entry_price * 0.97
+            tp = swing_lo
+            sl = entry_price + atr_val * self.SL_ATR_MULT
+
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": self.TRAILING_PCT}
+
+    def get_leverage(self, confidence, regime):
+        return self.MAX_LEVERAGE if confidence >= 75 else 2
+
+
+class MomentumScalpStrategy(TradingStrategy):
+    name = "momentum_scalp"
+    description = "Quick scalp on strong momentum bursts with tight exits"
+    suitable_regimes = ["BULL", "BEAR"]
+    min_adx = 30
+
+    ADX_THRESHOLD = 30
+    RSI_LONG_MIN = 60
+    RSI_SHORT_MAX = 40
+    VOL_SPIKE_MULT = 2.0
+    VOL_LOOKBACK = 20
+    TP_PCT = 0.008
+    SL_PCT = 0.003
+    TRAILING_PCT = 0.5
+    MAX_LEVERAGE = 15
+    MIN_LEVERAGE = 10
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        regime = regime_info.get("regime", "RANGE")
+        if regime not in self.suitable_regimes:
+            return None
+
+        adx_data = raw_ind.get("adx", {})
+        last_adx = self._lv(adx_data.get("adx", []))
+        if last_adx is None or last_adx < self.ADX_THRESHOLD:
+            return None
+
+        rsi = self._lv(raw_ind.get("rsi", []))
+        if rsi is None:
+            return None
+
+        volumes = raw_ind.get("volumes", [])
+        if len(volumes) < self.VOL_LOOKBACK + 1:
+            return None
+        avg_vol = sum(volumes[-self.VOL_LOOKBACK - 1:-1]) / self.VOL_LOOKBACK
+        if avg_vol <= 0 or volumes[-1] < avg_vol * self.VOL_SPIKE_MULT:
+            return None
+
+        macd = raw_ind.get("macd", {})
+        ml = self._lv(macd.get("line", []))
+        ms = self._lv(macd.get("signal", []))
+        if ml is None or ms is None:
+            return None
+
+        if regime == "BULL" and rsi >= self.RSI_LONG_MIN and ml > ms:
+            return ("long", 70, f"Momentum LONG, ADX {last_adx:.0f}, RSI {rsi:.0f}")
+
+        if regime == "BEAR" and rsi <= self.RSI_SHORT_MAX and ml < ms:
+            return ("short", 70, f"Momentum SHORT, ADX {last_adx:.0f}, RSI {rsi:.0f}")
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        if direction == "long":
+            tp = entry_price * (1 + self.TP_PCT)
+            sl = entry_price * (1 - self.SL_PCT)
+        else:
+            tp = entry_price * (1 - self.TP_PCT)
+            sl = entry_price * (1 + self.SL_PCT)
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": self.TRAILING_PCT}
+
+    def get_leverage(self, confidence, regime):
+        return self.MAX_LEVERAGE if confidence >= 75 else self.MIN_LEVERAGE
+
+
+class MacroEventStrategy(TradingStrategy):
+    name = "macro_event"
+    description = "Reduce exposure pre-event, follow direction post-event"
+    suitable_regimes = ["BULL", "BEAR", "RANGE", "CRISIS"]
+    min_adx = 0
+
+    POST_EVENT_WAIT_BARS = 3
+    POST_EVENT_ADX_MIN = 20
+    TP_ATR_MULT = 1.5
+    SL_ATR_MULT = 1.0
+    TRAILING_PCT = 1.0
+    MAX_LEVERAGE = 3
+
+    def should_enter(self, ohlcv, raw_ind, regime_info, dip_top):
+        closes = raw_ind.get("closes", [])
+        if len(closes) < 50:
+            return None
+
+        adx_data = raw_ind.get("adx", {})
+        last_adx = self._lv(adx_data.get("adx", []))
+        if last_adx is None or last_adx < self.POST_EVENT_ADX_MIN:
+            return None
+
+        ema50 = raw_ind.get("ema50", [])
+        e50 = self._lv(ema50)
+        price = closes[-1]
+        if e50 is None:
+            return None
+
+        macd = raw_ind.get("macd", {})
+        h_now = self._lv(macd.get("histogram", []))
+        if h_now is None:
+            return None
+
+        if len(closes) >= self.POST_EVENT_WAIT_BARS + 1:
+            recent = closes[-self.POST_EVENT_WAIT_BARS:]
+            all_up = all(recent[i] >= recent[i - 1] for i in range(1, len(recent)))
+            all_down = all(recent[i] <= recent[i - 1] for i in range(1, len(recent)))
+        else:
+            all_up = False
+            all_down = False
+
+        if all_up and price > e50 and h_now > 0:
+            return ("long", 55, f"Post-event bullish direction, ADX {last_adx:.0f}")
+
+        if all_down and price < e50 and h_now < 0:
+            return ("short", 55, f"Post-event bearish direction, ADX {last_adx:.0f}")
+
+        return None
+
+    def get_exit_conditions(self, entry_price, direction, raw_ind):
+        atr_val = self._lv(raw_ind.get("atr", []))
+        if atr_val is None or atr_val <= 0:
+            atr_val = entry_price * 0.015
+        if direction == "long":
+            tp = entry_price + atr_val * self.TP_ATR_MULT
+            sl = entry_price - atr_val * self.SL_ATR_MULT
+        else:
+            tp = entry_price - atr_val * self.TP_ATR_MULT
+            sl = entry_price + atr_val * self.SL_ATR_MULT
+        return {"take_profit": tp, "stop_loss": sl, "trailing_pct": self.TRAILING_PCT}
+
+    def get_leverage(self, confidence, regime):
+        return self.MAX_LEVERAGE if confidence >= 60 else 2
+
+
+# ---------------------------------------------------------------------------
+# Strategy Selector — Adaptive multi-strategy routing with performance tracking
+# ---------------------------------------------------------------------------
+
+class StrategySelector:
+    """Scores every applicable strategy and picks the best one, weighted by
+    historical performance when enough data is available."""
+
+    MIN_TRADES_FOR_WEIGHT = 5
+
+    def __init__(self):
+        self.strategies = {
+            "trend": TrendFollowingStrategy(),
+            "mean_reversion": MeanReversionStrategy(),
+            "breakout": BreakoutStrategy(),
+            "dip_hunter": DipHunterStrategy(),
+            "momentum_scalp": MomentumScalpStrategy(),
+            "macro_event": MacroEventStrategy(),
+        }
+        self._performance = {}
+        self._lock = threading.Lock()
+
+    def select(self, regime_info, raw_ind, ohlcv, dip_top):
+        regime = regime_info.get("regime", "RANGE")
+        candidates = []
+
+        for name, strat in self.strategies.items():
+            if regime not in strat.suitable_regimes:
+                continue
+            try:
+                entry = strat.should_enter(ohlcv, raw_ind, regime_info, dip_top)
+            except Exception as exc:
+                log.debug("[STRATEGY] %s.should_enter error: %s", name, exc)
+                continue
+            if entry is None:
+                continue
+            direction, confidence, reason = entry
+            score = self._score_candidate(name, confidence)
+            candidates.append({
+                "name": name,
+                "direction": direction,
+                "confidence": confidence,
+                "reason": reason,
+                "score": score,
+            })
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+        best = candidates[0]
+        log.info("[STRATEGY] Selected %s (score %.1f, conf %d) over %d candidates | %s",
+                 best["name"], best["score"], best["confidence"],
+                 len(candidates), best["reason"])
+        return best
+
+    def _score_candidate(self, name, confidence):
+        base = float(confidence)
+        with self._lock:
+            perf = self._performance.get(name)
+        if perf and perf.get("trades", 0) >= self.MIN_TRADES_FOR_WEIGHT:
+            pf = perf.get("profit_factor", 1.0)
+            wr = perf.get("win_rate", 50) / 100.0
+            base *= (0.5 + 0.5 * min(pf, 3.0) / 3.0) * (0.5 + 0.5 * wr)
+        return round(base, 2)
+
+    def get_applicable(self, regime):
+        return [name for name, s in self.strategies.items()
+                if regime in s.suitable_regimes]
+
+    def record_result(self, strategy_name, pnl):
+        with self._lock:
+            if strategy_name not in self._performance:
+                self._performance[strategy_name] = {
+                    "trades": 0, "wins": 0, "losses": 0,
+                    "total_pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0,
+                }
+            p = self._performance[strategy_name]
+            p["trades"] += 1
+            p["total_pnl"] += pnl
+            if pnl > 0:
+                p["wins"] += 1
+                p["gross_win"] += pnl
+            else:
+                p["losses"] += 1
+                p["gross_loss"] += abs(pnl)
+            p["win_rate"] = round(p["wins"] / p["trades"] * 100, 1) if p["trades"] else 0
+            p["profit_factor"] = round(p["gross_win"] / p["gross_loss"], 2) if p["gross_loss"] > 0 else 99.0
+
+    def get_performance(self):
+        with self._lock:
+            out = {}
+            for name, strat in self.strategies.items():
+                perf = dict(self._performance.get(name, {
+                    "trades": 0, "wins": 0, "losses": 0,
+                    "total_pnl": 0.0, "win_rate": 0, "profit_factor": 0,
+                }))
+                perf["description"] = strat.description
+                perf["suitable_regimes"] = list(strat.suitable_regimes)
+                out[name] = perf
+            return out
+
+    def get_strategy(self, name):
+        return self.strategies.get(name)
+
+
+strategy_selector = StrategySelector()
+
+
+# ---------------------------------------------------------------------------
 # Autonomous Trading Engine — Background loop that scans markets and executes
 # trades without human intervention.
 # ---------------------------------------------------------------------------
@@ -3590,7 +4185,8 @@ class AutonomousEngine:
     """
 
     _VALID_MODES = ("paper", "micro_live", "live")
-    _VALID_STRATEGIES = ("auto", "trend", "mean_reversion", "breakout", "dip_hunter")
+    _VALID_STRATEGIES = ("auto", "trend", "mean_reversion", "breakout",
+                         "dip_hunter", "momentum_scalp", "macro_event")
 
     def __init__(self, exchange_mgr, sig_engine, risk_eng,
                  dip_top, regime_det, micro_eng, paper_trd):
@@ -3736,15 +4332,30 @@ class AutonomousEngine:
         risk_check = self._risk_engine.check(signal_info)
         dip_top_info = self._dip_top.analyze(symbol, ohlcv, raw_ind)
 
-        strategy = self._select_strategy(symbol, ohlcv, raw_ind, regime_info, dip_top_info)
-        self._state["active_strategies"][symbol] = strategy
+        strat_pick = self._select_strategy(symbol, ohlcv, raw_ind, regime_info, dip_top_info)
+
+        if isinstance(strat_pick, dict):
+            strat_name = strat_pick["name"]
+            strat_direction = strat_pick["direction"]
+            strat_confidence = strat_pick["confidence"]
+            strat_reason = strat_pick["reason"]
+        else:
+            strat_name = strat_pick if isinstance(strat_pick, str) else "trend"
+            strat_direction = None
+            strat_confidence = 0
+            strat_reason = ""
+
+        self._state["active_strategies"][symbol] = strat_name
 
         self._state["last_signals"][symbol] = {
             "signal": signal_info["direction"],
             "score": signal_info["score"],
             "confidence": signal_info["confidence"],
             "regime": regime,
-            "strategy": strategy,
+            "strategy": strat_name,
+            "strategy_direction": strat_direction,
+            "strategy_confidence": strat_confidence,
+            "strategy_reason": strat_reason,
             "risk_approved": risk_check["approved"],
             "risk_vetoes": risk_check.get("vetoes", []),
             "dip": dip_top_info.get("is_dip", False),
@@ -3752,30 +4363,57 @@ class AutonomousEngine:
             "time": datetime.now(timezone.utc).isoformat(),
         }
 
-        if self._should_trade(signal_info, regime_info, risk_check, dip_top_info):
+        if self._should_trade(signal_info, regime_info, risk_check, dip_top_info,
+                              strat_pick):
             current_price = ohlcv[-1]["close"]
-            direction = "long" if signal_info["score"] > 0 else "short"
+
+            if strat_direction:
+                direction = strat_direction
+            else:
+                direction = "long" if signal_info["score"] > 0 else "short"
+
+            strat_obj = strategy_selector.get_strategy(strat_name)
+            leverage = 1
+            if strat_obj:
+                leverage = strat_obj.get_leverage(strat_confidence or signal_info["confidence"],
+                                                  regime)
+                exit_conds = strat_obj.get_exit_conditions(current_price, direction, raw_ind)
+            else:
+                exit_conds = {"take_profit": 0, "stop_loss": 0, "trailing_pct": 0}
+
             balance = self._get_available_balance()
             size = self._calculate_position_size(signal_info, balance)
 
             if size > 0:
                 self._execute_trade(symbol, direction, size, current_price,
-                                    signal_info, strategy)
+                                    signal_info, strat_name,
+                                    leverage=leverage, exit_conditions=exit_conds)
 
     # ----- decision logic ---------------------------------------------------
 
-    def _should_trade(self, signal, regime_info, risk_check, dip_top_info):
+    def _should_trade(self, signal, regime_info, risk_check, dip_top_info,
+                      strat_pick=None):
         if not risk_check.get("approved", False):
             return False
 
         score = abs(signal.get("score", 0))
         confidence = signal.get("confidence", 0)
 
-        if score < self._config["min_signal_score"]:
-            return False
-        if confidence < self._config["min_confidence"]:
-            return False
-        if signal.get("direction") == "NEUTRAL":
+        has_strategy_entry = isinstance(strat_pick, dict) and strat_pick.get("direction")
+
+        if has_strategy_entry:
+            strat_conf = strat_pick.get("confidence", 0)
+            if strat_conf >= self._config["min_confidence"] and score >= self._config["min_signal_score"] * 0.6:
+                pass
+            elif score < self._config["min_signal_score"]:
+                return False
+        else:
+            if score < self._config["min_signal_score"]:
+                return False
+            if confidence < self._config["min_confidence"]:
+                return False
+
+        if signal.get("direction") == "NEUTRAL" and not has_strategy_entry:
             return False
 
         open_positions = self._get_open_position_count()
@@ -3793,49 +4431,20 @@ class AutonomousEngine:
     def _select_strategy(self, symbol, ohlcv, raw_ind, regime_info, dip_top_info):
         forced = self._config["strategy"]
         if forced != "auto":
+            strat_obj = strategy_selector.get_strategy(forced)
+            if strat_obj:
+                try:
+                    entry = strat_obj.should_enter(ohlcv, raw_ind, regime_info, dip_top_info)
+                    if entry:
+                        d, c, r = entry
+                        return {"name": forced, "direction": d, "confidence": c, "reason": r}
+                except Exception as exc:
+                    log.debug("[BOT] Forced strategy %s error: %s", forced, exc)
             return forced
 
-        regime = regime_info.get("regime", "RANGE")
-        adx_data = raw_ind.get("adx", {})
-        adx_vals = adx_data.get("adx", [])
-        last_adx = None
-        for v in reversed(adx_vals):
-            if v is not None:
-                last_adx = v
-                break
-
-        bb = raw_ind.get("bb", {})
-        upper_vals = bb.get("upper", [])
-        lower_vals = bb.get("lower", [])
-        middle_vals = bb.get("middle", [])
-        bb_width = 0.04
-        if upper_vals and lower_vals and middle_vals:
-            u = self._last_valid(upper_vals)
-            l = self._last_valid(lower_vals)
-            m = self._last_valid(middle_vals)
-            if u and l and m and m > 0:
-                bb_width = (u - l) / m
-
-        volumes = raw_ind.get("volumes", [])
-        vol_spike = False
-        if len(volumes) >= 21:
-            recent = volumes[-1]
-            avg_vol = sum(volumes[-21:-1]) / 20
-            if avg_vol > 0 and recent > avg_vol * 2:
-                vol_spike = True
-
-        dip_score = dip_top_info.get("confluence", 0)
-        if isinstance(dip_score, dict):
-            dip_score = dip_score.get("score", 0)
-
-        if regime in ("BULL", "BEAR") and last_adx is not None and last_adx > 25:
-            return "trend"
-        if regime == "RANGE" and bb_width < 0.04:
-            return "mean_reversion"
-        if regime == "BEAR" and dip_score > 70:
-            return "dip_hunter"
-        if vol_spike:
-            return "breakout"
+        pick = strategy_selector.select(regime_info, raw_ind, ohlcv, dip_top_info)
+        if pick:
+            return pick
         return "trend"
 
     def _calculate_position_size(self, signal, balance):
@@ -3873,10 +4482,14 @@ class AutonomousEngine:
 
     # ----- execution --------------------------------------------------------
 
-    def _execute_trade(self, symbol, direction, size_usd, price, signal_info, strategy):
+    def _execute_trade(self, symbol, direction, size_usd, price, signal_info,
+                       strategy, leverage=1, exit_conditions=None):
         mode = self._config["mode"]
-        log.info("[BOT] Executing | %s %s %s | $%.2f @%.2f | strategy=%s | mode=%s",
-                 direction.upper(), symbol, mode, size_usd, price, strategy, mode)
+        exit_conditions = exit_conditions or {}
+        tp = exit_conditions.get("take_profit")
+        sl = exit_conditions.get("stop_loss")
+        log.info("[BOT] Executing | %s %s %s | $%.2f @%.2f | strategy=%s | lev=%dx | mode=%s",
+                 direction.upper(), symbol, mode, size_usd, price, strategy, leverage, mode)
 
         trade_record = {
             "symbol": symbol,
@@ -3884,6 +4497,10 @@ class AutonomousEngine:
             "size_usd": size_usd,
             "price": price,
             "strategy": strategy,
+            "leverage": leverage,
+            "take_profit": tp,
+            "stop_loss": sl,
+            "trailing_pct": exit_conditions.get("trailing_pct", 0),
             "signal_score": signal_info.get("score", 0),
             "signal_confidence": signal_info.get("confidence", 0),
             "regime": signal_info.get("regime", ""),
@@ -3896,7 +4513,7 @@ class AutonomousEngine:
             if mode == "paper":
                 quantity = size_usd
                 result = self._paper.execute(symbol, direction, quantity, price,
-                                             leverage=1)
+                                             leverage=leverage)
                 trade_record["result"] = result
 
             elif mode in ("micro_live", "live"):
@@ -3910,11 +4527,8 @@ class AutonomousEngine:
                     log.warning("[BOT] No exchange adapter available")
                 else:
                     ccxt_side = "buy" if direction == "long" else "sell"
-                    leverage = 1
-                    if mode == "micro_live":
-                        leverage = min(5, 20)
                     result = adapter.place_order(symbol, ccxt_side, "market",
-                                                 size_usd, None, leverage)
+                                                 size_usd, None, leverage, tp, sl)
                     trade_record["result"] = result
 
             self._state["trades_today"] += 1
@@ -3960,6 +4574,7 @@ class AutonomousEngine:
                 symbol = pos.get("symbol", "")
                 entry = pos.get("entry_price", 0)
                 side = pos.get("side", "long")
+                trade_id = pos.get("id")
                 if not symbol or entry <= 0:
                     continue
 
@@ -3976,31 +4591,69 @@ class AutonomousEngine:
                 else:
                     pnl_pct = (entry - current) / entry * 100
 
+                trade_meta = self._find_trade_meta(trade_id, symbol)
+                tp = trade_meta.get("take_profit")
+                sl = trade_meta.get("stop_loss")
+                trailing = trade_meta.get("trailing_pct", 0)
+                strat_name = trade_meta.get("strategy", "")
+
                 should_close = False
                 close_reason = ""
 
-                if pnl_pct <= -3.0:
+                if sl and side == "long" and current <= sl:
                     should_close = True
-                    close_reason = f"Stop loss hit ({pnl_pct:.1f}%)"
-                elif pnl_pct >= 5.0:
+                    close_reason = f"SL hit @{sl:.2f} ({pnl_pct:.1f}%)"
+                elif sl and side == "short" and current >= sl:
                     should_close = True
-                    close_reason = f"Take profit hit ({pnl_pct:.1f}%)"
-                elif pnl_pct <= -1.5 and self._state.get("trades_today", 0) > 5:
+                    close_reason = f"SL hit @{sl:.2f} ({pnl_pct:.1f}%)"
+                elif tp and side == "long" and current >= tp:
                     should_close = True
-                    close_reason = f"Tighten stop after many trades ({pnl_pct:.1f}%)"
+                    close_reason = f"TP hit @{tp:.2f} ({pnl_pct:.1f}%)"
+                elif tp and side == "short" and current <= tp:
+                    should_close = True
+                    close_reason = f"TP hit @{tp:.2f} ({pnl_pct:.1f}%)"
+                elif pnl_pct <= -3.0:
+                    should_close = True
+                    close_reason = f"Default SL ({pnl_pct:.1f}%)"
+                elif pnl_pct >= 5.0 and not tp:
+                    should_close = True
+                    close_reason = f"Default TP ({pnl_pct:.1f}%)"
+
+                if not should_close and trailing > 0 and pnl_pct > trailing:
+                    hwm_key = f"_hwm_{trade_id}"
+                    hwm = self._state.get(hwm_key, pnl_pct)
+                    if pnl_pct > hwm:
+                        self._state[hwm_key] = pnl_pct
+                        hwm = pnl_pct
+                    if hwm - pnl_pct >= trailing:
+                        should_close = True
+                        close_reason = f"Trailing stop ({trailing}%), HWM {hwm:.1f}% → {pnl_pct:.1f}%"
 
                 if should_close:
-                    result = self._paper.close(pos["id"], current)
+                    result = self._paper.close(trade_id, current)
                     pnl = result.get("pnl", 0)
                     self._state["daily_pnl"] += pnl
                     if pnl < 0:
                         self._state["last_loss_time"] = time.time()
-                    log.info("[BOT] Closed position | %s %s | pnl=%.4f | %s",
-                             side, symbol, pnl, close_reason)
+                    if strat_name:
+                        strategy_selector.record_result(strat_name, pnl)
+                    log.info("[BOT] Closed position | %s %s | pnl=%.4f | %s | strategy=%s",
+                             side, symbol, pnl, close_reason, strat_name)
 
             except Exception as exc:
                 log.warning("[BOT] Position mgmt error for %s: %s",
                             pos.get("symbol", "?"), exc)
+
+    def _find_trade_meta(self, trade_id, symbol):
+        with self._lock:
+            for t in reversed(self._trade_log):
+                if t.get("symbol") == symbol:
+                    result = t.get("result")
+                    if isinstance(result, dict) and result.get("trade_id") == trade_id:
+                        return t
+                    if isinstance(result, dict) and result.get("success"):
+                        return t
+        return {}
 
     # ----- daily limits & cooldown ------------------------------------------
 
@@ -6825,8 +7478,47 @@ def serve_static(path):
 
 
 # ===========================================================================
-# API ROUTES — Autonomous Bot (4 routes)
+# API ROUTES — Autonomous Bot (6 routes)
 # ===========================================================================
+
+@app.route("/api/bot/strategies")
+@rate_limit("bot")
+def api_bot_strategies():
+    perf = strategy_selector.get_performance()
+    regime_info = None
+    try:
+        raw = fetch_binance("/api/v3/klines",
+                            {"symbol": "BTCUSDT", "interval": "1h", "limit": 200}, ttl=30)
+        if raw:
+            ohlcv = transform_klines(raw)
+            if len(ohlcv) >= 50:
+                indicators = compute_all_indicators(ohlcv)
+                regime_info = regime_detector.detect(ohlcv, indicators["_raw"])
+    except Exception:
+        pass
+    current_regime = regime_info.get("regime", "RANGE") if regime_info else "RANGE"
+    applicable = strategy_selector.get_applicable(current_regime)
+    return jsonify({
+        "strategies": perf,
+        "current_regime": current_regime,
+        "applicable_now": applicable,
+    })
+
+
+@app.route("/api/bot/strategy", methods=["POST"])
+@rate_limit("bot")
+def api_bot_strategy_override():
+    denied = require_auth()
+    if denied:
+        return denied
+    body = request.get_json(force=True)
+    name = body.get("strategy", "auto")
+    valid = ("auto",) + tuple(strategy_selector.strategies.keys())
+    if name not in valid:
+        return jsonify({"error": f"Unknown strategy: {name}", "valid": list(valid)}), 400
+    result = auto_engine.update_config({"strategy": name})
+    log_audit("bot_strategy_override", f"strategy={name}")
+    return jsonify({"success": True, "strategy": name, "config": result.get("config", {})})
 
 @app.route("/api/bot/start", methods=["POST"])
 @rate_limit("bot")

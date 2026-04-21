@@ -3803,3 +3803,57 @@ AutonomousEngine._loop()
 - [x] py_compile verified ✓
 
 ---
+
+## 12. MULTI-STRATEGY FRAMEWORK
+
+### 12.0 Overview
+
+Modular strategy framework with 6 independent strategies, each with its own
+entry/exit rules, leverage recommendations, and regime suitability. An adaptive
+StrategySelector scores all applicable strategies and picks the best one,
+weighted by historical performance.
+
+### 12.1 Strategy Classes (server.py L:3582-4067)
+
+| Strategy | Class | Regimes | Entry Logic | Leverage |
+|----------|-------|---------|-------------|----------|
+| trend | TrendFollowingStrategy | BULL, BEAR | EMA9>21>50 align + ADX>25 + RSI range + MACD hist direction | 3-5x |
+| mean_reversion | MeanReversionStrategy | RANGE | Price outside BB + RSI extreme + StochRSI extreme | 3x |
+| breakout | BreakoutStrategy | RANGE, BULL, BEAR | BB squeeze ≥10 bars + volume 2x spike + ADX rising | 5-8x |
+| dip_hunter | DipHunterStrategy | BULL, BEAR | DipTop confluence ≥70 + RSI divergence/volume climax | 2-3x |
+| momentum_scalp | MomentumScalpStrategy | BULL, BEAR | ADX>30 + RSI extreme + MACD cross + volume spike | 10-15x |
+| macro_event | MacroEventStrategy | All | Post-event directional confirmation + ADX>20 + EMA/MACD alignment | 2-3x |
+
+### 12.2 StrategySelector (server.py L:4068-4170)
+
+- Scores each applicable strategy: base confidence × performance weight
+- Performance weight = f(profit_factor, win_rate) after MIN_TRADES_FOR_WEIGHT (5)
+- Tracks per-strategy: trades, wins, losses, total_pnl, gross_win, gross_loss, win_rate, profit_factor
+- Adaptive: strategies with better track record get higher selection priority
+
+### 12.3 API Routes
+
+| Route | Method | Auth | Description |
+|-------|--------|------|-------------|
+| `/api/bot/strategies` | GET | No | List all strategies + performance + current applicability |
+| `/api/bot/strategy` | POST | Yes | Force a specific strategy override |
+
+### 12.4 Integration with AutonomousEngine
+
+- `_select_strategy()` delegates to `strategy_selector.select()` (or forced strategy)
+- `_scan_symbol()` uses strategy's `should_enter()` for direction/confidence
+- `_execute_trade()` accepts `leverage` and `exit_conditions` from strategy
+- `_manage_open_positions()` uses strategy-defined TP/SL/trailing instead of defaults
+- `_manage_open_positions()` calls `strategy_selector.record_result()` on close
+
+### 12.5 Status: `[FAIT]`
+
+- [x] TradingStrategy base class with _lv() helper
+- [x] 6 strategy implementations with class-level constants (no magic numbers)
+- [x] StrategySelector with adaptive performance weighting
+- [x] AutonomousEngine integration (scan, trade, manage, record)
+- [x] 2 API routes (strategies list, strategy override)
+- [x] Trailing stop with high-water mark tracking
+- [x] py_compile verified ✓
+
+---
