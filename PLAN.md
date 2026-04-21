@@ -3189,14 +3189,14 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 40 | S2.0 | Stockage sécurisé clé Anthropic | `[x]` FAIT | — | 2026-04-21 |
 | 41 | S3.0 | Coffre-fort GMX Wallet | `[x]` FAIT | — | 2026-04-21 |
 | 42 | S4.0 | CORS & Headers HTTP | `[x]` FAIT | — | 2026-04-21 |
-| 43 | S5.0 | Rate Limiting & Anti-brute force | `[ ]` EN ATTENTE | — | — |
+| 43 | S5.0 | Rate Limiting & Anti-brute force | `[x]` FAIT | — | 2026-04-21 |
 | 44 | S6.0 | Blindage du chiffrement | `[ ]` EN ATTENTE | — | — |
 | 45 | S7.0 | Validation entrées & erreurs | `[ ]` EN ATTENTE | — | — |
 | 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[ ]` EN ATTENTE | — | — |
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 4 / 10 étapes terminées**
+**Progression sécurité : 5 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,66 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S5.0 — Rate Limiting & Anti-brute force (Step 43) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S5.1 | Classe `RateLimiter` pure Python (dict IP → timestamps, `threading.Lock`, nettoyage auto toutes les 60s) | `[x]` |
+| S5.2 | Décorateur `@rate_limit(category)` applicable par route, résout `(max_requests, window)` depuis `RATE_LIMITS` dict | `[x]` |
+| S5.3 | Limites par catégorie : `auth=5/min`, `execute=30/min`, `settings=10/min`, `market_data=120/min` | `[x]` |
+| S5.4 | Anti-brute force sur `/api/auth/login` : après 5 échecs → IP bloquée 15 min | `[x]` |
+| S5.5 | Compteur `_login_fails` par IP en mémoire, reset après login réussi via `reset_login_fails()` | `[x]` |
+| S5.6 | Réponse HTTP 429 avec header `Retry-After` (secondes restantes calculées dynamiquement) | `[x]` |
+| S5.7 | Log `"IP blocked for Xds due to brute force"` sans données sensibles (pas de PIN, pas de token) | `[x]` |
+
+**Vulnérabilité corrigée** : H-03 (aucun rate limiting)
+
+**Architecture RateLimiter** :
+```
+RateLimiter (singleton _rate_limiter)
+├── _hits     : {ip:category → [timestamps]}  — sliding window
+├── _blocked  : {ip → unblock_time}           — brute force blocklist
+├── _login_fails : {ip → count}               — failed attempts counter
+│
+├── check(ip, category, max, window) → (ok, wait_seconds)
+├── is_blocked(ip) → bool
+├── block_ip(ip, seconds) — adds to blocklist + log
+├── record_login_fail(ip, max=5, block_s=900) → was_blocked
+├── reset_login_fails(ip) — called on successful login
+└── _cleanup() — auto every 60s, prunes stale entries
+```
+
+**Routes protégées (26 total)** :
+| Catégorie | Limite | Routes |
+|-----------|--------|--------|
+| `auth` | 5/min | `/api/auth/setup`, `/api/auth/login` |
+| `execute` | 30/min | `/api/execute`, `/api/close` |
+| `settings` | 10/min | `/api/settings/anthropic-key` POST/DELETE, `/api/wallet/gmx/setup`, `/api/wallet/gmx` DELETE, `/api/exchanges/add/remove/test`, `/api/killswitch` POST, `/api/jarvis`, `/api/news/summarize` |
+| `market_data` | 120/min | `/api/candles`, `/api/price`, `/api/orderbook`, `/api/trades`, `/api/ticker`, `/api/indicators`, `/api/dip-top`, `/api/whales`, `/api/funding`, `/api/fear-greed`, `/api/sentiment`, `/api/news` |
+
+**Anti-brute force flow** :
+```
+POST /api/auth/login
+  ├── @rate_limit("auth") — max 5 req/min per IP
+  ├── is_blocked(ip)? → 429 "try again later" + Retry-After
+  ├── verify_pin(pin) fails?
+  │   ├── record_login_fail(ip)
+  │   ├── count >= 5? → block_ip(ip, 900s) → 429
+  │   └── count < 5? → 401 "Invalid PIN — X attempt(s) remaining"
+  └── verify_pin(pin) OK?
+      └── reset_login_fails(ip) → token
+```
+
+**Tests passés** :
+- `python3 -m py_compile server.py` → OK ✓
+- 26 routes décorées avec `@rate_limit` ✓
+- Login brute force : 5 échecs → IP bloquée 15 min ✓
+- Login succès → compteur reset ✓
+- Réponse 429 inclut `Retry-After` header ✓
+- Logs sécurisés (IP uniquement, pas de PIN/token) ✓
 
 ---
 

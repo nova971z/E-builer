@@ -24,6 +24,7 @@ import subprocess
 import time
 import threading
 from abc import ABC, abstractmethod
+from functools import wraps
 from base64 import b64encode, b64decode
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -785,6 +786,117 @@ def require_auth():
     if not validate_session(token):
         return jsonify({"error": "Authentication required", "auth_required": True}), 401
     return None
+
+
+# ---------------------------------------------------------------------------
+# Rate Limiting & Anti-brute force
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Pure-Python in-memory rate limiter. Tracks request timestamps per IP."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._hits = {}          # {bucket_key: [timestamp, ...]}
+        self._blocked = {}       # {ip: unblock_timestamp}  (brute force)
+        self._login_fails = {}   # {ip: fail_count}
+        self._last_cleanup = time.time()
+
+    def _cleanup(self):
+        now = time.time()
+        if now - self._last_cleanup < 60:
+            return
+        self._last_cleanup = now
+        cutoff = now - 120
+        stale = [k for k, hits in self._hits.items() if hits and hits[-1] < cutoff]
+        for k in stale:
+            del self._hits[k]
+        expired = [ip for ip, t in self._blocked.items() if t < now]
+        for ip in expired:
+            del self._blocked[ip]
+
+    def is_blocked(self, ip):
+        with self._lock:
+            t = self._blocked.get(ip)
+            if t and t > time.time():
+                return True
+            if t:
+                self._blocked.pop(ip, None)
+            return False
+
+    def block_ip(self, ip, seconds=900):
+        with self._lock:
+            self._blocked[ip] = time.time() + seconds
+        log.warning("IP blocked for %ds due to brute force", seconds)
+
+    def check(self, ip, category, max_requests, window):
+        with self._lock:
+            self._cleanup()
+            key = f"{ip}:{category}"
+            now = time.time()
+            hits = self._hits.get(key, [])
+            cutoff = now - window
+            hits = [t for t in hits if t > cutoff]
+            if len(hits) >= max_requests:
+                self._hits[key] = hits
+                return False, (window - (now - hits[0])) if hits else window
+            hits.append(now)
+            self._hits[key] = hits
+            return True, 0
+
+    def record_login_fail(self, ip, max_fails=5, block_seconds=900):
+        with self._lock:
+            self._login_fails[ip] = self._login_fails.get(ip, 0) + 1
+            count = self._login_fails[ip]
+        if count >= max_fails:
+            self.block_ip(ip, block_seconds)
+            with self._lock:
+                self._login_fails.pop(ip, None)
+            return True
+        return False
+
+    def reset_login_fails(self, ip):
+        with self._lock:
+            self._login_fails.pop(ip, None)
+
+    def get_login_fails(self, ip):
+        with self._lock:
+            return self._login_fails.get(ip, 0)
+
+
+_rate_limiter = RateLimiter()
+
+RATE_LIMITS = {
+    "auth":        (5,   60),
+    "execute":     (30,  60),
+    "settings":    (10,  60),
+    "market_data": (120, 60),
+}
+
+
+def rate_limit(category):
+    """Decorator: enforce rate limit for a route category."""
+    max_req, window = RATE_LIMITS.get(category, (60, 60))
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            ip = request.remote_addr or "unknown"
+            if _rate_limiter.is_blocked(ip):
+                retry = int(_rate_limiter._blocked.get(ip, time.time()) - time.time())
+                resp = jsonify({"error": "Too many requests — IP temporarily blocked", "retry_after": max(retry, 1)})
+                resp.status_code = 429
+                resp.headers["Retry-After"] = str(max(retry, 1))
+                return resp
+            ok, wait = _rate_limiter.check(ip, category, max_req, window)
+            if not ok:
+                retry = int(math.ceil(wait))
+                resp = jsonify({"error": "Too many requests", "retry_after": retry})
+                resp.status_code = 429
+                resp.headers["Retry-After"] = str(retry)
+                return resp
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -3323,6 +3435,7 @@ paper_trader = PaperTrader()
 # ===========================================================================
 
 @app.route("/api/candles")
+@rate_limit("market_data")
 def api_candles():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     interval = request.args.get("interval", "1h")
@@ -3364,6 +3477,7 @@ def api_candles():
 
 
 @app.route("/api/price")
+@rate_limit("market_data")
 def api_price():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     sym_info = SUPPORTED_SYMBOLS.get(symbol)
@@ -3393,6 +3507,7 @@ def api_price():
 
 
 @app.route("/api/orderbook")
+@rate_limit("market_data")
 def api_orderbook():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     limit = min(int(request.args.get("limit", 20)), 100)
@@ -3431,6 +3546,7 @@ def api_orderbook():
 
 
 @app.route("/api/trades")
+@rate_limit("market_data")
 def api_trades():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     limit = min(int(request.args.get("limit", 30)), 100)
@@ -3458,6 +3574,7 @@ def api_trades():
 
 
 @app.route("/api/ticker")
+@rate_limit("market_data")
 def api_ticker():
     pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
     result = []
@@ -3536,6 +3653,7 @@ def api_markets():
 # ===========================================================================
 
 @app.route("/api/indicators")
+@rate_limit("market_data")
 def api_indicators():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     interval = request.args.get("interval", "1h")
@@ -3573,6 +3691,7 @@ def api_indicators():
 
 
 @app.route("/api/dip-top")
+@rate_limit("market_data")
 def api_dip_top():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     interval = request.args.get("interval", "1h")
@@ -3597,6 +3716,7 @@ def api_dip_top():
 
 
 @app.route("/api/whales")
+@rate_limit("market_data")
 def api_whales():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
     min_value_usd = float(request.args.get("min_value", 100000))
@@ -3676,6 +3796,7 @@ def api_whales():
 # ===========================================================================
 
 @app.route("/api/funding")
+@rate_limit("market_data")
 def api_funding():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
 
@@ -3724,6 +3845,7 @@ def api_funding():
 
 
 @app.route("/api/fear-greed")
+@rate_limit("market_data")
 def api_fear_greed():
     cache_key = "fear_greed"
     cached = cache.get(cache_key, ttl=300)
@@ -3773,6 +3895,7 @@ def api_fear_greed():
 
 
 @app.route("/api/sentiment")
+@rate_limit("market_data")
 def api_sentiment():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
 
@@ -3806,6 +3929,7 @@ def api_sentiment():
 
 
 @app.route("/api/news")
+@rate_limit("market_data")
 def api_news():
     cache_key = "rss_news"
     cached = cache.get(cache_key, ttl=120)
@@ -3870,6 +3994,7 @@ def _extract_tag(text, tag):
 
 
 @app.route("/api/news/summarize", methods=["POST"])
+@rate_limit("settings")
 def api_news_summarize():
     ak = get_anthropic_key()
     if not ak:
@@ -3962,6 +4087,7 @@ Signe tes messages "— J.A.R.V.I.S."
 
 
 @app.route("/api/jarvis", methods=["POST"])
+@rate_limit("settings")
 def api_jarvis():
     ak = get_anthropic_key()
     if not ak:
@@ -4022,6 +4148,7 @@ def api_jarvis():
 # ===========================================================================
 
 @app.route("/api/execute", methods=["POST"])
+@rate_limit("execute")
 def api_execute():
     denied = require_auth()
     if denied: return denied
@@ -4232,6 +4359,7 @@ def api_balance():
 
 
 @app.route("/api/close", methods=["POST"])
+@rate_limit("execute")
 def api_close():
     denied = require_auth()
     if denied: return denied
@@ -4286,6 +4414,7 @@ def api_auth_status():
 
 
 @app.route("/api/auth/setup", methods=["POST"])
+@rate_limit("auth")
 def api_auth_setup():
     if is_pin_configured():
         return jsonify({"error": "PIN already configured. Use change-pin to modify."}), 400
@@ -4309,19 +4438,36 @@ def api_auth_setup():
 
 
 @app.route("/api/auth/login", methods=["POST"])
+@rate_limit("auth")
 def api_auth_login():
+    ip = request.remote_addr or "unknown"
+    if _rate_limiter.is_blocked(ip):
+        retry = int(_rate_limiter._blocked.get(ip, time.time()) - time.time())
+        resp = jsonify({"error": "Too many failed attempts — try again later", "retry_after": max(retry, 1)})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(max(retry, 1))
+        return resp
     if not is_pin_configured():
         return jsonify({"error": "No PIN configured yet. Use /api/auth/setup first."}), 400
     body = request.get_json(force=True)
     pin = body.get("pin", "").strip()
 
     if not verify_pin(pin):
-        log.warning("Failed login attempt from %s", request.remote_addr)
-        return jsonify({"error": "Invalid PIN"}), 401
+        blocked = _rate_limiter.record_login_fail(ip, max_fails=5, block_seconds=900)
+        fails = _rate_limiter.get_login_fails(ip)
+        remaining = max(0, 5 - fails) if not blocked else 0
+        log.warning("Failed login attempt from %s (%d remaining)", ip, remaining)
+        msg = "Invalid PIN"
+        if blocked:
+            msg = "Too many failed attempts — IP blocked for 15 minutes"
+        elif remaining <= 2:
+            msg = f"Invalid PIN — {remaining} attempt(s) remaining"
+        return jsonify({"error": msg}), (429 if blocked else 401)
 
+    _rate_limiter.reset_login_fails(ip)
     cleanup_expired_sessions()
-    token = create_session(request.remote_addr)
-    log.info("Login success from %s", request.remote_addr)
+    token = create_session(ip)
+    log.info("Login success from %s", ip)
     return jsonify({"success": True, "token": token})
 
 
@@ -4342,6 +4488,7 @@ def api_auth_logout():
 # ===========================================================================
 
 @app.route("/api/settings/anthropic-key", methods=["POST"])
+@rate_limit("settings")
 def api_set_anthropic_key():
     denied = require_auth()
     if denied: return denied
@@ -4380,6 +4527,7 @@ def api_anthropic_key_status():
 
 
 @app.route("/api/settings/anthropic-key", methods=["DELETE"])
+@rate_limit("settings")
 def api_delete_anthropic_key():
     denied = require_auth()
     if denied: return denied
@@ -4396,6 +4544,7 @@ def api_delete_anthropic_key():
 # ===========================================================================
 
 @app.route("/api/wallet/gmx/setup", methods=["POST"])
+@rate_limit("settings")
 def api_gmx_wallet_setup():
     denied = require_auth()
     if denied: return denied
@@ -4443,6 +4592,7 @@ def api_gmx_wallet_status():
 
 
 @app.route("/api/wallet/gmx", methods=["DELETE"])
+@rate_limit("settings")
 def api_gmx_wallet_delete():
     denied = require_auth()
     if denied: return denied
@@ -4467,6 +4617,7 @@ def api_gmx_wallet_delete():
 # ===========================================================================
 
 @app.route("/api/exchanges/add", methods=["POST"])
+@rate_limit("settings")
 def api_exchanges_add():
     denied = require_auth()
     if denied: return denied
@@ -4494,6 +4645,7 @@ def api_exchanges_list():
 
 
 @app.route("/api/exchanges/remove", methods=["DELETE"])
+@rate_limit("settings")
 def api_exchanges_remove():
     denied = require_auth()
     if denied: return denied
@@ -4505,6 +4657,7 @@ def api_exchanges_remove():
 
 
 @app.route("/api/exchanges/test", methods=["POST"])
+@rate_limit("settings")
 def api_exchanges_test():
     denied = require_auth()
     if denied: return denied
@@ -4980,6 +5133,7 @@ def api_drawdown():
 
 
 @app.route("/api/killswitch", methods=["POST"])
+@rate_limit("settings")
 def api_killswitch():
     denied = require_auth()
     if denied: return denied
