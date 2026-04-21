@@ -886,6 +886,7 @@ button:active { opacity: 0.7; }
     display: flex;
     flex-direction: column;
     gap: 8px;
+    position: relative;
 }
 
 .of-tabs {
@@ -997,19 +998,106 @@ button:active { opacity: 0.7; }
     height: 100%;
 }
 
-.of-pct-btns {
+.of-avail {
     display: flex;
-    gap: 3px;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 2px;
 }
-.of-pct-btns button {
-    flex: 1;
-    padding: 2px;
+.of-avail span:last-child {
+    font-family: var(--font-mono);
+    color: var(--text);
+    font-weight: 500;
+}
+
+.of-unit-selector {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 8px;
+    font-size: 10px;
+    color: var(--yellow);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.of-unit-selector:hover { color: var(--text); }
+.of-unit-arrow { font-size: 8px; }
+
+.of-unit-dropdown {
+    display: none;
+    position: absolute;
+    right: 12px;
     background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    overflow: hidden;
+    min-width: 80px;
+}
+.of-unit-dropdown.open { display: block; }
+.of-unit-option {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+.of-unit-option:hover { background: var(--surface-3); color: var(--text); }
+
+.of-slider-section {
+    padding: 4px 2px 0;
+}
+.of-slider-section input[type="range"] {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    background: linear-gradient(to right, var(--yellow) 0%, var(--surface-3) 0%);
     border-radius: 2px;
+    outline: none;
+    margin: 0;
+}
+.of-slider-section input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--yellow);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 4px rgba(0,0,0,0.3);
+}
+.of-slider-marks {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0 0;
+}
+.of-slider-marks span {
     font-size: 9px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 2px;
+}
+.of-slider-marks span:hover { color: var(--yellow); background: rgba(255,255,255,0.04); }
+
+.of-info-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 2px;
+}
+.of-info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.of-info-row span:last-child {
+    font-family: var(--font-mono);
     color: var(--text-dim);
 }
-.of-pct-btns button:hover { color: var(--text); }
 
 .of-tpsl {
     display: flex;
@@ -2731,6 +2819,10 @@ button:active { opacity: 0.7; }
             <div class="sd-section">
                 <div class="sd-section-title">Order</div>
                 <div class="order-form">
+                    <div class="of-avail">
+                        <span>Available</span>
+                        <span id="of-avail-bal">0.00 USDT</span>
+                    </div>
                     <div class="of-tabs">
                         <button class="active" onclick="switchOrderTab('open')">Open</button>
                         <button onclick="switchOrderTab('close')">Close</button>
@@ -2749,7 +2841,7 @@ button:active { opacity: 0.7; }
                         <button class="active" onclick="switchOrderType('limit')">Limit</button>
                         <button onclick="switchOrderType('market')">Market</button>
                     </div>
-                    <div class="of-field">
+                    <div class="of-field" id="price-field-row">
                         <label>Price</label>
                         <button onclick="adjustField('price',-1)">&#8722;</button>
                         <input type="text" id="order-price" placeholder="0.00">
@@ -2759,24 +2851,35 @@ button:active { opacity: 0.7; }
                     <div class="of-field">
                         <label>Qty</label>
                         <button onclick="adjustField('qty',-1)">&#8722;</button>
-                        <input type="text" id="order-qty" placeholder="0.000">
+                        <input type="text" id="order-qty" placeholder="0.000" oninput="updateOrderInfo()">
                         <button onclick="adjustField('qty',1)">+</button>
-                        <span class="unit" id="qty-unit">BTC</span>
+                        <div class="of-unit-selector" id="qty-unit-selector" onclick="toggleUnitDropdown()">
+                            <span id="qty-unit-label">BTC</span>
+                            <span class="of-unit-arrow">&#9662;</span>
+                        </div>
                     </div>
-                    <div class="of-pct-btns">
-                        <button onclick="setQtyPct(10)">10%</button>
-                        <button onclick="setQtyPct(25)">25%</button>
-                        <button onclick="setQtyPct(50)">50%</button>
-                        <button onclick="setQtyPct(75)">75%</button>
-                        <button onclick="setQtyPct(100)">100%</button>
+                    <div class="of-unit-dropdown" id="qty-unit-dropdown">
+                        <div class="of-unit-option" onclick="selectQtyUnit('coin')"><span id="unit-opt-coin">BTC</span></div>
+                        <div class="of-unit-option" onclick="selectQtyUnit('usdt')"><span>USDT</span></div>
+                    </div>
+                    <div class="of-slider-section">
+                        <input type="range" id="qty-pct-slider" min="0" max="100" value="0" step="1" oninput="onPctSlider(this.value)">
+                        <div class="of-slider-marks">
+                            <span onclick="onPctSlider(0)">0%</span>
+                            <span onclick="onPctSlider(25)">25%</span>
+                            <span onclick="onPctSlider(50)">50%</span>
+                            <span onclick="onPctSlider(75)">75%</span>
+                            <span onclick="onPctSlider(100)">100%</span>
+                        </div>
                     </div>
                     <div class="of-tpsl">
                         <div class="of-field"><label>TP</label><input type="text" id="order-tp" placeholder="--"></div>
                         <div class="of-field"><label>SL</label><input type="text" id="order-sl" placeholder="--"></div>
                     </div>
-                    <div class="of-info">
-                        <span>Cost: <span id="order-cost">--</span></span>
-                        <span>Fee: <span id="order-fee">--</span></span>
+                    <div class="of-info-grid">
+                        <div class="of-info-row"><span>Cost</span><span id="order-cost">-- USDT</span></div>
+                        <div class="of-info-row"><span>Max</span><span id="order-max">-- <span id="order-max-unit">BTC</span></span></div>
+                        <div class="of-info-row"><span>Fee</span><span id="order-fee">~-- USDT</span></div>
                     </div>
                     <div class="of-actions">
                         <button class="btn-long" onclick="executeOrder('LONG')">Long</button>
@@ -3973,8 +4076,8 @@ function changeSymbol(sym) {
         sel.appendChild(opt);
     }
     if (sel) sel.value = sym;
-    var unit = sym.replace('USDT', '').replace('GOLD', 'XAU').replace('SILVER', 'XAG');
-    $('qty-unit').textContent = unit;
+    updateUnitLabels();
+    updateAvailableDisplay();
 
     removeBollinger();
     removeEMA('ema9');
@@ -4499,6 +4602,15 @@ let orderTab = 'open';
 let marginMode = 'isolated';
 let orderType = 'limit';
 let leverage = 10;
+let qtyUnit = 'coin';
+
+function getCurrentPrice() {
+    return obLastPrice || 0;
+}
+
+function getCoinSymbol() {
+    return currentSymbol.replace('USDT', '').replace('BUSD', '').replace('USD', '');
+}
 
 // ========== LEVERAGE SLIDER ==========
 function updateLeverage(val) {
@@ -4519,30 +4631,31 @@ function switchOrderType(type) {
     document.querySelectorAll('.of-type-tabs button').forEach(function(b) { b.classList.remove('active'); });
     event.target.classList.add('active');
 
-    const priceField = $('order-price');
+    var priceRow = $('price-field-row');
+    var priceField = $('order-price');
     if (type === 'market') {
         priceField.value = '';
-        priceField.placeholder = 'Market';
+        priceField.placeholder = 'Market Price';
         priceField.disabled = true;
+        if (priceRow) priceRow.style.opacity = '0.5';
     } else {
         priceField.disabled = false;
         priceField.placeholder = '0.00';
+        if (priceRow) priceRow.style.opacity = '1';
     }
 
-    // Hide all advanced fields
     document.querySelectorAll('.of-advanced').forEach(function(el) { el.classList.remove('visible'); });
-
-    // Show relevant fields
     if (type === 'oco') { var f = $('oco-fields'); if (f) f.classList.add('visible'); }
     else if (type === 'trailing') { var f = $('trailing-fields'); if (f) f.classList.add('visible'); }
     else if (type === 'iceberg') { var f = $('iceberg-fields'); if (f) f.classList.add('visible'); }
     else if (type === 'dca') { var f = $('dca-fields'); if (f) f.classList.add('visible'); updateDCAPreview(); }
+    updateOrderInfo();
 }
 
 // ========== MARGIN MODE ==========
 (function() {
-    const isoBtn = $('btn-isolated');
-    const crossBtn = $('btn-cross');
+    var isoBtn = $('btn-isolated');
+    var crossBtn = $('btn-cross');
     if (isoBtn) isoBtn.addEventListener('click', function() {
         marginMode = 'isolated';
         isoBtn.classList.add('active');
@@ -4555,108 +4668,237 @@ function switchOrderType(type) {
     });
 })();
 
+// ========== UNIT SELECTOR ==========
+function toggleUnitDropdown() {
+    var dd = $('qty-unit-dropdown');
+    if (dd) dd.classList.toggle('open');
+}
+
+function selectQtyUnit(unit) {
+    qtyUnit = unit;
+    var coin = getCoinSymbol();
+    var label = $('qty-unit-label');
+    if (label) label.textContent = unit === 'coin' ? coin : 'USDT';
+
+    var dd = $('qty-unit-dropdown');
+    if (dd) dd.classList.remove('open');
+
+    var optCoin = $('unit-opt-coin');
+    if (optCoin) optCoin.textContent = coin;
+
+    var maxUnit = $('order-max-unit');
+    if (maxUnit) maxUnit.textContent = unit === 'coin' ? coin : 'USDT';
+
+    $('order-qty').value = '';
+    $('qty-pct-slider').value = 0;
+    updateSliderTrack(0);
+    updateOrderInfo();
+}
+
+document.addEventListener('click', function(e) {
+    var dd = $('qty-unit-dropdown');
+    var sel = $('qty-unit-selector');
+    if (dd && sel && !sel.contains(e.target) && !dd.contains(e.target)) {
+        dd.classList.remove('open');
+    }
+});
+
+function updateUnitLabels() {
+    var coin = getCoinSymbol();
+    var label = $('qty-unit-label');
+    if (label) label.textContent = qtyUnit === 'coin' ? coin : 'USDT';
+    var optCoin = $('unit-opt-coin');
+    if (optCoin) optCoin.textContent = coin;
+    var maxUnit = $('order-max-unit');
+    if (maxUnit) maxUnit.textContent = qtyUnit === 'coin' ? coin : 'USDT';
+}
+
 // ========== FIELD ADJUSTMENTS ==========
 function adjustField(field, delta) {
-    const input = $(field === 'price' ? 'order-price' : 'order-qty');
+    var input = $(field === 'price' ? 'order-price' : 'order-qty');
     if (!input || input.disabled) return;
-    let val = parseFloat(input.value) || 0;
-    const step = field === 'price' ? getTickSize() : getQtyStep();
+    var val = parseFloat(input.value) || 0;
+    var step = field === 'price' ? getTickSize() : getQtyStep();
     val = Math.max(0, val + delta * step);
     input.value = val.toFixed(field === 'price' ? getPriceDecimals() : getQtyDecimals());
     updateOrderInfo();
 }
 
 function getTickSize() {
-    if (currentSymbol === 'BTCUSDT') return 0.1;
-    if (currentSymbol === 'ETHUSDT') return 0.01;
-    if (currentSymbol === 'GOLD') return 0.1;
-    return 0.0001;
+    var p = getCurrentPrice();
+    if (p > 10000) return 0.1;
+    if (p > 1000) return 0.01;
+    if (p > 10) return 0.001;
+    if (p > 1) return 0.0001;
+    return 0.00001;
 }
 
 function getQtyStep() {
-    if (currentSymbol === 'BTCUSDT') return 0.001;
-    if (currentSymbol === 'ETHUSDT') return 0.01;
-    if (currentSymbol === 'DOGEUSDT') return 1;
-    if (currentSymbol === 'XRPUSDT') return 1;
-    return 0.01;
+    if (qtyUnit === 'usdt') return 1;
+    var p = getCurrentPrice();
+    if (p > 10000) return 0.001;
+    if (p > 1000) return 0.01;
+    if (p > 10) return 0.1;
+    if (p > 1) return 1;
+    return 10;
 }
 
 function getPriceDecimals() {
-    if (currentSymbol === 'BTCUSDT') return 1;
-    if (currentSymbol === 'ETHUSDT') return 2;
-    if (currentSymbol === 'DOGEUSDT') return 5;
-    if (currentSymbol === 'XRPUSDT') return 4;
-    return 2;
+    var p = getCurrentPrice();
+    if (p > 10000) return 1;
+    if (p > 1000) return 2;
+    if (p > 10) return 3;
+    if (p > 1) return 4;
+    return 6;
 }
 
 function getQtyDecimals() {
-    if (currentSymbol === 'BTCUSDT') return 3;
-    if (currentSymbol === 'ETHUSDT') return 2;
-    if (currentSymbol === 'DOGEUSDT') return 0;
-    if (currentSymbol === 'XRPUSDT') return 0;
-    return 3;
+    if (qtyUnit === 'usdt') return 2;
+    var p = getCurrentPrice();
+    if (p > 10000) return 5;
+    if (p > 1000) return 4;
+    if (p > 10) return 2;
+    if (p > 1) return 1;
+    return 0;
 }
 
-// ========== QTY PERCENTAGE BUTTONS ==========
-function setQtyPct(pct) {
-    const available = parseFloat($('w-available').textContent) || 0;
-    const price = parseFloat($('order-price').value) || obLastPrice || 0;
+// ========== PERCENTAGE SLIDER ==========
+function updateSliderTrack(val) {
+    var slider = $('qty-pct-slider');
+    if (slider) {
+        slider.style.background = 'linear-gradient(to right, var(--yellow) ' + val + '%, var(--surface-3) ' + val + '%)';
+    }
+}
+
+function onPctSlider(val) {
+    val = parseInt(val, 10);
+    var slider = $('qty-pct-slider');
+    if (slider) slider.value = val;
+    updateSliderTrack(val);
+
+    var available = getAvailableBalance();
+    var price = getEffectivePrice();
     if (!price || !available) return;
 
-    const margin = (available * pct / 100);
-    const notional = margin * leverage;
-    const qty = notional / price;
-    $('order-qty').value = qty.toFixed(getQtyDecimals());
+    var margin = available * val / 100;
+    var notional = margin * leverage;
+
+    if (qtyUnit === 'coin') {
+        var qty = notional / price;
+        $('order-qty').value = qty > 0 ? qty.toFixed(getQtyDecimals()) : '';
+    } else {
+        $('order-qty').value = notional > 0 ? notional.toFixed(2) : '';
+    }
     updateOrderInfo();
 }
 
-// ========== ORDER INFO (cost / fee) ==========
-function updateOrderInfo() {
-    const price = parseFloat($('order-price').value) || obLastPrice || 0;
-    const qty = parseFloat($('order-qty').value) || 0;
-    const notional = price * qty;
-    const cost = notional / leverage;
-    const fee = notional * 0.0004;
-
-    $('order-cost').textContent = cost > 0 ? fmt(cost, 2) + ' USDT' : '--';
-    $('order-fee').textContent = fee > 0 ? '~' + fmt(fee, 2) + ' USDT' : '--';
+function getAvailableBalance() {
+    var el = $('w-available');
+    if (el) {
+        var txt = el.textContent.replace(/[^0-9.]/g, '');
+        var val = parseFloat(txt);
+        if (val > 0) return val;
+    }
+    return 100;
 }
 
-// Listen for input changes
+function getEffectivePrice() {
+    var p = parseFloat($('order-price').value);
+    if (p && p > 0) return p;
+    return getCurrentPrice();
+}
+
+function updateAvailableDisplay() {
+    var bal = getAvailableBalance();
+    var el = $('of-avail-bal');
+    if (el) el.textContent = fmt(bal, 2) + ' USDT';
+}
+
+// ========== ORDER INFO ==========
+function updateOrderInfo() {
+    var price = getEffectivePrice();
+    var rawQty = parseFloat($('order-qty').value) || 0;
+    var coinQty, notional;
+
+    if (qtyUnit === 'usdt') {
+        notional = rawQty;
+        coinQty = price > 0 ? rawQty / price : 0;
+    } else {
+        coinQty = rawQty;
+        notional = rawQty * price;
+    }
+
+    var cost = leverage > 0 ? notional / leverage : 0;
+    var fee = notional * 0.0004;
+
+    var costEl = $('order-cost');
+    var feeEl = $('order-fee');
+    var maxEl = $('order-max');
+    var maxUnitEl = $('order-max-unit');
+
+    if (costEl) costEl.textContent = cost > 0 ? fmt(cost, 2) + ' USDT' : '-- USDT';
+    if (feeEl) feeEl.textContent = fee > 0 ? '~' + fmt(fee, 2) + ' USDT' : '~-- USDT';
+
+    var available = getAvailableBalance();
+    var maxNotional = available * leverage;
+    if (maxEl) {
+        if (price > 0) {
+            if (qtyUnit === 'coin') {
+                var maxQty = maxNotional / price;
+                maxEl.innerHTML = fmt(maxQty, getQtyDecimals()) + ' <span id="order-max-unit">' + getCoinSymbol() + '</span>';
+            } else {
+                maxEl.innerHTML = fmt(maxNotional, 2) + ' <span id="order-max-unit">USDT</span>';
+            }
+        } else {
+            maxEl.innerHTML = '-- <span id="order-max-unit">' + (qtyUnit === 'coin' ? getCoinSymbol() : 'USDT') + '</span>';
+        }
+    }
+}
+
 (function() {
     var priceInput = $('order-price');
-    var qtyInput = $('order-qty');
     if (priceInput) priceInput.addEventListener('input', updateOrderInfo);
-    if (qtyInput) qtyInput.addEventListener('input', updateOrderInfo);
 })();
 
 // ========== EXECUTE ORDER ==========
 async function executeOrder(side) {
-    const price = orderType === 'market' ? null : parseFloat($('order-price').value);
-    const qty = parseFloat($('order-qty').value);
-    const tp = parseFloat($('order-tp').value) || null;
-    const sl = parseFloat($('order-sl').value) || null;
+    var rawQty = parseFloat($('order-qty').value);
+    var tp = parseFloat($('order-tp').value) || null;
+    var sl = parseFloat($('order-sl').value) || null;
+    var price = orderType === 'market' ? getCurrentPrice() : parseFloat($('order-price').value);
 
-    if (!qty || qty <= 0) {
-        showToast('Please enter a valid quantity', 'error');
+    if (!rawQty || rawQty <= 0) {
+        showToast('Enter a quantity', 'error');
         return;
     }
     if (orderType !== 'market' && (!price || price <= 0)) {
-        showToast('Please enter a valid price', 'error');
+        showToast('Enter a valid price', 'error');
         return;
     }
 
-    const body = {
+    var coinQty;
+    if (qtyUnit === 'usdt') {
+        var ep = price || getCurrentPrice();
+        if (!ep || ep <= 0) {
+            showToast('Cannot determine price for USDT conversion', 'error');
+            return;
+        }
+        coinQty = rawQty / ep;
+    } else {
+        coinQty = rawQty;
+    }
+
+    var body = {
         symbol: currentSymbol,
         side: side,
         type: orderType,
-        quantity: qty,
+        quantity: coinQty,
         leverage: leverage,
         margin_mode: marginMode,
         tp: tp,
         sl: sl,
     };
-    if (price) body.price = price;
+    if (orderType !== 'market' && price) body.price = price;
 
     // Advanced order fields
     if (orderType === 'oco') {
@@ -4694,9 +4936,10 @@ async function executeOrder(side) {
         $('order-qty').value = '';
         $('order-tp').value = '';
         $('order-sl').value = '';
+        $('qty-pct-slider').value = 0;
+        updateSliderTrack(0);
         updateOrderInfo();
 
-        // Reload positions + paper
         loadPositions();
         loadPaperStatus();
         loadWallet();
@@ -4819,6 +5062,8 @@ async function loadWallet() {
         const pnlEl = $('w-pnl');
         pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + ' USDT';
         pnlEl.className = 'wvalue ' + (pnl >= 0 ? 'up' : 'down');
+
+        updateAvailableDisplay();
 
     } catch (err) {
         console.error('loadWallet error:', err);

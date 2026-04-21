@@ -3991,7 +3991,41 @@ def api_balance():
     live_balances = exchange_manager.get_all_balances()
     paper_status = paper_trader.get_status()
 
+    starting_capital = 100.0
+    realized_pnl = paper_status["total_pnl"]
+
+    conn = get_db()
+    open_trades = conn.execute("SELECT * FROM paper_trades WHERE status = 'open'").fetchall()
+    conn.close()
+
+    margin_used = 0.0
+    unrealized_pnl = 0.0
+    for t in open_trades:
+        entry = t["entry_price"]
+        qty = t["quantity"]
+        lev = t["leverage"] or 1
+        margin_used += (entry * qty) / lev
+        try:
+            pd = fetch_binance("/api/v3/ticker/price", {"symbol": t["symbol"]}, ttl=5)
+            if pd:
+                cur = float(pd.get("price", entry))
+                if t["side"] == "long":
+                    unrealized_pnl += (cur - entry) / entry * qty * lev
+                else:
+                    unrealized_pnl += (entry - cur) / entry * qty * lev
+        except Exception:
+            pass
+
+    balance = starting_capital + realized_pnl
+    equity = balance + unrealized_pnl
+    available = max(0, equity - margin_used)
+
     return jsonify({
+        "balance": round(balance, 4),
+        "equity": round(equity, 4),
+        "available": round(available, 4),
+        "unrealized_pnl": round(unrealized_pnl, 4),
+        "margin_used": round(margin_used, 4),
         "live": live_balances,
         "paper": {
             "total_pnl": paper_status["total_pnl"],
