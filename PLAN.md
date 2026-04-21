@@ -3187,7 +3187,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 |------|----|-------|--------|--------|------|
 | 39 | S1.0 | Authentification PIN & Sessions | `[x]` FAIT | — | 2026-04-21 |
 | 40 | S2.0 | Stockage sécurisé clé Anthropic | `[x]` FAIT | — | 2026-04-21 |
-| 41 | S3.0 | Coffre-fort GMX Wallet | `[ ]` EN ATTENTE | — | — |
+| 41 | S3.0 | Coffre-fort GMX Wallet | `[x]` FAIT | — | 2026-04-21 |
 | 42 | S4.0 | CORS & Headers HTTP | `[ ]` EN ATTENTE | — | — |
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[ ]` EN ATTENTE | — | — |
 | 44 | S6.0 | Blindage du chiffrement | `[ ]` EN ATTENTE | — | — |
@@ -3196,7 +3196,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 2 / 10 étapes terminées**
+**Progression sécurité : 3 / 10 étapes terminées**
 
 ---
 
@@ -3251,6 +3251,55 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S3.0 — Coffre-fort GMX Wallet (Step 41) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S3.1 | `vault_encrypt()` / `vault_decrypt()` — double chiffrement Fernet + PBKDF2 dérivé du PIN (480k iter) | `[x]` |
+| S3.2 | Route `POST /api/wallet/gmx/setup` — valide format 0x + 64 hex, vérifie PIN, chiffre et stocke | `[x]` |
+| S3.3 | Route `GET /api/wallet/gmx/status` — retourne adresse publique uniquement + configured bool | `[x]` |
+| S3.4 | Route `DELETE /api/wallet/gmx` — supprime avec confirmation PIN obligatoire | `[x]` |
+| S3.5 | GMXAdapter : `_wipe_string()` efface la private key de la mémoire après `from_key()` | `[x]` |
+| S3.6 | GMXAdapter : logging sécurisé — plus de `%s, e` sur les exceptions de clé | `[x]` |
+| S3.7 | Routes protégées par `require_auth()` (setup + delete) | `[x]` |
+| S3.8 | Frontend : modal "GMX Wallet Vault" — champ password + PIN, dot status, adresse publique | `[x]` |
+| S3.9 | Frontend : bouton Disconnect avec confirmation PIN (via prompt) | `[x]` |
+| S3.10 | Frontend : ligne GMX wallet dans le modal Settings avec statut abrégé (0x...1234) | `[x]` |
+| S3.11 | Adresse publique stockée séparément dans settings (pas besoin de déchiffrer pour l'afficher) | `[x]` |
+| S3.12 | Validation format : préfixe 0x auto-ajouté si absent, longueur 66 chars exacte | `[x]` |
+
+**Vulnérabilités corrigées** : C-04 (private key en mémoire indéfiniment), C-05 (private key loggée)
+
+**Architecture du coffre-fort** :
+```
+Utilisateur → private_key + PIN
+                    │
+     ┌──────────────┴──────────────┐
+     │  PBKDF2(PIN, salt, 480k)    │ ← couche intérieure
+     │  → Fernet(derived_key)      │
+     │  → inner_ciphertext         │
+     └──────────────┬──────────────┘
+                    │
+     ┌──────────────┴──────────────┐
+     │  Fernet(secret.key)         │ ← couche extérieure
+     │  → encrypt(salt:inner)      │
+     │  → stored in settings DB    │
+     └─────────────────────────────┘
+```
+
+**Tests passés** :
+- `GET /wallet/gmx/status` non configuré → `configured: false` ✓
+- `POST /wallet/gmx/setup` sans auth → 401 ✓
+- `POST /wallet/gmx/setup` avec auth + clé valide → adresse retournée ✓
+- `GET /wallet/gmx/status` configuré → `address: 0xf39F...2266` ✓
+- `DELETE /wallet/gmx` mauvais PIN → 401 ✓
+- `DELETE /wallet/gmx` bon PIN → supprimé ✓
+- Clé invalide (format) → 400 ✓
+- Clé trop courte → 400 ✓
+- Logs ne contiennent aucun fragment de clé privée ✓
 
 ---
 

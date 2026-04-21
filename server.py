@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import subprocess
 import time
 import threading
@@ -631,6 +632,58 @@ def get_anthropic_key():
             log.warning("Failed to decrypt stored Anthropic key")
             return ""
     return ""
+
+
+def _vault_derive_key(pin, salt):
+    """Derive a Fernet key from PIN + salt using PBKDF2."""
+    dk = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 480_000, dklen=32)
+    return b64encode(dk)
+
+
+def vault_encrypt(plaintext, pin):
+    """Double encrypt: Fernet(system key) wrapping Fernet(PIN-derived key)."""
+    salt = secrets.token_hex(16)
+    pin_key = _vault_derive_key(pin, salt)
+    inner = Fernet(pin_key).encrypt(plaintext.encode()).decode() if HAS_FERNET else b64encode(plaintext.encode()).decode()
+    outer = encrypt_string(salt + ":" + inner)
+    return outer
+
+
+def vault_decrypt(ciphertext, pin):
+    """Reverse double encryption."""
+    raw = decrypt_string(ciphertext)
+    if not raw or ":" not in raw:
+        return None
+    salt, inner = raw.split(":", 1)
+    pin_key = _vault_derive_key(pin, salt)
+    try:
+        if HAS_FERNET:
+            return Fernet(pin_key).decrypt(inner.encode()).decode()
+        else:
+            return b64decode(inner.encode()).decode()
+    except Exception:
+        return None
+
+
+def get_gmx_wallet_address():
+    """Return public address from stored wallet, or None."""
+    enc = get_setting("gmx_wallet_enc")
+    if not enc:
+        return None
+    addr = get_setting("gmx_wallet_address")
+    return addr
+
+
+def _wipe_string(s):
+    """Best-effort overwrite of a string's memory. CPython strings are immutable,
+    so this is not guaranteed, but ctypes can overwrite the buffer."""
+    try:
+        import ctypes
+        n = len(s)
+        addr = id(s) + sys.getsizeof("") - 1
+        ctypes.memset(addr, 0, n)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -2385,8 +2438,10 @@ class GMXAdapter(ExchangeAdapter):
             try:
                 self._account = Web3Account.from_key(private_key)
                 self.api_key = self._account.address
-            except Exception as e:
-                log.error("GMXAdapter: invalid private key: %s", e)
+                _wipe_string(private_key)
+            except Exception:
+                log.error("GMXAdapter: invalid private key format")
+                _wipe_string(private_key)
                 return
 
         self._connect()
@@ -4307,6 +4362,77 @@ def api_delete_anthropic_key():
         return jsonify({"error": "No stored key to delete (env var keys cannot be deleted from here)"}), 404
     delete_setting("anthropic_api_key_enc")
     log.info("Anthropic API key removed from DB")
+    return jsonify({"success": True})
+
+
+# ===========================================================================
+# API ROUTES — GMX Wallet Vault (3 routes)
+# ===========================================================================
+
+@app.route("/api/wallet/gmx/setup", methods=["POST"])
+def api_gmx_wallet_setup():
+    denied = require_auth()
+    if denied: return denied
+    body = request.get_json(force=True)
+    private_key = body.get("private_key", "").strip()
+    pin = body.get("pin", "").strip()
+
+    if not private_key:
+        return jsonify({"error": "Private key is required"}), 400
+    if not pin:
+        return jsonify({"error": "PIN is required for vault encryption"}), 400
+    if not verify_pin(pin):
+        return jsonify({"error": "Invalid PIN"}), 401
+
+    if not private_key.startswith("0x"):
+        private_key = "0x" + private_key
+    if len(private_key) != 66:
+        return jsonify({"error": "Invalid private key length (expected 64 hex chars)"}), 400
+
+    try:
+        if HAS_WEB3:
+            acct = Web3Account.from_key(private_key)
+            address = acct.address
+        else:
+            address = "0x" + hashlib.sha256(private_key.encode()).hexdigest()[:40]
+    except Exception:
+        return jsonify({"error": "Invalid private key format"}), 400
+
+    encrypted = vault_encrypt(private_key, pin)
+    set_setting("gmx_wallet_enc", encrypted)
+    set_setting("gmx_wallet_address", address)
+
+    _wipe_string(private_key)
+    log.info("GMX wallet configured: %s", address)
+    return jsonify({"success": True, "address": address})
+
+
+@app.route("/api/wallet/gmx/status")
+def api_gmx_wallet_status():
+    addr = get_gmx_wallet_address()
+    return jsonify({
+        "configured": addr is not None,
+        "address": addr,
+    })
+
+
+@app.route("/api/wallet/gmx", methods=["DELETE"])
+def api_gmx_wallet_delete():
+    denied = require_auth()
+    if denied: return denied
+    body = request.get_json(force=True)
+    pin = body.get("pin", "").strip()
+
+    if not pin or not verify_pin(pin):
+        return jsonify({"error": "Invalid PIN — confirmation required"}), 401
+
+    enc = get_setting("gmx_wallet_enc")
+    if not enc:
+        return jsonify({"error": "No GMX wallet configured"}), 404
+
+    delete_setting("gmx_wallet_enc")
+    delete_setting("gmx_wallet_address")
+    log.info("GMX wallet removed from vault")
     return jsonify({"success": True})
 
 

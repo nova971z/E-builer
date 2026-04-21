@@ -3076,13 +3076,57 @@ button:active { opacity: 0.7; }
                 <label>Paper Trading Capital (USDT)</label>
                 <input type="number" id="set-paper-capital" value="10000">
             </div>
-            <h4 style="color:var(--text-dim);font-size:12px;margin-top:8px">Exchange Management</h4>
+            <h4 style="color:var(--text-dim);font-size:12px;margin-top:8px">Wallets &amp; Exchanges</h4>
+            <div id="gmx-wallet-row" style="display:flex;align-items:center;gap:8px;padding:8px;background:rgba(255,255,255,0.02);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.05);margin-bottom:6px">
+                <span id="gmx-set-dot" style="width:8px;height:8px;border-radius:50%;background:var(--red)"></span>
+                <span style="flex:1;font-size:11px;color:var(--text-dim)">GMX Wallet</span>
+                <span id="gmx-set-addr" style="font-size:9px;color:var(--text-muted);font-family:var(--font-mono)"></span>
+                <button onclick="showGmxWalletModal()" style="padding:3px 10px;background:var(--surface-2);border-radius:var(--radius-sm);font-size:10px;color:var(--text-dim);cursor:pointer">Setup</button>
+            </div>
             <div class="exchange-list" id="exchange-list"></div>
             <button style="padding:6px 12px;background:var(--accent);color:var(--bg);border-radius:var(--radius);font-size:11px;font-weight:600;width:100%" onclick="showAddExchange()">+ Add Exchange</button>
         </div>
         <div class="modal-footer">
             <button class="btn-cancel" onclick="closeModal('modal-settings')">Cancel</button>
             <button class="btn-confirm" onclick="saveSettings()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- GMX WALLET SETUP MODAL -->
+<div class="modal-overlay" id="modal-gmx-wallet">
+    <div class="modal" style="width:380px">
+        <div class="modal-header">
+            <span>GMX Wallet Vault</span>
+            <button onclick="closeModal('modal-gmx-wallet')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="gmx-wallet-status" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px;background:rgba(255,255,255,0.02);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.05)">
+                <span id="gmx-w-dot" style="width:10px;height:10px;border-radius:50%;background:var(--red)"></span>
+                <div style="flex:1">
+                    <div id="gmx-w-label" style="font-size:12px;color:var(--text)">Not connected</div>
+                    <div id="gmx-w-addr" style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);word-break:break-all"></div>
+                </div>
+                <button id="gmx-w-disconnect-btn" onclick="disconnectGmxWallet()" style="display:none;padding:4px 10px;background:rgba(255,0,0,0.12);color:var(--red);border:1px solid rgba(255,0,0,0.25);border-radius:var(--radius-sm);font-size:10px;cursor:pointer">Disconnect</button>
+            </div>
+            <div id="gmx-wallet-form">
+                <div class="modal-field">
+                    <label>Private Key</label>
+                    <input type="password" id="gmx-pk-input" placeholder="0x..." autocomplete="off" spellcheck="false" style="font-family:var(--font-mono);font-size:11px">
+                </div>
+                <div class="modal-field">
+                    <label>Confirm PIN</label>
+                    <input type="password" id="gmx-pk-pin" placeholder="Your dashboard PIN" autocomplete="off">
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.4">
+                    Your private key will be double-encrypted (Fernet + PIN-derived PBKDF2) and stored locally. It never leaves this server.
+                </div>
+            </div>
+            <div id="gmx-wallet-error" style="font-size:11px;color:var(--red);margin-top:6px;min-height:16px"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-cancel" onclick="closeModal('modal-gmx-wallet')">Cancel</button>
+            <button id="gmx-w-save-btn" class="btn-confirm" onclick="saveGmxWallet()">Encrypt &amp; Save</button>
         </div>
     </div>
 </div>
@@ -5131,7 +5175,7 @@ async function confirmKillSwitchOff() {
 // ========== MODALS ==========
 function openModal(id) { $(id).classList.add('open'); }
 function closeModal(id) { $(id).classList.remove('open'); }
-function showSettings() { openModal('modal-settings'); loadExchangeList(); loadAnthropicKeyStatus(); }
+function showSettings() { openModal('modal-settings'); loadExchangeList(); loadAnthropicKeyStatus(); loadGmxWalletStatus(); }
 function showAddExchange() { openModal('modal-exchange'); }
 
 // ========== SETTINGS ==========
@@ -5200,6 +5244,98 @@ async function removeAnthropicKey() {
         loadAnthropicKeyStatus();
     } catch (e) {
         showToast('Failed to remove key', 'error');
+    }
+}
+
+// ========== GMX WALLET VAULT ==========
+function showGmxWalletModal() {
+    openModal('modal-gmx-wallet');
+    loadGmxWalletStatus();
+    $('gmx-pk-input').value = '';
+    $('gmx-pk-pin').value = '';
+    $('gmx-wallet-error').textContent = '';
+}
+
+async function loadGmxWalletStatus() {
+    try {
+        var resp = await fetch(API + '/api/wallet/gmx/status');
+        var data = await resp.json();
+        var dot = $('gmx-w-dot');
+        var label = $('gmx-w-label');
+        var addr = $('gmx-w-addr');
+        var disc = $('gmx-w-disconnect-btn');
+        var form = $('gmx-wallet-form');
+        var saveBtn = $('gmx-w-save-btn');
+        var setDot = $('gmx-set-dot');
+        var setAddr = $('gmx-set-addr');
+
+        if (data.configured) {
+            dot.style.background = 'var(--green)';
+            label.textContent = 'Connected';
+            label.style.color = 'var(--green)';
+            addr.textContent = data.address;
+            disc.style.display = 'inline-block';
+            form.style.display = 'none';
+            saveBtn.style.display = 'none';
+            if (setDot) setDot.style.background = 'var(--green)';
+            if (setAddr) setAddr.textContent = data.address ? data.address.slice(0, 6) + '...' + data.address.slice(-4) : '';
+        } else {
+            dot.style.background = 'var(--red)';
+            label.textContent = 'Not connected';
+            label.style.color = 'var(--text-dim)';
+            addr.textContent = '';
+            disc.style.display = 'none';
+            form.style.display = 'block';
+            saveBtn.style.display = 'inline-block';
+            if (setDot) setDot.style.background = 'var(--red)';
+            if (setAddr) setAddr.textContent = '';
+        }
+    } catch (e) {}
+}
+
+async function saveGmxWallet() {
+    var pk = $('gmx-pk-input').value.trim();
+    var pin = $('gmx-pk-pin').value.trim();
+    var errEl = $('gmx-wallet-error');
+
+    if (!pk) { errEl.textContent = 'Private key is required'; return; }
+    if (!pin) { errEl.textContent = 'PIN is required'; return; }
+
+    try {
+        var resp = await fetch(API + '/api/wallet/gmx/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ private_key: pk, pin: pin }),
+        });
+        var data = await resp.json();
+        if (data.error) { errEl.textContent = data.error; return; }
+
+        $('gmx-pk-input').value = '';
+        $('gmx-pk-pin').value = '';
+        errEl.textContent = '';
+        showToast('GMX wallet saved: ' + data.address, 'success');
+        loadGmxWalletStatus();
+    } catch (e) {
+        errEl.textContent = 'Connection error';
+    }
+}
+
+async function disconnectGmxWallet() {
+    var pin = prompt('Enter your PIN to confirm wallet removal:');
+    if (!pin) return;
+
+    try {
+        var resp = await fetch(API + '/api/wallet/gmx', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin: pin }),
+        });
+        var data = await resp.json();
+        if (data.error) { showToast(data.error, 'error'); return; }
+        showToast('GMX wallet disconnected', 'success');
+        loadGmxWalletStatus();
+    } catch (e) {
+        showToast('Failed to disconnect wallet', 'error');
     }
 }
 
