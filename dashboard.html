@@ -2536,6 +2536,91 @@ button:active { opacity: 0.7; }
 }
 .gmx-scan-btn:hover { background: var(--border); }
 
+/* ========== BOT CONTROL PANEL ========== */
+.bot-control-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; }
+.bot-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.bot-status-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.bot-status-indicator.running { background: var(--green); box-shadow: 0 0 6px var(--green); animation: cbPulse 2s infinite; }
+.bot-status-indicator.stopped { background: var(--red); }
+.bot-status-indicator.error { background: var(--yellow); animation: cbPulse 1s infinite; }
+.bot-header-label { font-weight: 700; font-size: 13px; color: var(--text); }
+.bot-btn { padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: rgba(255,255,255,0.04); color: var(--text); font-size: 11px; cursor: pointer; font-weight: 600; }
+.bot-btn:hover { background: rgba(255,255,255,0.08); }
+.bot-btn.start { border-color: var(--green); color: var(--green); }
+.bot-btn.stop { border-color: var(--red); color: var(--red); }
+.bot-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 8px; }
+.bot-config-grid label { font-size: 10px; color: var(--text-dim); display: flex; flex-direction: column; gap: 2px; }
+.bot-config-grid select, .bot-config-grid input { padding: 4px 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-sm); color: var(--text); font-size: 11px; outline: none; }
+.bot-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.bot-stat { text-align: center; padding: 6px 4px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); }
+.bot-stat .bval { font-size: 14px; font-weight: 700; color: var(--text); }
+.bot-stat .blbl { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+
+/* Circuit Breaker Bar */
+.circuit-breaker-bar { display: flex; gap: 4px; margin: 10px 0; flex-wrap: wrap; }
+.cb-level { flex: 1; min-width: 38px; text-align: center; padding: 6px 2px; border-radius: var(--radius-sm); font-size: 9px; font-weight: 700; cursor: pointer; border: 1px solid transparent; transition: all 0.3s; background: rgba(255,255,255,0.04); color: var(--text-dim); }
+.cb-level.active-1 { background: rgba(255,235,59,0.15); color: #ffeb3b; border-color: rgba(255,235,59,0.3); }
+.cb-level.active-2 { background: rgba(255,152,0,0.15); color: #ff9800; border-color: rgba(255,152,0,0.3); }
+.cb-level.active-3 { background: rgba(244,67,54,0.2); color: #f44336; border-color: rgba(244,67,54,0.4); animation: cbPulse 1.5s infinite; }
+.cb-level.active-4 { background: rgba(183,28,28,0.25); color: #ef5350; border-color: rgba(183,28,28,0.5); animation: cbPulse 1s infinite; }
+.cb-level.active-5 { background: rgba(0,0,0,0.6); color: #fff; border-color: rgba(255,255,255,0.3); animation: cbPulse 0.8s infinite; }
+.cb-level.active-6 { background: rgba(156,39,176,0.2); color: #ce93d8; border-color: rgba(156,39,176,0.4); animation: cbPulse 1.2s infinite; }
+.cb-level.active-7 { background: rgba(33,150,243,0.15); color: #64b5f6; border-color: rgba(33,150,243,0.3); }
+.cb-level-num { font-size: 11px; }
+.cb-level-name { font-size: 7px; letter-spacing: 0.3px; margin-top: 1px; }
+@keyframes cbPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* Position Heat Map */
+.position-heat-map { margin: 8px 0; }
+.phm-row { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 11px; }
+.phm-row:last-child { border-bottom: none; }
+.phm-sym { width: 65px; font-weight: 600; color: var(--text); }
+.phm-dir { width: 40px; font-size: 10px; font-weight: 700; }
+.phm-dir.long { color: var(--green); }
+.phm-dir.short { color: var(--red); }
+.phm-bar-wrap { flex: 1; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+.phm-bar { height: 100%; border-radius: 3px; transition: width 0.5s; }
+.phm-pnl { width: 55px; text-align: right; font-weight: 600; font-size: 11px; }
+.phm-strat { width: 60px; text-align: right; font-size: 10px; color: var(--text-dim); }
+
+/* Strategy Performance Bars */
+.strategy-performance { margin: 8px 0; }
+.sp-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; font-size: 11px; }
+.sp-name { width: 85px; color: var(--text-dim); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-bar-wrap { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+.sp-bar { height: 100%; border-radius: 4px; transition: width 0.5s; background: var(--accent); }
+.sp-val { width: 75px; text-align: right; font-size: 10px; color: var(--text-dim); }
+
+/* Macro Dashboard */
+.macro-dashboard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-top: 10px; }
+.macro-score-header { text-align: center; margin-bottom: 8px; }
+.macro-score-val { font-size: 24px; font-weight: 800; }
+.macro-score-label { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.macro-components { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
+.macro-comp { text-align: center; padding: 5px 3px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); }
+.macro-comp .mc-val { font-size: 13px; font-weight: 700; color: var(--text); }
+.macro-comp .mc-lbl { font-size: 8px; color: var(--text-dim); margin-top: 1px; }
+.macro-gauge { width: 100%; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; margin-top: 3px; overflow: hidden; }
+.macro-gauge-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+.geo-risk-meter { margin: 8px 0; }
+.geo-risk-bar { height: 8px; background: linear-gradient(to right, var(--green), var(--yellow), var(--red)); border-radius: 4px; position: relative; }
+.geo-risk-marker { position: absolute; top: -3px; width: 3px; height: 14px; background: #fff; border-radius: 2px; transition: left 0.5s; }
+.macro-event-list { max-height: 100px; overflow-y: auto; margin-top: 6px; }
+.macro-event-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.macro-event-item:last-child { border-bottom: none; }
+.me-impact { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.me-impact.high { background: var(--red); }
+.me-impact.medium { background: var(--yellow); }
+.me-impact.low { background: var(--green); }
+
+/* Bot Log */
+.bot-log { background: #0a0a0a; border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-sm); padding: 6px 8px; max-height: 120px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 10px; line-height: 1.5; margin-top: 8px; }
+.bot-log-entry { white-space: pre-wrap; word-break: break-all; }
+.bot-log-entry.info { color: #4caf50; }
+.bot-log-entry.warn { color: #ff9800; }
+.bot-log-entry.error { color: #f44336; }
+.bot-log-entry.trade { color: var(--accent); }
+
 </style>
 </head>
 <body>
@@ -2926,22 +3011,114 @@ button:active { opacity: 0.7; }
         </div>
         <!-- BOT TAB -->
         <div class="sd-tab-content" id="sd-tab-bot" style="display:none">
-            <div class="sd-quick-actions">
-                <button class="sd-quick-btn" onclick="sendBotCommand('start')"><span class="sd-icon">&#9654;</span>Start Bot</button>
-                <button class="sd-quick-btn" onclick="sendBotCommand('stop')"><span class="sd-icon">&#9632;</span>Stop Bot</button>
-                <button class="sd-quick-btn" onclick="sendBotCommand('aggressive')"><span class="sd-icon">&#9889;</span>Aggressive</button>
-                <button class="sd-quick-btn" onclick="sendBotCommand('conservative')"><span class="sd-icon">&#9728;</span>Conservative</button>
-            </div>
-            <div class="sd-section">
-                <div class="sd-section-title">Bot Status</div>
-                <div class="wallet-section" style="border:none;padding:0;margin:0">
-                    <div class="wallet-row"><span class="wlabel">Mode</span><span class="wvalue" id="sd-bot-mode">Paper</span></div>
-                    <div class="wallet-row"><span class="wlabel">Win Rate</span><span class="wvalue" id="sd-bot-wr">--</span></div>
-                    <div class="wallet-row"><span class="wlabel">Trades Today</span><span class="wvalue" id="sd-bot-trades">0</span></div>
-                    <div class="wallet-row"><span class="wlabel">PNL Today</span><span class="wvalue" id="sd-bot-pnl">--</span></div>
+            <!-- Section A: Bot Status & Controls -->
+            <div class="bot-control-panel">
+                <div class="bot-header">
+                    <span class="bot-status-indicator stopped" id="bot-indicator"></span>
+                    <span class="bot-header-label" id="bot-header-text">BOT STOPPED</span>
+                    <button class="bot-btn start" onclick="startBot()">START</button>
+                    <button class="bot-btn stop" onclick="stopBot()">STOP</button>
+                </div>
+                <div class="bot-config-grid">
+                    <label>Mode
+                        <select id="bot-cfg-mode" onchange="updateBotConfig()">
+                            <option value="paper">Paper</option>
+                            <option value="micro_live">Micro Live</option>
+                            <option value="live">Live</option>
+                        </select>
+                    </label>
+                    <label>Strategy
+                        <select id="bot-cfg-strategy" onchange="updateBotConfig()">
+                            <option value="auto">Auto</option>
+                            <option value="trend">Trend Following</option>
+                            <option value="mean_reversion">Mean Reversion</option>
+                            <option value="breakout">Breakout</option>
+                            <option value="dip_hunter">Dip Hunter</option>
+                            <option value="momentum_scalp">Momentum Scalp</option>
+                            <option value="macro_event">Macro Event</option>
+                        </select>
+                    </label>
+                    <label>Scan Interval (s)
+                        <input type="number" id="bot-cfg-scan" value="60" min="30" max="3600" onchange="updateBotConfig()">
+                    </label>
+                    <label>Max Positions
+                        <input type="number" id="bot-cfg-maxpos" value="3" min="1" max="10" onchange="updateBotConfig()">
+                    </label>
+                </div>
+                <div class="bot-stats">
+                    <div class="bot-stat"><div class="bval" id="bot-trades-today">0</div><div class="blbl">Trades</div></div>
+                    <div class="bot-stat"><div class="bval" id="bot-daily-pnl">$0</div><div class="blbl">Daily P&L</div></div>
+                    <div class="bot-stat"><div class="bval" id="bot-win-rate">--</div><div class="blbl">Win Rate</div></div>
+                    <div class="bot-stat"><div class="bval" id="bot-scan-count">0</div><div class="blbl">Scans</div></div>
                 </div>
             </div>
-            <div class="sd-section">
+
+            <!-- Section B: Circuit Breakers -->
+            <div class="sd-section" style="margin-bottom:8px">
+                <div class="sd-section-title">Circuit Breakers</div>
+                <div class="circuit-breaker-bar" id="cb-bar">
+                    <div class="cb-level" id="cb-1" onclick="acknowledgeCircuitBreaker(1)" title="YELLOW — Attention"><div class="cb-level-num">1</div><div class="cb-level-name">YELLOW</div></div>
+                    <div class="cb-level" id="cb-2" onclick="acknowledgeCircuitBreaker(2)" title="ORANGE — Caution"><div class="cb-level-num">2</div><div class="cb-level-name">ORANGE</div></div>
+                    <div class="cb-level" id="cb-3" onclick="acknowledgeCircuitBreaker(3)" title="RED — Danger"><div class="cb-level-num">3</div><div class="cb-level-name">RED</div></div>
+                    <div class="cb-level" id="cb-4" onclick="acknowledgeCircuitBreaker(4)" title="DARK RED — Critical"><div class="cb-level-num">4</div><div class="cb-level-name">D.RED</div></div>
+                    <div class="cb-level" id="cb-5" onclick="acknowledgeCircuitBreaker(5)" title="BLACK — Emergency"><div class="cb-level-num">5</div><div class="cb-level-name">BLACK</div></div>
+                    <div class="cb-level" id="cb-6" onclick="acknowledgeCircuitBreaker(6)" title="FLASH CRASH"><div class="cb-level-num">6</div><div class="cb-level-name">FLASH</div></div>
+                    <div class="cb-level" id="cb-7" onclick="acknowledgeCircuitBreaker(7)" title="SYSTEM FAULT"><div class="cb-level-num">7</div><div class="cb-level-name">SYS</div></div>
+                </div>
+                <div style="font-size:10px;color:var(--text-dim)" id="cb-summary">All clear</div>
+            </div>
+
+            <!-- Section C: Active Positions -->
+            <div class="sd-section" style="margin-bottom:8px">
+                <div class="sd-section-title">Active Positions</div>
+                <div class="position-heat-map" id="phm-container">
+                    <div style="font-size:10px;color:var(--text-dim)">No open positions</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim);margin-top:4px">
+                    <span>Heat: <strong id="phm-heat" style="color:var(--text)">0%</strong></span>
+                    <span>Correlation: <strong id="phm-corr" style="color:var(--text)">NONE</strong></span>
+                </div>
+            </div>
+
+            <!-- Section D: Strategy Performance -->
+            <div class="sd-section" style="margin-bottom:8px">
+                <div class="sd-section-title">Strategy Performance</div>
+                <div class="strategy-performance" id="sp-container">
+                    <div style="font-size:10px;color:var(--text-dim)">No data yet</div>
+                </div>
+            </div>
+
+            <!-- Section E: Macro Dashboard -->
+            <div class="macro-dashboard">
+                <div class="macro-score-header">
+                    <div class="macro-score-val" id="macro-score-val" style="color:var(--text-dim)">--</div>
+                    <div class="macro-score-label" id="macro-score-label">MACRO SCORE</div>
+                </div>
+                <div class="macro-components" id="macro-components">
+                    <div class="macro-comp"><div class="mc-val" id="mc-fg">--</div><div class="mc-lbl">F&G</div><div class="macro-gauge"><div class="macro-gauge-fill" id="mc-fg-bar" style="width:50%;background:var(--text-dim)"></div></div></div>
+                    <div class="macro-comp"><div class="mc-val" id="mc-dxy">--</div><div class="mc-lbl">DXY</div><div class="macro-gauge"><div class="macro-gauge-fill" id="mc-dxy-bar" style="width:50%;background:var(--text-dim)"></div></div></div>
+                    <div class="macro-comp"><div class="mc-val" id="mc-vix">--</div><div class="mc-lbl">VIX</div><div class="macro-gauge"><div class="macro-gauge-fill" id="mc-vix-bar" style="width:50%;background:var(--text-dim)"></div></div></div>
+                    <div class="macro-comp"><div class="mc-val" id="mc-yield">--</div><div class="mc-lbl">2Y-10Y</div></div>
+                    <div class="macro-comp"><div class="mc-val" id="mc-btcd">--</div><div class="mc-lbl">BTC.D</div></div>
+                    <div class="macro-comp"><div class="mc-val" id="mc-geo">--</div><div class="mc-lbl">GEO RISK</div></div>
+                </div>
+                <div class="geo-risk-meter">
+                    <div class="geo-risk-bar"><div class="geo-risk-marker" id="geo-marker" style="left:10%"></div></div>
+                </div>
+                <div class="sd-section-title" style="margin-top:8px;font-size:10px">Upcoming Events</div>
+                <div class="macro-event-list" id="macro-events">
+                    <div style="font-size:10px;color:var(--text-dim)">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Bot Log -->
+            <div class="sd-section" style="margin-top:8px">
+                <div class="sd-section-title">Bot Log</div>
+                <div class="bot-log" id="bot-log"></div>
+            </div>
+
+            <!-- Ask JARVIS (kept at bottom) -->
+            <div class="sd-section" style="margin-top:8px">
                 <div class="sd-section-title">Ask JARVIS</div>
                 <div style="display:flex;gap:6px">
                     <input type="text" id="sd-jarvis-input" placeholder="Ask anything..." style="flex:1;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:var(--radius-sm);color:var(--text);font-size:12px;outline:none">
@@ -7039,16 +7216,360 @@ function switchDrawerTab(tab) {
     contents.forEach(function(c) { c.style.display = 'none'; });
     var target = $('sd-tab-' + tab);
     if (target) target.style.display = '';
+    switchDrawerTabBot(tab === 'bot');
 }
 
-function sendBotCommand(cmd) {
-    fetch(API + '/api/jarvis', {
+// ========== BOT CONTROL PANEL ==========
+
+var _botTabActive = false;
+var _botIntervals = [];
+
+function switchDrawerTabBot(isBot) {
+    _botTabActive = isBot;
+    if (isBot && _botIntervals.length === 0) {
+        loadBotStatus();
+        loadCircuitBreakers();
+        loadMacroDashboard();
+        loadStrategyPerformance();
+        loadPortfolioRisk();
+        _botIntervals.push(setInterval(loadBotStatus, 5000));
+        _botIntervals.push(setInterval(loadCircuitBreakers, 10000));
+        _botIntervals.push(setInterval(loadPortfolioRisk, 10000));
+        _botIntervals.push(setInterval(loadStrategyPerformance, 30000));
+        _botIntervals.push(setInterval(loadMacroDashboard, 60000));
+    } else if (!isBot) {
+        _botIntervals.forEach(function(id) { clearInterval(id); });
+        _botIntervals = [];
+    }
+}
+
+function loadBotStatus() {
+    fetch(API + '/api/bot/status').then(function(r) { return r.json(); }).then(function(d) {
+        var ind = $('bot-indicator');
+        var hdr = $('bot-header-text');
+        var running = d.running;
+        if (ind) {
+            ind.className = 'bot-status-indicator ' + (running ? 'running' : 'stopped');
+        }
+        if (hdr) {
+            var cbLevel = d.state && d.state.cb_level || 0;
+            if (running) {
+                hdr.textContent = 'BOT RUNNING' + (cbLevel > 0 ? ' [CB:L' + cbLevel + ']' : '');
+            } else {
+                hdr.textContent = 'BOT STOPPED';
+            }
+        }
+        var cfg = d.config || {};
+        var sel = $('bot-cfg-mode');
+        if (sel && sel.value !== cfg.mode) sel.value = cfg.mode || 'paper';
+        var strat = $('bot-cfg-strategy');
+        if (strat && strat.value !== cfg.strategy) strat.value = cfg.strategy || 'auto';
+        var scan = $('bot-cfg-scan');
+        if (scan && !scan.matches(':focus')) scan.value = cfg.scan_interval || 60;
+        var maxp = $('bot-cfg-maxpos');
+        if (maxp && !maxp.matches(':focus')) maxp.value = cfg.max_concurrent_positions || 3;
+
+        var st = d.state || {};
+        var el;
+        el = $('bot-trades-today'); if (el) el.textContent = st.trades_today || 0;
+        el = $('bot-daily-pnl'); if (el) {
+            var pnl = st.daily_pnl || 0;
+            el.textContent = (pnl >= 0 ? '+' : '') + '$' + fmt(Math.abs(pnl), 2);
+            el.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        }
+        el = $('bot-scan-count'); if (el) el.textContent = st.scan_count || 0;
+
+        var trades = d.recent_trades || [];
+        if (trades.length > 0) {
+            var wins = 0; var closed = 0;
+            trades.forEach(function(t) {
+                var r = t.result;
+                if (r && r.pnl !== undefined && r.pnl !== null) {
+                    closed++;
+                    if (r.pnl > 0) wins++;
+                }
+            });
+            el = $('bot-win-rate');
+            if (el) el.textContent = closed > 0 ? fmt(wins / closed * 100, 1) + '%' : '--';
+        }
+
+        if (trades.length > 0) {
+            var logEl = $('bot-log');
+            if (logEl) {
+                var lastLog = trades[trades.length - 1];
+                var ts = lastLog.time ? lastLog.time.substring(11, 19) : '';
+                var msg = ts + ' ' + (lastLog.direction || '').toUpperCase() + ' ' + (lastLog.symbol || '') + ' $' + fmt(lastLog.size_usd || 0, 2) + ' (' + (lastLog.strategy || '') + ')';
+                appendBotLog(msg, lastLog.result && lastLog.result.success ? 'trade' : 'warn');
+            }
+        }
+    }).catch(function() {});
+}
+
+function startBot() {
+    if (!confirm('Start the autonomous bot?')) return;
+    fetch(API + '/api/bot/start', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success) {
+                showToast('Bot started (' + (d.mode || 'paper') + ')', 'success');
+                appendBotLog('Bot started in ' + (d.mode || 'paper') + ' mode', 'info');
+                loadBotStatus();
+            } else {
+                showToast(d.error || 'Failed to start', 'error');
+            }
+        }).catch(function() { showToast('Failed to start bot', 'error'); });
+}
+
+function stopBot() {
+    if (!confirm('Stop the autonomous bot?')) return;
+    fetch(API + '/api/bot/stop', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success) {
+                showToast('Bot stopped', 'info');
+                appendBotLog('Bot stopped', 'warn');
+                loadBotStatus();
+            } else {
+                showToast(d.error || 'Failed to stop', 'error');
+            }
+        }).catch(function() { showToast('Failed to stop bot', 'error'); });
+}
+
+function updateBotConfig() {
+    var mode = $('bot-cfg-mode');
+    var strategy = $('bot-cfg-strategy');
+    var scan = $('bot-cfg-scan');
+    var maxpos = $('bot-cfg-maxpos');
+    var cfg = {};
+    if (mode) cfg.mode = mode.value;
+    if (strategy) cfg.strategy = strategy.value;
+    if (scan) cfg.scan_interval = parseInt(scan.value) || 60;
+    if (maxpos) cfg.max_concurrent_positions = parseInt(maxpos.value) || 3;
+    fetch(API + '/api/bot/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({message: 'Bot command: ' + cmd})
+        body: JSON.stringify(cfg)
     }).then(function(r) { return r.json(); }).then(function(d) {
-        showToast(cmd + ' command sent', 'info');
-    }).catch(function() { showToast('Command failed', 'error'); });
+        if (d.success) showToast('Config updated', 'success');
+        else showToast((d.errors || []).join(', ') || 'Update failed', 'error');
+    }).catch(function() { showToast('Config update failed', 'error'); });
+}
+
+function loadCircuitBreakers() {
+    fetch(API + '/api/risk/circuit-breakers').then(function(r) { return r.json(); }).then(function(d) {
+        var levels = d.levels || {};
+        var maxLvl = d.max_level || 0;
+        for (var i = 1; i <= 7; i++) {
+            var el = $('cb-' + i);
+            if (!el) continue;
+            el.className = 'cb-level';
+            var info = levels[i] || levels[String(i)];
+            if (info && info.active) {
+                el.classList.add('active-' + i);
+            }
+        }
+        var summary = $('cb-summary');
+        if (summary) {
+            if (maxLvl === 0) {
+                summary.textContent = 'All clear';
+                summary.style.color = 'var(--green)';
+            } else {
+                var name = (levels[maxLvl] || levels[String(maxLvl)] || {}).name || 'L' + maxLvl;
+                summary.textContent = 'Active: L' + maxLvl + ' (' + name + ') — ' + (d.allowed_action || 'unknown');
+                summary.style.color = maxLvl >= 3 ? 'var(--red)' : 'var(--yellow)';
+            }
+        }
+    }).catch(function() {});
+}
+
+function acknowledgeCircuitBreaker(level) {
+    if (level >= 4) {
+        if (!confirm('Manually reset Circuit Breaker Level ' + level + '? This requires investigation.')) return;
+    }
+    fetch(API + '/api/risk/acknowledge', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({level: level})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.success) {
+            showToast('CB Level ' + level + ' reset', 'success');
+            appendBotLog('CB Level ' + level + ' manually acknowledged', 'info');
+            loadCircuitBreakers();
+        } else {
+            showToast(d.error || 'Reset failed', 'error');
+        }
+    }).catch(function() { showToast('CB reset failed', 'error'); });
+}
+
+function loadMacroDashboard() {
+    fetch(API + '/api/macro').then(function(r) { return r.json(); }).then(function(d) {
+        var score = d.score || 0;
+        var el = $('macro-score-val');
+        if (el) {
+            el.textContent = (score >= 0 ? '+' : '') + fmt(score, 1);
+            if (score > 10) el.style.color = 'var(--green)';
+            else if (score < -10) el.style.color = 'var(--red)';
+            else el.style.color = 'var(--text)';
+        }
+        var lbl = $('macro-score-label');
+        if (lbl) lbl.textContent = d.recommendation || 'MACRO SCORE';
+
+        var comp = d.components || {};
+        var fg = comp.fear_greed;
+        if (fg) {
+            var fgEl = $('mc-fg'); if (fgEl) fgEl.textContent = fg.value || '--';
+            var fgBar = $('mc-fg-bar');
+            if (fgBar) {
+                fgBar.style.width = (fg.value || 50) + '%';
+                fgBar.style.background = fg.value < 30 ? 'var(--red)' : fg.value > 70 ? 'var(--green)' : 'var(--yellow)';
+            }
+        }
+        var dxy = comp.dxy;
+        if (dxy) {
+            var dxyEl = $('mc-dxy'); if (dxyEl) dxyEl.textContent = fmt(dxy.value || 0, 1);
+            var dxyBar = $('mc-dxy-bar');
+            if (dxyBar) {
+                var chg = Math.abs(dxy.change || 0);
+                dxyBar.style.width = Math.min(100, 50 + chg * 20) + '%';
+                dxyBar.style.background = (dxy.change || 0) > 0 ? 'var(--red)' : 'var(--green)';
+            }
+        }
+        var vix = comp.vix;
+        if (vix) {
+            var vixEl = $('mc-vix'); if (vixEl) vixEl.textContent = fmt(vix.value || 0, 1);
+            var vixBar = $('mc-vix-bar');
+            if (vixBar) {
+                vixBar.style.width = Math.min(100, (vix.value || 0) * 2) + '%';
+                vixBar.style.background = (vix.value || 0) > 25 ? 'var(--red)' : (vix.value || 0) > 18 ? 'var(--yellow)' : 'var(--green)';
+            }
+        }
+        var yld = comp.yields;
+        if (yld) {
+            var yldEl = $('mc-yield'); if (yldEl) yldEl.textContent = (yld.inverted ? 'INV ' : '') + fmt(yld.spread || 0, 2);
+        }
+        var dom = comp.dominance;
+        if (dom) {
+            var btcdEl = $('mc-btcd'); if (btcdEl) btcdEl.textContent = fmt(dom.btc_d || 0, 1) + '%';
+        }
+        var geo = comp.geopolitical;
+        if (geo) {
+            var geoEl = $('mc-geo'); if (geoEl) {
+                geoEl.textContent = geo.alert || 'LOW';
+                geoEl.style.color = geo.alert === 'CRITICAL' ? 'var(--red)' : geo.alert === 'HIGH' ? '#ff9800' : 'var(--green)';
+            }
+            var marker = $('geo-marker');
+            if (marker) marker.style.left = Math.min(95, Math.max(2, (geo.risk_score || 0) / 100 * 95)) + '%';
+        }
+
+        var events = d.alert_events || [];
+        var evEl = $('macro-events');
+        if (evEl) {
+            if (events.length === 0) {
+                evEl.innerHTML = '<div style="font-size:10px;color:var(--text-dim)">No upcoming events</div>';
+            } else {
+                var html = '';
+                events.forEach(function(e) {
+                    var lvl = (e.level || 'LOW').toLowerCase();
+                    var title = e.title || e.event || '';
+                    var hrs = e.hours_until !== undefined ? ' (' + fmt(e.hours_until, 0) + 'h)' : '';
+                    html += '<div class="macro-event-item"><span class="me-impact ' + lvl + '"></span><span style="color:var(--text)">' + title + hrs + '</span></div>';
+                });
+                evEl.innerHTML = html;
+            }
+        }
+    }).catch(function() {});
+
+    fetch(API + '/api/macro/calendar').then(function(r) { return r.json(); }).then(function(d) {
+        if (d.reduce_exposure && d.reduce_exposure.reduce) {
+            appendBotLog('MACRO: ' + d.reduce_exposure.reason, 'warn');
+        }
+    }).catch(function() {});
+}
+
+function loadStrategyPerformance() {
+    fetch(API + '/api/bot/strategies').then(function(r) { return r.json(); }).then(function(d) {
+        var strats = d.strategies || d;
+        var container = $('sp-container');
+        if (!container) return;
+        if (!strats || (Array.isArray(strats) && strats.length === 0) || (typeof strats === 'object' && Object.keys(strats).length === 0)) {
+            container.innerHTML = '<div style="font-size:10px;color:var(--text-dim)">No data yet</div>';
+            return;
+        }
+        var html = '';
+        var items = Array.isArray(strats) ? strats : Object.keys(strats).map(function(k) { return Object.assign({name: k}, strats[k]); });
+        items.forEach(function(s) {
+            var name = s.name || s.strategy || '?';
+            var wr = s.win_rate || 0;
+            var trades = s.total_trades || s.trades || 0;
+            var color = wr >= 60 ? 'var(--green)' : wr >= 40 ? 'var(--yellow)' : 'var(--red)';
+            html += '<div class="sp-row">';
+            html += '<div class="sp-name">' + name + '</div>';
+            html += '<div class="sp-bar-wrap"><div class="sp-bar" style="width:' + Math.min(100, wr) + '%;background:' + color + '"></div></div>';
+            html += '<div class="sp-val">' + fmt(wr, 0) + '% (' + trades + ')</div>';
+            html += '</div>';
+        });
+        container.innerHTML = html;
+    }).catch(function() {});
+}
+
+function loadPortfolioRisk() {
+    fetch(API + '/api/risk/portfolio').then(function(r) { return r.json(); }).then(function(d) {
+        var heatEl = $('phm-heat');
+        if (heatEl) {
+            var heat = d.portfolio_heat_pct || 0;
+            heatEl.textContent = fmt(heat, 1) + '%';
+            heatEl.style.color = heat > 7 ? 'var(--red)' : heat > 4 ? 'var(--yellow)' : 'var(--green)';
+        }
+        var corrEl = $('phm-corr');
+        if (corrEl) {
+            var corr = d.correlation || {};
+            if (corr.correlated) {
+                corrEl.textContent = 'HIGH (' + fmt(corr.effective_risk_multiplier || 1, 1) + 'x)';
+                corrEl.style.color = 'var(--red)';
+            } else {
+                corrEl.textContent = 'NONE';
+                corrEl.style.color = 'var(--green)';
+            }
+        }
+        var posData = d.positions || {};
+        var positions = posData.positions || [];
+        var container = $('phm-container');
+        if (container) {
+            if (positions.length === 0) {
+                container.innerHTML = '<div style="font-size:10px;color:var(--text-dim)">No open positions</div>';
+            } else {
+                var html = '';
+                positions.forEach(function(p) {
+                    var pnl = p.pnl_pct || 0;
+                    var barColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                    var barWidth = Math.min(100, Math.abs(pnl) * 10);
+                    html += '<div class="phm-row">';
+                    html += '<div class="phm-sym">' + (p.symbol || '').replace('USDT', '') + '</div>';
+                    html += '<div class="phm-dir ' + (p.side || '') + '">' + (p.side || '').toUpperCase() + '</div>';
+                    html += '<div class="phm-bar-wrap"><div class="phm-bar" style="width:' + barWidth + '%;background:' + barColor + '"></div></div>';
+                    html += '<div class="phm-pnl" style="color:' + barColor + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '%</div>';
+                    html += '<div class="phm-strat">' + (p.strategy || '') + '</div>';
+                    html += '</div>';
+                });
+                container.innerHTML = html;
+            }
+        }
+    }).catch(function() {});
+}
+
+var _botLogEntries = [];
+function appendBotLog(message, level) {
+    var logEl = $('bot-log');
+    if (!logEl) return;
+    var ts = new Date().toISOString().substring(11, 19);
+    _botLogEntries.push({ts: ts, msg: message, level: level || 'info'});
+    if (_botLogEntries.length > 200) _botLogEntries = _botLogEntries.slice(-200);
+    var entry = document.createElement('div');
+    entry.className = 'bot-log-entry ' + (level || 'info');
+    entry.textContent = '[' + ts + '] ' + message;
+    logEl.appendChild(entry);
+    while (logEl.childNodes.length > 200) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
 }
 
 function sendDrawerJarvis() {
