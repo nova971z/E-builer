@@ -3926,3 +3926,75 @@ trend score (+P(STRONG_BULL/BEAR)).
 - [x] py_compile verified ✓
 
 ---
+
+## Section 14 — MacroDataEngine (Prompt 4)
+
+### 14.1 Overview
+
+MacroDataEngine aggregates macro-economic and geopolitical data from free sources to produce a composite score (-100 to +100) influencing the AutonomousEngine's trading decisions. Negative scores tighten entry thresholds; positive scores loosen them. The engine also detects upcoming high-impact events and geopolitical crises to force-close or reduce exposure.
+
+### 14.2 Class: MacroDataEngine (server.py:4675-5261)
+
+**Data Sources (free, no API key required):**
+- Fear & Greed Index (Alternative.me)
+- DXY strength (Stooq CSV)
+- VIX (Stooq CSV)
+- Treasury yields 10Y/2Y (Stooq CSV) — yield curve inversion detection
+- Gold/Oil correlation (Stooq CSV) — risk-on/off signal
+- Crypto dominance & market cap (CoinGecko)
+- Geopolitical risk (BBC + Reuters RSS keyword scoring)
+- Economic calendar (enriched hardcoded + upcoming event detection)
+
+**Scoring Components:**
+| Component | Range | Logic |
+|-----------|-------|-------|
+| fear_greed | -15 to +15 | Contrarian: extreme fear=bullish, extreme greed=bearish |
+| dxy | -20 to +20 | Strong dollar = bearish crypto |
+| vix | -15 to +5 | High VIX = risk-off bearish |
+| yields | -10 to +2 | Inverted curve = recession signal |
+| gold_oil | -5 to +5 | Risk-on/off from commodity moves |
+| dominance | -10 to +10 | Market cap change weighted |
+| geopolitical | -15 to 0 | Only penalizes (keyword severity scoring) |
+| upcoming_events | -5 to 0 | High-impact events within 24h |
+
+### 14.3 Integration with AutonomousEngine
+
+- `_loop()`: Calls `macro_engine.compute_macro_score()` before scanning symbols
+- `_scan_symbol()`: Passes `macro_score` to `_should_trade()`
+- `_should_trade()`: Adjusts `min_signal_score` dynamically:
+  - macro_score < -50 → min raised to 200
+  - macro_score < -20 → min raised by +25
+  - macro_score > 20 → min lowered by -15
+- `_manage_open_positions(force_close_pct)`: Supports macro-driven force close
+- `should_reduce_exposure()`: Returns reduce=True + target_exposure_pct for upcoming HIGH events (≤4h) or CRITICAL geopolitical risk
+- `get_status()`: Now includes `macro_score` in state output
+
+### 14.4 API Routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/api/macro` | GET | Full macro score with all components |
+| `/api/macro/calendar` | GET | Economic calendar + reduce_exposure recommendation |
+| `/api/macro/geopolitical` | GET | Geopolitical risk score + events |
+
+### 14.5 Background Refresh
+
+- `macro_engine.start_refresh()` called in `if __name__ == "__main__"` block
+- Daemon thread refreshes every 900s (15 min)
+- Per-source cache TTLs (300s-14400s) prevent excessive API calls
+
+### 14.6 Status: `[FAIT]`
+
+- [x] MacroDataEngine class (~590 lines)
+- [x] 8 data fetchers (fear_greed, dxy, vix, yields, gold_oil, dominance, geopolitical, calendar)
+- [x] compute_macro_score() — composite -100 to +100
+- [x] should_reduce_exposure() — event-driven exposure reduction
+- [x] Geopolitical keyword scoring (4 severity levels, critical/high/medium/low)
+- [x] Enriched economic calendar with impact levels
+- [x] AutonomousEngine integration (macro-adjusted thresholds + force close)
+- [x] get_status() includes macro_score
+- [x] 3 API routes: /api/macro, /api/macro/calendar, /api/macro/geopolitical
+- [x] macro_engine.start_refresh() in main block
+- [x] py_compile verified ✓
+
+---

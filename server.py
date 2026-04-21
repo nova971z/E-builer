@@ -4596,6 +4596,674 @@ strategy_selector = StrategySelector()
 
 
 # ---------------------------------------------------------------------------
+# Macro-Economic & Geopolitical Data Engine
+# Aggregates free data sources (no API keys) into a single macro score that
+# the AutonomousEngine uses to adjust risk appetite and signal thresholds.
+# ---------------------------------------------------------------------------
+
+_GEO_KEYWORDS_CRITICAL = ["war", "invasion", "nuclear", "sanctions", "default", "attack", "bomb"]
+_GEO_KEYWORDS_HIGH = ["tariff", "trade war", "missile", "military", "embargo", "blockade", "coup"]
+_GEO_KEYWORDS_MEDIUM = ["election", "summit", "protest", "crisis", "recession", "shutdown", "strike"]
+_GEO_KEYWORDS_LOW = ["regulation", "policy", "diplomatic", "agreement", "treaty", "negotiate"]
+
+_CRYPTO_REG_POSITIVE = ["etf approval", "etf approved", "adoption", "legal tender", "pro-crypto", "favorable"]
+_CRYPTO_REG_NEGATIVE = ["ban", "lawsuit", "sued", "crackdown", "restrict", "fraud", "enforcement"]
+
+_EVENT_IMPACT_MAP = {
+    "CPI":   {"higher": -20, "lower": 15, "inline": 0},
+    "NFP":   {"higher": -15, "lower": 10, "inline": 0},
+    "FOMC":  {"hawkish": -25, "dovish": 25, "neutral": 0},
+    "GDP":   {"higher": 5, "lower": -10, "inline": 0},
+    "PCE":   {"higher": -15, "lower": 10, "inline": 0},
+    "PPI":   {"higher": -10, "lower": 8, "inline": 0},
+    "ISM":   {"higher": 5, "lower": -5, "inline": 0},
+    "RETAIL": {"higher": 5, "lower": -5, "inline": 0},
+    "JOBLESS": {"higher": 10, "lower": -5, "inline": 0},
+    "RATE_CUT": {"actual": 30, "none": -5},
+    "RATE_HIKE": {"actual": -30, "none": 5},
+    "TARIFF": {"new": -15, "removed": 10, "none": 0},
+}
+
+_CRYPTO_EVENT_MAP = {
+    "FOMC": ["BTCUSDT", "ETHUSDT"],
+    "CPI": ["BTCUSDT", "ETHUSDT"],
+    "NFP": ["BTCUSDT", "ETHUSDT"],
+    "DXY": ["BTCUSDT"],
+    "GEOPOLITICAL": ["BTCUSDT"],
+    "REGULATION": ["ETHUSDT", "SOLUSDT"],
+    "CHINA": ["BTCUSDT"],
+    "ALTSEASON": ["SOLUSDT", "DOGEUSDT", "XRPUSDT"],
+}
+
+_ENRICHED_CALENDAR = [
+    {"event": "FOMC Decision", "type": "FOMC", "impact": "HIGH",
+     "dates": ["2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
+               "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16"]},
+    {"event": "FOMC Minutes", "type": "FOMC", "impact": "MEDIUM",
+     "dates": ["2026-02-18", "2026-04-08", "2026-05-27", "2026-07-08",
+               "2026-08-19", "2026-10-07", "2026-11-25"]},
+    {"event": "CPI Release", "type": "CPI", "impact": "HIGH",
+     "dates": ["2026-01-14", "2026-02-12", "2026-03-12", "2026-04-14",
+               "2026-05-13", "2026-06-10", "2026-07-14", "2026-08-12",
+               "2026-09-10", "2026-10-13", "2026-11-12", "2026-12-10"]},
+    {"event": "Non-Farm Payrolls", "type": "NFP", "impact": "HIGH",
+     "dates": ["2026-01-09", "2026-02-06", "2026-03-06", "2026-04-03",
+               "2026-05-08", "2026-06-05", "2026-07-02", "2026-08-07",
+               "2026-09-04", "2026-10-02", "2026-11-06", "2026-12-04"]},
+    {"event": "GDP (Advance)", "type": "GDP", "impact": "MEDIUM",
+     "dates": ["2026-01-29", "2026-04-29", "2026-07-29", "2026-10-28"]},
+    {"event": "PCE Price Index", "type": "PCE", "impact": "HIGH",
+     "dates": ["2026-01-30", "2026-02-27", "2026-03-27", "2026-04-30",
+               "2026-05-29", "2026-06-26", "2026-07-31", "2026-08-28"]},
+    {"event": "PPI Release", "type": "PPI", "impact": "MEDIUM",
+     "dates": ["2026-01-15", "2026-02-13", "2026-03-13", "2026-04-15",
+               "2026-05-14", "2026-06-11", "2026-07-15", "2026-08-13"]},
+    {"event": "ISM Manufacturing", "type": "ISM", "impact": "MEDIUM",
+     "dates": ["2026-01-05", "2026-02-02", "2026-03-02", "2026-04-01",
+               "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-03"]},
+    {"event": "Retail Sales", "type": "RETAIL", "impact": "MEDIUM",
+     "dates": ["2026-01-16", "2026-02-14", "2026-03-17", "2026-04-16",
+               "2026-05-15", "2026-06-16", "2026-07-16", "2026-08-14"]},
+    {"event": "Jobless Claims", "type": "JOBLESS", "impact": "LOW",
+     "dates": []},
+    {"event": "ECB Decision", "type": "FOMC", "impact": "MEDIUM",
+     "dates": ["2026-01-22", "2026-03-05", "2026-04-16", "2026-06-04",
+               "2026-07-16", "2026-09-10", "2026-10-29", "2026-12-10"]},
+]
+
+
+class MacroDataEngine:
+    """Fetches and analyzes macro-economic & geopolitical data."""
+
+    _CACHE_TTL = {
+        "fear_greed": 3600,
+        "dxy": 300,
+        "vix": 300,
+        "yields": 300,
+        "gold_oil": 300,
+        "dominance": 600,
+        "geopolitical": 900,
+        "crypto_reg": 900,
+        "calendar": 14400,
+    }
+
+    def __init__(self):
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._last_fetch = {}
+        self._last_score = None
+        self._refresh_thread = None
+        self._running = False
+
+    # ----- cache helpers ----------------------------------------------------
+
+    def _get_cached(self, key):
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            data, ts = entry
+            ttl = self._CACHE_TTL.get(key, 300)
+            if time.time() - ts > ttl:
+                return None
+            return data
+
+    def _set_cached(self, key, data):
+        with self._lock:
+            self._cache[key] = (data, time.time())
+
+    # ----- background refresh -----------------------------------------------
+
+    def start_refresh(self):
+        if self._running:
+            return
+        self._running = True
+        self._refresh_thread = threading.Thread(target=self._refresh_loop,
+                                                daemon=True, name="macro-refresh")
+        self._refresh_thread.start()
+        log.info("[MACRO] Background refresh started")
+
+    def _refresh_loop(self):
+        while self._running:
+            try:
+                self.compute_macro_score()
+            except Exception as exc:
+                log.warning("[MACRO] Refresh error: %s", exc)
+            time.sleep(900)
+
+    # ----- data sources -----------------------------------------------------
+
+    def fetch_fear_greed_index(self):
+        cached = self._get_cached("fear_greed")
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get("https://api.alternative.me/fng/",
+                                params={"limit": 30, "format": "json"}, timeout=5)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                return None
+            current = int(data[0].get("value", 50))
+            classification = data[0].get("value_classification", "Neutral")
+            values = [int(d.get("value", 50)) for d in data[:7]]
+            trend = "rising" if len(values) >= 2 and values[0] > values[-1] else (
+                "falling" if len(values) >= 2 and values[0] < values[-1] else "flat")
+            result = {
+                "value": current,
+                "classification": classification,
+                "trend": trend,
+                "history_7d": values,
+            }
+            self._set_cached("fear_greed", result)
+            return result
+        except Exception as exc:
+            log.debug("[MACRO] Fear & Greed fetch failed: %s", exc)
+            return None
+
+    def _fetch_stooq(self, symbol):
+        cache_key = f"stooq_macro:{symbol}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get(STOOQ_BASE,
+                                params={"s": symbol, "f": "sd2t2ohlcv", "h": "", "e": "csv"},
+                                timeout=5)
+            resp.raise_for_status()
+            lines = resp.text.strip().split("\n")
+            if len(lines) < 2:
+                return None
+            headers = [h.strip().lower() for h in lines[0].split(",")]
+            values = lines[1].split(",")
+            row = {}
+            for h, v in zip(headers, values):
+                row[h] = v.strip()
+            price = float(row.get("close", 0))
+            open_p = float(row.get("open", 0))
+            if price <= 0:
+                return None
+            change = ((price - open_p) / open_p * 100) if open_p > 0 else 0
+            result = {"price": price, "open": open_p, "change_pct": round(change, 3)}
+            self._set_cached(cache_key, result)
+            return result
+        except Exception as exc:
+            log.debug("[MACRO] Stooq %s failed: %s", symbol, exc)
+            return None
+
+    def fetch_dxy_strength(self):
+        cached = self._get_cached("dxy")
+        if cached is not None:
+            return cached
+        data = self._fetch_stooq("dx.f")
+        if not data:
+            return None
+        change = data["change_pct"]
+        if change > 0.15:
+            trend = "rising"
+        elif change < -0.15:
+            trend = "falling"
+        else:
+            trend = "flat"
+        result = {
+            "value": data["price"],
+            "change_pct": change,
+            "trend": trend,
+            "crypto_impact": "bearish" if trend == "rising" else (
+                "bullish" if trend == "falling" else "neutral"),
+        }
+        self._set_cached("dxy", result)
+        return result
+
+    def fetch_treasury_yields(self):
+        cached = self._get_cached("yields")
+        if cached is not None:
+            return cached
+        y10 = self._fetch_stooq("10usy.b")
+        y2 = self._fetch_stooq("2usy.b")
+        y30 = self._fetch_stooq("30usy.b")
+        yields = {}
+        if y10:
+            yields["10y"] = y10["price"]
+        if y2:
+            yields["2y"] = y2["price"]
+        if y30:
+            yields["30y"] = y30["price"]
+        spread = yields.get("10y", 0) - yields.get("2y", 0) if "10y" in yields and "2y" in yields else None
+        result = {
+            "yields": yields,
+            "spread_10y_2y": round(spread, 3) if spread is not None else None,
+            "is_inverted": spread is not None and spread < 0,
+        }
+        self._set_cached("yields", result)
+        return result
+
+    def fetch_vix(self):
+        cached = self._get_cached("vix")
+        if cached is not None:
+            return cached
+        data = self._fetch_stooq("^vix")
+        if not data:
+            return None
+        val = data["price"]
+        if val < 15:
+            regime = "low"
+        elif val < 25:
+            regime = "normal"
+        elif val < 35:
+            regime = "high"
+        else:
+            regime = "extreme"
+        result = {
+            "value": val,
+            "change_pct": data["change_pct"],
+            "regime": regime,
+            "crypto_impact": "bearish" if regime in ("high", "extreme") else "neutral",
+        }
+        self._set_cached("vix", result)
+        return result
+
+    def fetch_gold_oil_correlation(self):
+        cached = self._get_cached("gold_oil")
+        if cached is not None:
+            return cached
+        gold = self._fetch_stooq("xauusd")
+        oil = self._fetch_stooq("cl.f")
+        result = {"gold": None, "oil": None, "signal": "neutral"}
+        if gold:
+            result["gold"] = {"price": gold["price"], "change_pct": gold["change_pct"]}
+        if oil:
+            result["oil"] = {"price": oil["price"], "change_pct": oil["change_pct"]}
+        if gold and oil:
+            gold_up = gold["change_pct"] > 0.2
+            oil_down = oil["change_pct"] < -0.2
+            gold_down = gold["change_pct"] < -0.2
+            oil_up = oil["change_pct"] > 0.2
+            if gold_up and oil_down:
+                result["signal"] = "risk_off"
+            elif gold_down and oil_up:
+                result["signal"] = "risk_on"
+        self._set_cached("gold_oil", result)
+        return result
+
+    def fetch_crypto_dominance(self):
+        cached = self._get_cached("dominance")
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get("https://api.coingecko.com/api/v3/global", timeout=5,
+                                headers={"User-Agent": "JARVIS/3.0"})
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            mcp = data.get("market_cap_percentage", {})
+            result = {
+                "btc_dominance": round(mcp.get("btc", 0), 2),
+                "eth_dominance": round(mcp.get("eth", 0), 2),
+                "total_market_cap_usd": data.get("total_market_cap", {}).get("usd", 0),
+                "market_cap_change_24h": round(data.get("market_cap_change_percentage_24h_usd", 0), 2),
+            }
+            if result["btc_dominance"] > 55:
+                result["signal"] = "btc_flight"
+            elif result["btc_dominance"] < 45:
+                result["signal"] = "alt_season"
+            else:
+                result["signal"] = "neutral"
+            self._set_cached("dominance", result)
+            return result
+        except Exception as exc:
+            log.debug("[MACRO] CoinGecko dominance failed: %s", exc)
+            return None
+
+    def fetch_geopolitical_risk(self):
+        cached = self._get_cached("geopolitical")
+        if cached is not None:
+            return cached
+        feeds = [
+            ("BBC World", "http://feeds.bbci.co.uk/news/world/rss.xml"),
+            ("Reuters", "http://feeds.reuters.com/Reuters/worldNews"),
+        ]
+        all_titles = []
+        for name, url in feeds:
+            try:
+                resp = requests.get(url, timeout=5, headers={"User-Agent": "JARVIS/3.0"})
+                if resp.status_code != 200:
+                    continue
+                items = _parse_rss_minimal(resp.text, name)
+                for item in items:
+                    all_titles.append(item.get("title", "").lower())
+            except Exception:
+                continue
+
+        score = 0
+        top_events = []
+        for title in all_titles:
+            event_score = 0
+            level = None
+            for kw in _GEO_KEYWORDS_CRITICAL:
+                if kw in title:
+                    event_score = max(event_score, 10)
+                    level = "CRITICAL"
+            for kw in _GEO_KEYWORDS_HIGH:
+                if kw in title:
+                    event_score = max(event_score, 7)
+                    level = level or "HIGH"
+            for kw in _GEO_KEYWORDS_MEDIUM:
+                if kw in title:
+                    event_score = max(event_score, 4)
+                    level = level or "MEDIUM"
+            for kw in _GEO_KEYWORDS_LOW:
+                if kw in title:
+                    event_score = max(event_score, 2)
+                    level = level or "LOW"
+            if event_score > 0:
+                score += event_score
+                if len(top_events) < 10:
+                    top_events.append({"title": title[:120], "level": level, "score": event_score})
+
+        score = min(score, 100)
+        if score >= 60:
+            alert = "CRITICAL"
+        elif score >= 35:
+            alert = "HIGH"
+        elif score >= 15:
+            alert = "MEDIUM"
+        else:
+            alert = "LOW"
+
+        top_events.sort(key=lambda e: e["score"], reverse=True)
+        result = {
+            "risk_score": score,
+            "alert_level": alert,
+            "top_events": top_events[:5],
+            "headlines_scanned": len(all_titles),
+        }
+        self._set_cached("geopolitical", result)
+        return result
+
+    def fetch_crypto_regulation_news(self):
+        cached = self._get_cached("crypto_reg")
+        if cached is not None:
+            return cached
+        feeds = [
+            ("CoinTelegraph", "https://cointelegraph.com/rss"),
+            ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+        ]
+        articles = []
+        for name, url in feeds:
+            try:
+                resp = requests.get(url, timeout=5, headers={"User-Agent": "JARVIS/3.0"})
+                if resp.status_code != 200:
+                    continue
+                items = _parse_rss_minimal(resp.text, name)
+                articles.extend(items)
+            except Exception:
+                continue
+
+        positive = 0
+        negative = 0
+        reg_events = []
+        for art in articles:
+            title_lower = (art.get("title", "") + " " + art.get("description", "")).lower()
+            is_reg = any(kw in title_lower for kw in
+                         ["sec", "cftc", "regulat", "ban", "etf", "approval", "lawsuit", "enforce"])
+            if not is_reg:
+                continue
+            impact = "NEUTRAL"
+            for kw in _CRYPTO_REG_POSITIVE:
+                if kw in title_lower:
+                    positive += 1
+                    impact = "POSITIVE"
+                    break
+            for kw in _CRYPTO_REG_NEGATIVE:
+                if kw in title_lower:
+                    negative += 1
+                    impact = "NEGATIVE"
+                    break
+            if len(reg_events) < 5:
+                reg_events.append({"title": art.get("title", "")[:120], "impact": impact,
+                                   "source": art.get("source", "")})
+
+        result = {
+            "positive_count": positive,
+            "negative_count": negative,
+            "net_sentiment": "bullish" if positive > negative + 1 else (
+                "bearish" if negative > positive + 1 else "neutral"),
+            "events": reg_events,
+        }
+        self._set_cached("crypto_reg", result)
+        return result
+
+    def fetch_economic_calendar(self):
+        cached = self._get_cached("calendar")
+        if cached is not None:
+            return cached
+        now = datetime.now(timezone.utc)
+        today_str = now.strftime("%Y-%m-%d")
+        events = []
+        event_mode = False
+
+        for cal in _ENRICHED_CALENDAR:
+            for date_str in cal["dates"]:
+                try:
+                    event_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    days_until = (event_date - now).days
+                    if -1 <= days_until <= 30:
+                        entry = {
+                            "event": cal["event"],
+                            "type": cal.get("type", ""),
+                            "date": date_str,
+                            "impact": cal["impact"],
+                            "days_until": days_until,
+                            "is_today": days_until == 0,
+                            "hours_until": max(0, int((event_date - now).total_seconds() / 3600)),
+                        }
+                        events.append(entry)
+                        if days_until == 0 and cal["impact"] == "HIGH":
+                            event_mode = True
+                except ValueError:
+                    continue
+
+        events.sort(key=lambda e: e.get("hours_until", 999))
+        result = {
+            "events": events,
+            "event_mode": event_mode,
+            "today": today_str,
+            "next_event": events[0] if events else None,
+            "high_impact_24h": [e for e in events if e["impact"] == "HIGH" and e.get("hours_until", 999) <= 24],
+        }
+        self._set_cached("calendar", result)
+        return result
+
+    # ----- analysis ---------------------------------------------------------
+
+    def compute_macro_score(self):
+        components = {}
+        score = 0.0
+        alert_events = []
+
+        fg = self.fetch_fear_greed_index()
+        if fg:
+            val = fg["value"]
+            if val < 20:
+                s = 15.0
+                components["fear_greed"] = {"value": val, "score": s, "detail": "Extreme Fear (contrarian bullish)"}
+            elif val > 80:
+                s = -15.0
+                components["fear_greed"] = {"value": val, "score": s, "detail": "Extreme Greed (contrarian bearish)"}
+            elif val < 35:
+                s = 8.0
+                components["fear_greed"] = {"value": val, "score": s, "detail": "Fear (mildly bullish)"}
+            elif val > 65:
+                s = -8.0
+                components["fear_greed"] = {"value": val, "score": s, "detail": "Greed (mildly bearish)"}
+            else:
+                s = 0.0
+                components["fear_greed"] = {"value": val, "score": s, "detail": "Neutral"}
+            score += s
+
+        dxy = self.fetch_dxy_strength()
+        if dxy:
+            chg = dxy["change_pct"]
+            s = -chg * 10.0
+            s = max(-20, min(20, s))
+            components["dxy"] = {"value": dxy["value"], "change": chg, "score": round(s, 1),
+                                 "detail": f"DXY {dxy['trend']} ({chg:+.2f}%)"}
+            score += s
+
+        vix = self.fetch_vix()
+        if vix:
+            val = vix["value"]
+            if val > 35:
+                s = -15.0
+            elif val > 25:
+                s = -10.0
+            elif val < 15:
+                s = 5.0
+            else:
+                s = 0.0
+            components["vix"] = {"value": val, "regime": vix["regime"], "score": s}
+            score += s
+
+        yields = self.fetch_treasury_yields()
+        if yields and yields["spread_10y_2y"] is not None:
+            spread = yields["spread_10y_2y"]
+            if yields["is_inverted"]:
+                s = -10.0
+                components["yields"] = {"spread": spread, "inverted": True, "score": s,
+                                        "detail": "Yield curve inverted — recession signal"}
+            elif spread < 0.2:
+                s = -5.0
+                components["yields"] = {"spread": spread, "inverted": False, "score": s,
+                                        "detail": "Yield curve flattening"}
+            else:
+                s = 2.0
+                components["yields"] = {"spread": spread, "inverted": False, "score": s,
+                                        "detail": "Yield curve normal"}
+            score += s
+
+        gold_oil = self.fetch_gold_oil_correlation()
+        if gold_oil:
+            sig = gold_oil["signal"]
+            if sig == "risk_off":
+                s = -5.0
+            elif sig == "risk_on":
+                s = 5.0
+            else:
+                s = 0.0
+            components["gold_oil"] = {"signal": sig, "score": s,
+                                      "gold": gold_oil.get("gold"), "oil": gold_oil.get("oil")}
+            score += s
+
+        dom = self.fetch_crypto_dominance()
+        if dom:
+            sig = dom["signal"]
+            mcc = dom["market_cap_change_24h"]
+            if mcc > 3:
+                s = 10.0
+            elif mcc < -3:
+                s = -10.0
+            else:
+                s = mcc * 1.5
+            components["dominance"] = {"btc_d": dom["btc_dominance"], "signal": sig,
+                                       "market_cap_change": mcc, "score": round(s, 1)}
+            score += s
+
+        geo = self.fetch_geopolitical_risk()
+        if geo:
+            risk = geo["risk_score"]
+            s = -risk * 0.15
+            s = max(-15, min(0, s))
+            components["geopolitical"] = {"risk_score": risk, "alert": geo["alert_level"],
+                                          "score": round(s, 1)}
+            score += s
+            if geo["alert_level"] in ("CRITICAL", "HIGH"):
+                alert_events.extend(geo.get("top_events", [])[:3])
+
+        cal = self.fetch_economic_calendar()
+        if cal:
+            high_24h = cal.get("high_impact_24h", [])
+            if high_24h:
+                s = -5.0
+                components["upcoming_events"] = {"count": len(high_24h), "score": s,
+                                                 "events": [e["event"] for e in high_24h[:3]]}
+                score += s
+                for e in high_24h:
+                    alert_events.append({"title": e["event"], "level": "HIGH",
+                                         "hours_until": e.get("hours_until", 0)})
+
+        score = max(-100, min(100, score))
+
+        if score > 30:
+            recommendation = "BULLISH — macro conditions favor crypto"
+        elif score > 10:
+            recommendation = "MILDLY_BULLISH — conditions slightly favorable"
+        elif score < -30:
+            recommendation = "BEARISH — macro headwinds for crypto"
+        elif score < -10:
+            recommendation = "MILDLY_BEARISH — conditions slightly unfavorable"
+        else:
+            recommendation = "NEUTRAL — no strong macro bias"
+
+        result = {
+            "score": round(score, 1),
+            "recommendation": recommendation,
+            "components": components,
+            "alert_events": alert_events[:5],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self._last_score = result
+        return result
+
+    def get_event_impact_on_crypto(self, event_type, outcome="inline"):
+        impact = _EVENT_IMPACT_MAP.get(event_type.upper(), {})
+        return impact.get(outcome, 0)
+
+    def get_correlated_cryptos(self, event_type):
+        return _CRYPTO_EVENT_MAP.get(event_type.upper(), ["BTCUSDT", "ETHUSDT"])
+
+    def should_reduce_exposure(self):
+        cal = self.fetch_economic_calendar()
+        if not cal:
+            return {"reduce": False, "reason": "", "target_exposure_pct": 100}
+
+        high_24h = cal.get("high_impact_24h", [])
+        for event in high_24h:
+            hours = event.get("hours_until", 999)
+            if hours <= 4 and event["impact"] == "HIGH":
+                return {
+                    "reduce": True,
+                    "reason": f"{event['event']} in {hours}h (HIGH impact)",
+                    "target_exposure_pct": 0,
+                }
+
+        events = cal.get("events", [])
+        for event in events:
+            hours = event.get("hours_until", 999)
+            if hours <= 1 and event["impact"] == "MEDIUM":
+                return {
+                    "reduce": True,
+                    "reason": f"{event['event']} in {hours}h (MEDIUM impact)",
+                    "target_exposure_pct": 50,
+                }
+
+        geo = self.fetch_geopolitical_risk()
+        if geo and geo.get("alert_level") == "CRITICAL":
+            return {
+                "reduce": True,
+                "reason": f"Geopolitical risk CRITICAL (score {geo['risk_score']})",
+                "target_exposure_pct": 25,
+            }
+
+        return {"reduce": False, "reason": "", "target_exposure_pct": 100}
+
+    def get_last_score(self):
+        return self._last_score
+
+
+macro_engine = MacroDataEngine()
+
+
+# ---------------------------------------------------------------------------
 # Autonomous Trading Engine — Background loop that scans markets and executes
 # trades without human intervention.
 # ---------------------------------------------------------------------------
@@ -4695,11 +5363,28 @@ class AutonomousEngine:
                     time.sleep(self._config["scan_interval"])
                     continue
 
+                macro_score_data = None
+                try:
+                    macro_score_data = macro_engine.compute_macro_score()
+                    self._state["macro_score"] = macro_score_data.get("score", 0)
+                except Exception as exc:
+                    log.debug("[BOT] Macro score fetch: %s", exc)
+                    self._state["macro_score"] = 0
+
+                try:
+                    exposure = macro_engine.should_reduce_exposure()
+                    if exposure.get("reduce"):
+                        log.warning("[BOT] Macro: reducing exposure — %s", exposure["reason"])
+                        self._state["macro_reduce"] = exposure["reason"]
+                        self._manage_open_positions(force_close_pct=100 - exposure.get("target_exposure_pct", 100))
+                except Exception as exc:
+                    log.debug("[BOT] Macro exposure check: %s", exc)
+
                 for symbol in list(self._config["symbols"]):
                     if not self._running:
                         break
                     try:
-                        self._scan_symbol(symbol)
+                        self._scan_symbol(symbol, macro_score=self._state.get("macro_score", 0))
                     except Exception as exc:
                         self._record_error(f"Scan {symbol}: {exc}")
                         log.warning("[BOT] Scan error | %s | %s", symbol, exc)
@@ -4726,7 +5411,7 @@ class AutonomousEngine:
 
     # ----- symbol scanning --------------------------------------------------
 
-    def _scan_symbol(self, symbol):
+    def _scan_symbol(self, symbol, macro_score=0):
         if symbol in ("GOLD", "SILVER"):
             return
 
@@ -4789,7 +5474,7 @@ class AutonomousEngine:
         }
 
         if self._should_trade(signal_info, regime_info, risk_check, dip_top_info,
-                              strat_pick):
+                              strat_pick, macro_score=macro_score):
             current_price = ohlcv[-1]["close"]
 
             if strat_direction:
@@ -4817,23 +5502,33 @@ class AutonomousEngine:
     # ----- decision logic ---------------------------------------------------
 
     def _should_trade(self, signal, regime_info, risk_check, dip_top_info,
-                      strat_pick=None):
+                      strat_pick=None, macro_score=0):
         if not risk_check.get("approved", False):
             return False
 
         score = abs(signal.get("score", 0))
         confidence = signal.get("confidence", 0)
 
+        base_min = self._config["min_signal_score"]
+        if macro_score < -50:
+            adjusted_min = max(base_min, 200)
+        elif macro_score < -20:
+            adjusted_min = base_min + 25
+        elif macro_score > 20:
+            adjusted_min = max(50, base_min - 15)
+        else:
+            adjusted_min = base_min
+
         has_strategy_entry = isinstance(strat_pick, dict) and strat_pick.get("direction")
 
         if has_strategy_entry:
             strat_conf = strat_pick.get("confidence", 0)
-            if strat_conf >= self._config["min_confidence"] and score >= self._config["min_signal_score"] * 0.6:
+            if strat_conf >= self._config["min_confidence"] and score >= adjusted_min * 0.6:
                 pass
-            elif score < self._config["min_signal_score"]:
+            elif score < adjusted_min:
                 return False
         else:
-            if score < self._config["min_signal_score"]:
+            if score < adjusted_min:
                 return False
             if confidence < self._config["min_confidence"]:
                 return False
@@ -4991,8 +5686,24 @@ class AutonomousEngine:
 
     # ----- position management ----------------------------------------------
 
-    def _manage_open_positions(self):
+    def _manage_open_positions(self, force_close_pct=0):
         paper_positions = self._paper.get_open_positions()
+
+        if force_close_pct >= 100 and paper_positions:
+            for pos in paper_positions:
+                try:
+                    symbol = pos.get("symbol", "")
+                    price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=5)
+                    if price_data:
+                        current = float(price_data.get("price", 0))
+                        if current > 0:
+                            result = self._paper.close(pos["id"], current)
+                            pnl = result.get("pnl", 0)
+                            self._state["daily_pnl"] += pnl
+                            log.info("[BOT] Macro force-close | %s | pnl=%.4f", symbol, pnl)
+                except Exception as exc:
+                    log.warning("[BOT] Force-close error %s: %s", pos.get("symbol", "?"), exc)
+            return
 
         for pos in paper_positions:
             try:
@@ -5172,6 +5883,7 @@ class AutonomousEngine:
                     "last_signals": dict(self._state["last_signals"]),
                     "active_strategies": dict(self._state["active_strategies"]),
                     "in_cooldown": self._is_in_cooldown(),
+                    "macro_score": self._state.get("macro_score", 0),
                 },
                 "recent_trades": self._trade_log[-20:],
             }
@@ -8019,6 +8731,42 @@ def api_bot_config():
     return jsonify(result)
 
 
+# ---------------------------------------------------------------------------
+# Macro-economic data routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/macro")
+@rate_limit("bot")
+def api_macro():
+    last = macro_engine.get_last_score()
+    if last:
+        return jsonify(last)
+    result = macro_engine.compute_macro_score()
+    return jsonify(result)
+
+
+@app.route("/api/macro/calendar")
+@rate_limit("bot")
+def api_macro_calendar():
+    cal = macro_engine.fetch_economic_calendar()
+    if cal is None:
+        return jsonify({"events": [], "high_impact_24h": [], "error": "unavailable"})
+    reduce = macro_engine.should_reduce_exposure()
+    cal["reduce_exposure"] = reduce
+    return jsonify(cal)
+
+
+@app.route("/api/macro/geopolitical")
+@rate_limit("bot")
+def api_macro_geopolitical():
+    geo = macro_engine.fetch_geopolitical_risk()
+    if geo is None:
+        return jsonify({"risk_score": 0, "alert_level": "UNKNOWN", "events": [],
+                        "error": "unavailable"})
+    return jsonify(geo)
+
+
 # ===========================================================================
 # Main entry point
 # ===========================================================================
@@ -8026,6 +8774,7 @@ def api_bot_config():
 if __name__ == "__main__":
     init_db()
     exchange_manager.load_from_db()
+    macro_engine.start_refresh()
 
     # --- Security checks at startup ---
     if not HAS_FERNET:
