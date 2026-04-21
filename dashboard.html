@@ -3582,6 +3582,14 @@ function connectBinanceWS(symbol, interval) {
                 el.classList.remove('up', 'down');
                 el.classList.add(candle.close >= prevClose ? 'up' : 'down');
             }
+
+            // Update RSI + MACD in real-time
+            updateIndicatorsRealtime(candle.close, Math.floor(k.t / 1000));
+
+            // When a new bar starts, refresh cache from full data
+            if (k.x) {
+                computeClientIndicators();
+            }
         } catch (e) {}
     };
 
@@ -3709,6 +3717,9 @@ function clientCalcBollinger(closes, period, stdDev) {
     return { upper: upper, middle: middle, lower: lower };
 }
 
+// Cached indicator state for incremental WS updates
+var _indCache = { ready: false };
+
 function computeClientIndicators() {
     if (!candleData || candleData.length < 30) return;
     var closes = [];
@@ -3717,10 +3728,11 @@ function computeClientIndicators() {
         closes.push(candleData[i].close);
         times.push(epochToLocal(candleData[i].time));
     }
+    var n = closes.length;
 
     // RSI
+    var rsi = clientCalcRSI(closes, 14);
     if (rsiSeries) {
-        var rsi = clientCalcRSI(closes, 14);
         var rsiData = [];
         for (var r = 0; r < rsi.length; r++) {
             if (rsi[r] != null) rsiData.push({ time: times[r], value: rsi[r] });
@@ -3728,9 +3740,29 @@ function computeClientIndicators() {
         rsiSeries.setData(rsiData);
     }
 
+    // Cache RSI state: recompute avgGain/avgLoss at end
+    var rsiPeriod = 14;
+    var rAvgGain = 0, rAvgLoss = 0;
+    if (n > rsiPeriod + 1) {
+        var g0 = 0, l0 = 0;
+        for (var ri = 1; ri <= rsiPeriod; ri++) {
+            var rd = closes[ri] - closes[ri - 1];
+            if (rd > 0) g0 += rd; else l0 -= rd;
+        }
+        rAvgGain = g0 / rsiPeriod;
+        rAvgLoss = l0 / rsiPeriod;
+        for (var rj = rsiPeriod + 1; rj < n; rj++) {
+            var rd2 = closes[rj] - closes[rj - 1];
+            rAvgGain = (rAvgGain * (rsiPeriod - 1) + (rd2 > 0 ? rd2 : 0)) / rsiPeriod;
+            rAvgLoss = (rAvgLoss * (rsiPeriod - 1) + (rd2 < 0 ? -rd2 : 0)) / rsiPeriod;
+        }
+    }
+
     // MACD
+    var emaF = clientCalcEMA(closes, 12);
+    var emaS = clientCalcEMA(closes, 26);
+    var macd = clientCalcMACD(closes);
     if (macdLineSeries) {
-        var macd = clientCalcMACD(closes);
         var mL = [], mS = [], mH = [];
         for (var m = 0; m < macd.line.length; m++) {
             if (macd.line[m] != null) mL.push({ time: times[m], value: macd.line[m] });
@@ -3744,6 +3776,19 @@ function computeClientIndicators() {
         macdSignalSeries.setData(mS);
         macdHistSeries.setData(mH);
     }
+
+    // Cache state for incremental updates
+    _indCache = {
+        ready: true,
+        prevClose: closes[n - 1],
+        rsiAvgGain: rAvgGain,
+        rsiAvgLoss: rAvgLoss,
+        emaFast: emaF[n - 1],
+        emaSlow: emaS[n - 1],
+        macdPrevSig: macd.signal[n - 1],
+        lastTime: times[n - 1],
+        isNewBar: false
+    };
 
     // Bollinger
     if (indicatorState.bb) {
@@ -3812,6 +3857,42 @@ function buildOverlayData(values) {
         result.push({ time: epochToLocal(pt.time), value: pt.value });
     }
     return result;
+}
+
+// Incremental indicator update on each WS tick
+function updateIndicatorsRealtime(closePrice, candleTime) {
+    if (!_indCache.ready) return;
+    var t = epochToLocal(candleTime);
+    var prevClose = _indCache.prevClose;
+    var diff = closePrice - prevClose;
+
+    // RSI update
+    if (rsiSeries) {
+        var p = 14;
+        var ag = (_indCache.rsiAvgGain * (p - 1) + (diff > 0 ? diff : 0)) / p;
+        var al = (_indCache.rsiAvgLoss * (p - 1) + (diff < 0 ? -diff : 0)) / p;
+        var rsiVal = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+        rsiSeries.update({ time: t, value: rsiVal });
+    }
+
+    // MACD update
+    if (macdLineSeries && _indCache.emaFast != null && _indCache.emaSlow != null) {
+        var multF = 2.0 / 13;
+        var multS = 2.0 / 27;
+        var multSig = 2.0 / 10;
+        var ef = closePrice * multF + _indCache.emaFast * (1 - multF);
+        var es = closePrice * multS + _indCache.emaSlow * (1 - multS);
+        var macdLine = ef - es;
+        macdLineSeries.update({ time: t, value: macdLine });
+
+        if (_indCache.macdPrevSig != null) {
+            var sig = macdLine * multSig + _indCache.macdPrevSig * (1 - multSig);
+            macdSignalSeries.update({ time: t, value: sig });
+            var hist = macdLine - sig;
+            macdHistSeries.update({ time: t, value: hist,
+                color: hist >= 0 ? 'rgba(14,203,129,0.6)' : 'rgba(246,70,93,0.6)' });
+        }
+    }
 }
 
 function applyBollinger(bb) {
