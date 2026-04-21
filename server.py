@@ -597,6 +597,27 @@ def set_setting(key, value):
     conn.close()
 
 
+def delete_setting(key):
+    conn = get_db()
+    conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+
+
+def get_anthropic_key():
+    """Return Anthropic API key: env var first, then encrypted DB, else empty string."""
+    if ANTHROPIC_API_KEY:
+        return ANTHROPIC_API_KEY
+    enc = get_setting("anthropic_api_key_enc")
+    if enc:
+        try:
+            return decrypt_string(enc)
+        except Exception:
+            log.warning("Failed to decrypt stored Anthropic key")
+            return ""
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Binance API helpers
 # ---------------------------------------------------------------------------
@@ -3679,7 +3700,8 @@ def _extract_tag(text, tag):
 
 @app.route("/api/news/summarize", methods=["POST"])
 def api_news_summarize():
-    if not ANTHROPIC_API_KEY:
+    ak = get_anthropic_key()
+    if not ak:
         return jsonify({"summary": "API key not configured", "sentiment": "NEUTRAL"})
 
     body = request.get_json(force=True)
@@ -3691,7 +3713,7 @@ def api_news_summarize():
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": ak,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
@@ -3770,10 +3792,11 @@ Signe tes messages "— J.A.R.V.I.S."
 
 @app.route("/api/jarvis", methods=["POST"])
 def api_jarvis():
-    if not ANTHROPIC_API_KEY:
+    ak = get_anthropic_key()
+    if not ak:
         return jsonify({
             "response": "Monsieur, ma connexion au réseau Anthropic n'est pas configurée. "
-                        "Définissez la variable ANTHROPIC_API_KEY pour activer mes capacités d'analyse. — J.A.R.V.I.S.",
+                        "Ouvrez Settings et entrez votre clé API Anthropic pour activer mes capacités d'analyse. — J.A.R.V.I.S.",
             "model": None,
         })
 
@@ -3800,7 +3823,7 @@ def api_jarvis():
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": ak,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
@@ -4072,6 +4095,56 @@ def api_paper_status():
 def api_paper_history():
     limit = int(request.args.get("limit", 50))
     return jsonify(paper_trader.get_history(limit))
+
+
+# ===========================================================================
+# API ROUTES — Anthropic Key Management (3 routes)
+# ===========================================================================
+
+@app.route("/api/settings/anthropic-key", methods=["POST"])
+def api_set_anthropic_key():
+    body = request.get_json(force=True)
+    key = body.get("key", "").strip()
+    if not key:
+        return jsonify({"error": "Key is required"}), 400
+    if not key.startswith("sk-ant-"):
+        return jsonify({"error": "Invalid key format — must start with sk-ant-"}), 400
+    if len(key) < 20 or len(key) > 200:
+        return jsonify({"error": "Invalid key length"}), 400
+
+    encrypted = encrypt_string(key)
+    set_setting("anthropic_api_key_enc", encrypted)
+    last4 = key[-4:]
+    log.info("Anthropic API key configured (****%s)", last4)
+    return jsonify({"success": True, "masked": "sk-ant-****" + last4})
+
+
+@app.route("/api/settings/anthropic-key/status")
+def api_anthropic_key_status():
+    if ANTHROPIC_API_KEY:
+        last4 = ANTHROPIC_API_KEY[-4:]
+        return jsonify({"configured": True, "source": "env", "masked": "sk-ant-****" + last4})
+
+    enc = get_setting("anthropic_api_key_enc")
+    if enc:
+        try:
+            key = decrypt_string(enc)
+            last4 = key[-4:]
+            return jsonify({"configured": True, "source": "db", "masked": "sk-ant-****" + last4})
+        except Exception:
+            return jsonify({"configured": False, "source": None, "masked": None, "error": "Stored key corrupted"})
+
+    return jsonify({"configured": False, "source": None, "masked": None})
+
+
+@app.route("/api/settings/anthropic-key", methods=["DELETE"])
+def api_delete_anthropic_key():
+    enc = get_setting("anthropic_api_key_enc")
+    if not enc:
+        return jsonify({"error": "No stored key to delete (env var keys cannot be deleted from here)"}), 404
+    delete_setting("anthropic_api_key_enc")
+    log.info("Anthropic API key removed from DB")
+    return jsonify({"success": True})
 
 
 # ===========================================================================
@@ -4668,7 +4741,7 @@ def api_status():
         "version": APP_VERSION,
         "uptime": f"{hours}h {minutes}m",
         "uptime_seconds": int(uptime),
-        "ai_available": bool(ANTHROPIC_API_KEY),
+        "ai_available": bool(get_anthropic_key()),
         "whale_alert": bool(WHALE_ALERT_KEY),
         "ccxt_available": HAS_CCXT,
         "fernet_available": HAS_FERNET,
@@ -4681,7 +4754,7 @@ def api_status():
             "dip_top_detector": True,
             "paper_trading": True,
             "live_trading": HAS_CCXT,
-            "ai_chat": bool(ANTHROPIC_API_KEY),
+            "ai_chat": bool(get_anthropic_key()),
             "whale_tracking": True,
             "news_aggregation": True,
         },

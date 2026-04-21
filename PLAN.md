@@ -3186,7 +3186,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | Step | ID | Étape | Statut | Commit | Date |
 |------|----|-------|--------|--------|------|
 | 39 | S1.0 | Authentification PIN & Sessions | `[ ]` EN ATTENTE | — | — |
-| 40 | S2.0 | Stockage sécurisé clé Anthropic | `[ ]` EN ATTENTE | — | — |
+| 40 | S2.0 | Stockage sécurisé clé Anthropic | `[x]` FAIT | — | 2026-04-21 |
 | 41 | S3.0 | Coffre-fort GMX Wallet | `[ ]` EN ATTENTE | — | — |
 | 42 | S4.0 | CORS & Headers HTTP | `[ ]` EN ATTENTE | — | — |
 | 43 | S5.0 | Rate Limiting & Anti-brute force | `[ ]` EN ATTENTE | — | — |
@@ -3196,13 +3196,39 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 0 / 10 étapes terminées**
+**Progression sécurité : 1 / 10 étapes terminées**
 
 ---
 
-### 8.6 SUIVI DÉTAILLÉ PAR SOUS-TÂCHE (sera rempli étape par étape)
+### 8.6 SUIVI DÉTAILLÉ PAR SOUS-TÂCHE
 
-> Chaque étape sera détaillée ici au moment de son implémentation,
-> avec les sous-tâches S1.1, S1.2, ... exactes et les lignes d'insertion.
+#### Étape S2.0 — Stockage sécurisé clé Anthropic (Step 40) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S2.1 | Route `POST /api/settings/anthropic-key` — chiffre avec Fernet, stocke dans settings | `[x]` |
+| S2.2 | Route `GET /api/settings/anthropic-key/status` — retourne configured + masked (4 derniers chars) | `[x]` |
+| S2.3 | Route `DELETE /api/settings/anthropic-key` — supprime de la DB | `[x]` |
+| S2.4 | Fonction `get_anthropic_key()` — env var prioritaire, sinon DB, sinon vide | `[x]` |
+| S2.5 | Modifier `api_jarvis()` + `api_news_summarize()` → utilisent `get_anthropic_key()` | `[x]` |
+| S2.6 | Modifier `/api/status` → `bool(get_anthropic_key())` au lieu de variable globale | `[x]` |
+| S2.7 | Frontend : statut clé (dot vert/rouge + masked) dans modal Settings | `[x]` |
+| S2.8 | Frontend : bouton Remove (visible seulement si source=db, pas env) | `[x]` |
+| S2.9 | Frontend : validation format sk-ant-* avant envoi | `[x]` |
+| S2.10 | Supprimer hack `__set_key__` de `saveSettings()` | `[x]` |
+| S2.11 | `autocomplete="off"` + `spellcheck="false"` sur le champ clé | `[x]` |
+| S2.12 | `loadAnthropicKeyStatus()` appelé à l'ouverture du modal | `[x]` |
+
+**Vulnérabilités corrigées** : C-06 (hack __set_key__), M-01 (pas de route pour sauvegarder)
+
+**Tests passés** :
+- `GET /status` → `configured: false` ✓
+- `POST /key` avec clé valide → `masked: sk-ant-****cdef` ✓
+- `GET /status` → `configured: true, source: db` ✓
+- `DELETE /key` → `success: true` ✓
+- `POST /key` avec format invalide → erreur 400 ✓
+- `POST /key` avec clé vide → erreur 400 ✓
+- `/api/jarvis` sans clé → message "configurez" ✓
+- `/api/jarvis` avec clé DB → tente l'appel Anthropic ✓
 
 ---

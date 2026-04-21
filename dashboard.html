@@ -3057,7 +3057,12 @@ button:active { opacity: 0.7; }
         <div class="modal-body">
             <div class="modal-field">
                 <label>Anthropic API Key (JARVIS AI)</label>
-                <input type="password" id="set-anthropic-key" placeholder="sk-ant-...">
+                <div id="anthropic-key-status" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span id="ak-status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--red)"></span>
+                    <span id="ak-status-text" style="font-size:11px;color:var(--text-dim)">Not configured</span>
+                    <button id="ak-remove-btn" onclick="removeAnthropicKey()" style="display:none;margin-left:auto;padding:2px 8px;background:rgba(255,0,0,0.15);color:var(--red);border:1px solid rgba(255,0,0,0.3);border-radius:var(--radius-sm);font-size:10px;cursor:pointer">Remove</button>
+                </div>
+                <input type="password" id="set-anthropic-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
             </div>
             <div class="modal-field">
                 <label>Default Symbol</label>
@@ -5113,22 +5118,76 @@ async function confirmKillSwitchOff() {
 // ========== MODALS ==========
 function openModal(id) { $(id).classList.add('open'); }
 function closeModal(id) { $(id).classList.remove('open'); }
-function showSettings() { openModal('modal-settings'); loadExchangeList(); }
+function showSettings() { openModal('modal-settings'); loadExchangeList(); loadAnthropicKeyStatus(); }
 function showAddExchange() { openModal('modal-exchange'); }
 
 // ========== SETTINGS ==========
 async function saveSettings() {
-    const anthropicKey = $('set-anthropic-key').value;
-    const defaultSymbol = $('set-default-symbol').value;
-    const paperCapital = $('set-paper-capital').value;
+    var anthropicKey = $('set-anthropic-key').value.trim();
+    var defaultSymbol = $('set-default-symbol').value;
 
     if (anthropicKey) {
-        try { await fetch(API + '/api/jarvis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: '__set_key__:' + anthropicKey }) }); } catch (e) {}
+        if (!anthropicKey.startsWith('sk-ant-')) {
+            showToast('Invalid key format — must start with sk-ant-', 'error');
+            return;
+        }
+        try {
+            var resp = await fetch(API + '/api/settings/anthropic-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: anthropicKey }),
+            });
+            var data = await resp.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+                return;
+            }
+            showToast('Anthropic key saved: ' + data.masked, 'success');
+            $('set-anthropic-key').value = '';
+            loadAnthropicKeyStatus();
+        } catch (e) {
+            showToast('Failed to save key', 'error');
+            return;
+        }
     }
-    if (defaultSymbol && defaultSymbol !== currentSymbol) changeSymbol(defaultSymbol);
 
+    if (defaultSymbol && defaultSymbol !== currentSymbol) changeSymbol(defaultSymbol);
     closeModal('modal-settings');
-    showToast('Settings saved', 'success');
+    if (!anthropicKey) showToast('Settings saved', 'success');
+}
+
+async function loadAnthropicKeyStatus() {
+    try {
+        var resp = await fetch(API + '/api/settings/anthropic-key/status');
+        var data = await resp.json();
+        var dot = $('ak-status-dot');
+        var text = $('ak-status-text');
+        var removeBtn = $('ak-remove-btn');
+        if (data.configured) {
+            dot.style.background = 'var(--green)';
+            text.textContent = data.masked + ' (' + data.source + ')';
+            text.style.color = 'var(--green)';
+            if (removeBtn) removeBtn.style.display = data.source === 'db' ? 'inline-block' : 'none';
+        } else {
+            dot.style.background = 'var(--red)';
+            text.textContent = 'Not configured';
+            text.style.color = 'var(--text-dim)';
+            if (removeBtn) removeBtn.style.display = 'none';
+        }
+    } catch (e) {}
+}
+
+async function removeAnthropicKey() {
+    if (!confirm('Remove stored Anthropic API key?')) return;
+    try {
+        var resp = await fetch(API + '/api/settings/anthropic-key', { method: 'DELETE' });
+        var data = await resp.json();
+        if (data.error) { showToast(data.error, 'error'); return; }
+        showToast('Anthropic key removed', 'success');
+        loadAnthropicKeyStatus();
+    } catch (e) {
+        showToast('Failed to remove key', 'error');
+    }
 }
 
 // ========== EXCHANGE MANAGEMENT ==========
