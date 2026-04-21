@@ -3735,3 +3735,71 @@ Utilisateur → private_key + PIN
 - `/api/jarvis` avec clé DB → tente l'appel Anthropic ✓
 
 ---
+
+## 11. AUTONOMOUS TRADING ENGINE
+
+### 11.0 Overview
+
+The Autonomous Engine (`AutonomousEngine` class in server.py) is a background
+daemon thread that scans markets and executes trades without human intervention.
+
+### 11.1 Architecture
+
+```
+AutonomousEngine._loop()
+  ├── _check_daily_limits()      → trades/day, daily loss cap
+  ├── for symbol in config.symbols:
+  │     ├── fetch_binance()       → candle data (1h, 200 bars)
+  │     ├── compute_all_indicators() → 11 indicators + _raw
+  │     ├── regime_detector.detect() → BULL/BEAR/RANGE/CRISIS
+  │     ├── signal_engine.generate() → direction, score, confidence
+  │     ├── risk_engine.check()      → approved / vetoed
+  │     ├── dip_top_detector.analyze() → dip/top signals
+  │     ├── _select_strategy()    → auto/trend/mean_reversion/breakout/dip_hunter
+  │     ├── _should_trade()       → go / no-go gate
+  │     └── _execute_trade()      → paper_trader or exchange_manager
+  └── _manage_open_positions()   → trailing stops, TP/SL enforcement
+```
+
+### 11.2 API Routes
+
+| Route | Method | Auth | Description |
+|-------|--------|------|-------------|
+| `/api/bot/start` | POST | Yes | Start the autonomous bot |
+| `/api/bot/stop` | POST | Yes | Stop the autonomous bot |
+| `/api/bot/status` | GET | No | Get full bot state + config + signals |
+| `/api/bot/config` | POST | Yes | Update bot configuration |
+
+### 11.3 Configuration
+
+| Key | Type | Default | Range | Description |
+|-----|------|---------|-------|-------------|
+| enabled | bool | false | — | Whether bot is active |
+| mode | str | "paper" | paper/micro_live/live | Execution mode |
+| scan_interval | int | 60 | 30-3600 | Seconds between scans |
+| symbols | list | BTC,ETH,SOL | max 10 | Symbols to scan |
+| max_concurrent_positions | int | 3 | 1-10 | Max open positions |
+| min_signal_score | int | 150 | 50-300 | Min score to trade |
+| min_confidence | int | 60 | 10-100 | Min confidence % |
+| allowed_regimes | list | BULL,BEAR,RANGE | — | Tradeable regimes |
+| strategy | str | "auto" | auto/trend/etc | Strategy selection |
+| risk_per_trade_pct | float | 2.0 | 0.1-5.0 | % capital per trade |
+| daily_loss_limit_pct | float | 5.0 | 1.0-20.0 | Daily loss cap |
+| max_trades_per_day | int | 10 | 1-50 | Max trades per day |
+| cooldown_after_loss | int | 300 | 0-3600 | Seconds cooldown |
+
+### 11.4 Status: `[FAIT]`
+
+- [x] AutonomousEngine class (~300 lines)
+- [x] Background daemon thread loop
+- [x] Strategy auto-selection (trend/mean_reversion/breakout/dip_hunter)
+- [x] Kelly-simplified position sizing
+- [x] Paper + live execution modes
+- [x] Open position management (SL/TP enforcement)
+- [x] Daily limits + cooldown after loss
+- [x] 4 API routes (start/stop/status/config)
+- [x] Trade journal logging
+- [x] Error recording + rate limiting
+- [x] py_compile verified ✓
+
+---

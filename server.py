@@ -1015,6 +1015,7 @@ RATE_LIMITS = {
     "execute":     (30,  60),
     "settings":    (10,  60),
     "market_data": (120, 60),
+    "bot":         (20,  60),
 }
 
 
@@ -3572,6 +3573,582 @@ class PaperTrader:
 exchange_manager = ExchangeManager()
 micro_engine = MicroPositionEngine()
 paper_trader = PaperTrader()
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Trading Engine — Background loop that scans markets and executes
+# trades without human intervention.
+# ---------------------------------------------------------------------------
+
+class AutonomousEngine:
+    """Background autonomous trading loop.
+
+    Ties together every intelligence component (SignalEngine, RiskEngine,
+    DipTopDetector, MarketRegimeDetector) with execution via PaperTrader or
+    live ExchangeManager adapters.  Runs in a daemon thread so it dies with
+    the Flask process.
+    """
+
+    _VALID_MODES = ("paper", "micro_live", "live")
+    _VALID_STRATEGIES = ("auto", "trend", "mean_reversion", "breakout", "dip_hunter")
+
+    def __init__(self, exchange_mgr, sig_engine, risk_eng,
+                 dip_top, regime_det, micro_eng, paper_trd):
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+
+        self._exchange_manager = exchange_mgr
+        self._signal_engine = sig_engine
+        self._risk_engine = risk_eng
+        self._dip_top = dip_top
+        self._regime = regime_det
+        self._micro = micro_eng
+        self._paper = paper_trd
+
+        self._config = {
+            "enabled": False,
+            "mode": "paper",
+            "scan_interval": 60,
+            "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            "max_concurrent_positions": 3,
+            "min_signal_score": 150,
+            "min_confidence": 60,
+            "allowed_regimes": ["BULL", "BEAR", "RANGE"],
+            "strategy": "auto",
+            "risk_per_trade_pct": 2.0,
+            "daily_loss_limit_pct": 5.0,
+            "max_trades_per_day": 10,
+            "cooldown_after_loss": 300,
+        }
+
+        self._state = {
+            "last_scan": None,
+            "trades_today": 0,
+            "daily_pnl": 0.0,
+            "last_loss_time": 0,
+            "scan_count": 0,
+            "errors": [],
+            "last_signals": {},
+            "active_strategies": {},
+            "last_scan_duration": 0.0,
+        }
+
+        self._trade_log = []
+
+    # ----- lifecycle --------------------------------------------------------
+
+    def start(self):
+        with self._lock:
+            if self._running:
+                return {"success": False, "error": "Bot is already running"}
+            self._running = True
+            self._reset_daily_counters()
+            self._thread = threading.Thread(target=self._loop, daemon=True,
+                                            name="jarvis-bot")
+            self._thread.start()
+            log.info("[BOT] Started | mode=%s | interval=%ds | symbols=%s",
+                     self._config["mode"], self._config["scan_interval"],
+                     ",".join(self._config["symbols"]))
+            return {"success": True, "mode": self._config["mode"]}
+
+    def stop(self):
+        with self._lock:
+            if not self._running:
+                return {"success": False, "error": "Bot is not running"}
+            self._running = False
+            log.info("[BOT] Stop requested")
+            return {"success": True}
+
+    # ----- main loop --------------------------------------------------------
+
+    def _loop(self):
+        log.info("[BOT] Loop thread started")
+        while self._running:
+            scan_start = time.time()
+            try:
+                self._maybe_reset_daily_counters()
+
+                if not self._check_daily_limits():
+                    log.info("[BOT] Daily limits reached — sleeping")
+                    time.sleep(self._config["scan_interval"])
+                    continue
+
+                for symbol in list(self._config["symbols"]):
+                    if not self._running:
+                        break
+                    try:
+                        self._scan_symbol(symbol)
+                    except Exception as exc:
+                        self._record_error(f"Scan {symbol}: {exc}")
+                        log.warning("[BOT] Scan error | %s | %s", symbol, exc)
+
+                try:
+                    self._manage_open_positions()
+                except Exception as exc:
+                    self._record_error(f"Position management: {exc}")
+                    log.warning("[BOT] Position mgmt error | %s", exc)
+
+                elapsed = time.time() - scan_start
+                self._state["scan_count"] += 1
+                self._state["last_scan"] = datetime.now(timezone.utc).isoformat()
+                self._state["last_scan_duration"] = round(elapsed, 2)
+
+            except Exception as exc:
+                self._record_error(f"Loop: {exc}")
+                log.error("[BOT] Critical loop error | %s", exc)
+
+            sleep_time = max(5, self._config["scan_interval"] - (time.time() - scan_start))
+            time.sleep(sleep_time)
+
+        log.info("[BOT] Loop thread exited")
+
+    # ----- symbol scanning --------------------------------------------------
+
+    def _scan_symbol(self, symbol):
+        if symbol in ("GOLD", "SILVER"):
+            return
+
+        raw = fetch_binance("/api/v3/klines",
+                            {"symbol": symbol, "interval": "1h", "limit": 200},
+                            ttl=10)
+        if not raw:
+            self._record_error(f"No candle data for {symbol}")
+            return
+        ohlcv = transform_klines(raw)
+        if len(ohlcv) < 50:
+            return
+
+        indicators = compute_all_indicators(ohlcv)
+        raw_ind = indicators["_raw"]
+
+        regime_info = self._regime.detect(ohlcv, raw_ind)
+        regime = regime_info.get("regime", "RANGE")
+
+        if regime not in self._config["allowed_regimes"]:
+            self._state["last_signals"][symbol] = {
+                "skipped": True, "reason": f"Regime {regime} not allowed",
+                "regime": regime, "time": datetime.now(timezone.utc).isoformat(),
+            }
+            return
+
+        signal_info = self._signal_engine.generate(raw_ind, regime_info)
+        risk_check = self._risk_engine.check(signal_info)
+        dip_top_info = self._dip_top.analyze(symbol, ohlcv, raw_ind)
+
+        strategy = self._select_strategy(symbol, ohlcv, raw_ind, regime_info, dip_top_info)
+        self._state["active_strategies"][symbol] = strategy
+
+        self._state["last_signals"][symbol] = {
+            "signal": signal_info["direction"],
+            "score": signal_info["score"],
+            "confidence": signal_info["confidence"],
+            "regime": regime,
+            "strategy": strategy,
+            "risk_approved": risk_check["approved"],
+            "risk_vetoes": risk_check.get("vetoes", []),
+            "dip": dip_top_info.get("is_dip", False),
+            "top": dip_top_info.get("is_top", False),
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if self._should_trade(signal_info, regime_info, risk_check, dip_top_info):
+            current_price = ohlcv[-1]["close"]
+            direction = "long" if signal_info["score"] > 0 else "short"
+            balance = self._get_available_balance()
+            size = self._calculate_position_size(signal_info, balance)
+
+            if size > 0:
+                self._execute_trade(symbol, direction, size, current_price,
+                                    signal_info, strategy)
+
+    # ----- decision logic ---------------------------------------------------
+
+    def _should_trade(self, signal, regime_info, risk_check, dip_top_info):
+        if not risk_check.get("approved", False):
+            return False
+
+        score = abs(signal.get("score", 0))
+        confidence = signal.get("confidence", 0)
+
+        if score < self._config["min_signal_score"]:
+            return False
+        if confidence < self._config["min_confidence"]:
+            return False
+        if signal.get("direction") == "NEUTRAL":
+            return False
+
+        open_positions = self._get_open_position_count()
+        if open_positions >= self._config["max_concurrent_positions"]:
+            return False
+
+        if self._is_in_cooldown():
+            return False
+
+        if self._is_already_positioned(signal):
+            return False
+
+        return True
+
+    def _select_strategy(self, symbol, ohlcv, raw_ind, regime_info, dip_top_info):
+        forced = self._config["strategy"]
+        if forced != "auto":
+            return forced
+
+        regime = regime_info.get("regime", "RANGE")
+        adx_data = raw_ind.get("adx", {})
+        adx_vals = adx_data.get("adx", [])
+        last_adx = None
+        for v in reversed(adx_vals):
+            if v is not None:
+                last_adx = v
+                break
+
+        bb = raw_ind.get("bb", {})
+        upper_vals = bb.get("upper", [])
+        lower_vals = bb.get("lower", [])
+        middle_vals = bb.get("middle", [])
+        bb_width = 0.04
+        if upper_vals and lower_vals and middle_vals:
+            u = self._last_valid(upper_vals)
+            l = self._last_valid(lower_vals)
+            m = self._last_valid(middle_vals)
+            if u and l and m and m > 0:
+                bb_width = (u - l) / m
+
+        volumes = raw_ind.get("volumes", [])
+        vol_spike = False
+        if len(volumes) >= 21:
+            recent = volumes[-1]
+            avg_vol = sum(volumes[-21:-1]) / 20
+            if avg_vol > 0 and recent > avg_vol * 2:
+                vol_spike = True
+
+        dip_score = dip_top_info.get("confluence", 0)
+        if isinstance(dip_score, dict):
+            dip_score = dip_score.get("score", 0)
+
+        if regime in ("BULL", "BEAR") and last_adx is not None and last_adx > 25:
+            return "trend"
+        if regime == "RANGE" and bb_width < 0.04:
+            return "mean_reversion"
+        if regime == "BEAR" and dip_score > 70:
+            return "dip_hunter"
+        if vol_spike:
+            return "breakout"
+        return "trend"
+
+    def _calculate_position_size(self, signal, balance):
+        if balance <= 0:
+            return 0.0
+
+        paper_status = self._paper.get_status()
+        total_trades = paper_status.get("total_trades", 0)
+        wins = paper_status.get("wins", 0)
+
+        if total_trades >= 10:
+            win_rate = wins / total_trades
+        else:
+            win_rate = 0.5
+
+        avg_win = 1.5
+        avg_loss = 1.0
+
+        edge = win_rate * avg_win - (1 - win_rate) * avg_loss
+        kelly = edge / avg_win if avg_win > 0 else 0
+        kelly = max(0.0, min(kelly, 0.25))
+
+        if kelly < 0.01:
+            kelly = 0.02
+
+        risk_pct = self._config["risk_per_trade_pct"] / 100.0
+        size = balance * kelly * risk_pct
+
+        max_size = balance * (MicroPositionEngine.MAX_CAPITAL_PCT / 100.0)
+        size = min(size, max_size)
+        size = max(size, MicroPositionEngine.DEFAULT_SIZE_USD)
+        size = min(size, balance * 0.2)
+
+        return round(size, 2)
+
+    # ----- execution --------------------------------------------------------
+
+    def _execute_trade(self, symbol, direction, size_usd, price, signal_info, strategy):
+        mode = self._config["mode"]
+        log.info("[BOT] Executing | %s %s %s | $%.2f @%.2f | strategy=%s | mode=%s",
+                 direction.upper(), symbol, mode, size_usd, price, strategy, mode)
+
+        trade_record = {
+            "symbol": symbol,
+            "direction": direction,
+            "size_usd": size_usd,
+            "price": price,
+            "strategy": strategy,
+            "signal_score": signal_info.get("score", 0),
+            "signal_confidence": signal_info.get("confidence", 0),
+            "regime": signal_info.get("regime", ""),
+            "mode": mode,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "result": None,
+        }
+
+        try:
+            if mode == "paper":
+                quantity = size_usd
+                result = self._paper.execute(symbol, direction, quantity, price,
+                                             leverage=1)
+                trade_record["result"] = result
+
+            elif mode in ("micro_live", "live"):
+                adapter = self._exchange_manager.get_adapter_by_type("gmx")
+                if not adapter:
+                    adapters = list(self._exchange_manager._adapters.values())
+                    adapter = adapters[0] if adapters else None
+
+                if not adapter:
+                    trade_record["result"] = {"success": False, "error": "No exchange adapter"}
+                    log.warning("[BOT] No exchange adapter available")
+                else:
+                    ccxt_side = "buy" if direction == "long" else "sell"
+                    leverage = 1
+                    if mode == "micro_live":
+                        leverage = min(5, 20)
+                    result = adapter.place_order(symbol, ccxt_side, "market",
+                                                 size_usd, None, leverage)
+                    trade_record["result"] = result
+
+            self._state["trades_today"] += 1
+
+            result = trade_record.get("result", {})
+            if isinstance(result, dict) and result.get("success"):
+                log.info("[BOT] Trade opened | %s %s | $%.2f | %s",
+                         direction.upper(), symbol, size_usd, strategy)
+            else:
+                err = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
+                log.warning("[BOT] Trade failed | %s %s | %s", symbol, direction, err)
+
+        except Exception as exc:
+            trade_record["result"] = {"success": False, "error": str(exc)}
+            self._record_error(f"Execute {symbol}: {exc}")
+            log.error("[BOT] Execution error | %s | %s", symbol, exc)
+
+        with self._lock:
+            self._trade_log.append(trade_record)
+            if len(self._trade_log) > 500:
+                self._trade_log = self._trade_log[-500:]
+
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO trade_journal (symbol, action, reason, signal_score, confidence, regime) VALUES (?, ?, ?, ?, ?, ?)",
+                (symbol, f"bot_{direction}", f"Auto {strategy} | score={signal_info.get('score',0)}",
+                 signal_info.get("score", 0), signal_info.get("confidence", 0),
+                 signal_info.get("regime", "")),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    # ----- position management ----------------------------------------------
+
+    def _manage_open_positions(self):
+        paper_positions = self._paper.get_open_positions()
+
+        for pos in paper_positions:
+            try:
+                symbol = pos.get("symbol", "")
+                entry = pos.get("entry_price", 0)
+                side = pos.get("side", "long")
+                if not symbol or entry <= 0:
+                    continue
+
+                price_data = fetch_binance("/api/v3/ticker/price",
+                                           {"symbol": symbol}, ttl=5)
+                if not price_data:
+                    continue
+                current = float(price_data.get("price", 0))
+                if current <= 0:
+                    continue
+
+                if side == "long":
+                    pnl_pct = (current - entry) / entry * 100
+                else:
+                    pnl_pct = (entry - current) / entry * 100
+
+                should_close = False
+                close_reason = ""
+
+                if pnl_pct <= -3.0:
+                    should_close = True
+                    close_reason = f"Stop loss hit ({pnl_pct:.1f}%)"
+                elif pnl_pct >= 5.0:
+                    should_close = True
+                    close_reason = f"Take profit hit ({pnl_pct:.1f}%)"
+                elif pnl_pct <= -1.5 and self._state.get("trades_today", 0) > 5:
+                    should_close = True
+                    close_reason = f"Tighten stop after many trades ({pnl_pct:.1f}%)"
+
+                if should_close:
+                    result = self._paper.close(pos["id"], current)
+                    pnl = result.get("pnl", 0)
+                    self._state["daily_pnl"] += pnl
+                    if pnl < 0:
+                        self._state["last_loss_time"] = time.time()
+                    log.info("[BOT] Closed position | %s %s | pnl=%.4f | %s",
+                             side, symbol, pnl, close_reason)
+
+            except Exception as exc:
+                log.warning("[BOT] Position mgmt error for %s: %s",
+                            pos.get("symbol", "?"), exc)
+
+    # ----- daily limits & cooldown ------------------------------------------
+
+    def _check_daily_limits(self):
+        if self._state["trades_today"] >= self._config["max_trades_per_day"]:
+            return False
+        loss_limit = self._config["daily_loss_limit_pct"]
+        if loss_limit > 0 and self._state["daily_pnl"] < 0:
+            balance = self._get_available_balance()
+            if balance > 0:
+                loss_pct = abs(self._state["daily_pnl"]) / balance * 100
+                if loss_pct >= loss_limit:
+                    return False
+        return True
+
+    def _is_in_cooldown(self):
+        if self._state["last_loss_time"] <= 0:
+            return False
+        elapsed = time.time() - self._state["last_loss_time"]
+        return elapsed < self._config["cooldown_after_loss"]
+
+    def _reset_daily_counters(self):
+        self._state["trades_today"] = 0
+        self._state["daily_pnl"] = 0.0
+        self._state["last_loss_time"] = 0
+        self._state["_day"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _maybe_reset_daily_counters(self):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._state.get("_day") != today:
+            log.info("[BOT] New day %s — resetting counters", today)
+            self._reset_daily_counters()
+
+    # ----- helpers ----------------------------------------------------------
+
+    def _get_available_balance(self):
+        if self._config["mode"] == "paper":
+            status = self._paper.get_status()
+            return 100.0 + status.get("total_pnl", 0)
+        balances = self._exchange_manager.get_all_balances()
+        for b in balances:
+            if isinstance(b, dict):
+                for key in ("total_usdt", "total_usd", "equity"):
+                    if key in b and b[key] > 0:
+                        return float(b[key])
+        return 0.0
+
+    def _get_open_position_count(self):
+        count = len(self._paper.get_open_positions())
+        if self._config["mode"] in ("micro_live", "live"):
+            count += len(self._exchange_manager.get_all_positions())
+        return count
+
+    def _is_already_positioned(self, signal):
+        direction = signal.get("direction", "NEUTRAL")
+        if direction == "NEUTRAL":
+            return True
+        return False
+
+    def _record_error(self, msg):
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._state["errors"].append({"time": ts, "error": msg})
+            if len(self._state["errors"]) > 100:
+                self._state["errors"] = self._state["errors"][-100:]
+
+    @staticmethod
+    def _last_valid(series):
+        if not series:
+            return None
+        for v in reversed(series):
+            if v is not None:
+                return v
+        return None
+
+    # ----- public API -------------------------------------------------------
+
+    def get_status(self):
+        with self._lock:
+            return {
+                "running": self._running,
+                "config": dict(self._config),
+                "state": {
+                    "last_scan": self._state["last_scan"],
+                    "trades_today": self._state["trades_today"],
+                    "daily_pnl": round(self._state["daily_pnl"], 4),
+                    "scan_count": self._state["scan_count"],
+                    "last_scan_duration": self._state["last_scan_duration"],
+                    "error_count": len(self._state["errors"]),
+                    "recent_errors": self._state["errors"][-5:],
+                    "last_signals": dict(self._state["last_signals"]),
+                    "active_strategies": dict(self._state["active_strategies"]),
+                    "in_cooldown": self._is_in_cooldown(),
+                },
+                "recent_trades": self._trade_log[-20:],
+            }
+
+    def update_config(self, new_config):
+        errors = []
+        with self._lock:
+            for key, val in new_config.items():
+                if key not in self._config:
+                    errors.append(f"Unknown config key: {key}")
+                    continue
+
+                if key == "mode" and val not in self._VALID_MODES:
+                    errors.append(f"Invalid mode: {val}")
+                    continue
+                if key == "strategy" and val not in self._VALID_STRATEGIES:
+                    errors.append(f"Invalid strategy: {val}")
+                    continue
+                if key == "scan_interval":
+                    val = max(30, min(3600, int(val)))
+                if key == "max_concurrent_positions":
+                    val = max(1, min(10, int(val)))
+                if key == "min_signal_score":
+                    val = max(50, min(300, int(val)))
+                if key == "min_confidence":
+                    val = max(10, min(100, int(val)))
+                if key == "risk_per_trade_pct":
+                    val = max(0.1, min(5.0, float(val)))
+                if key == "daily_loss_limit_pct":
+                    val = max(1.0, min(20.0, float(val)))
+                if key == "max_trades_per_day":
+                    val = max(1, min(50, int(val)))
+                if key == "cooldown_after_loss":
+                    val = max(0, min(3600, int(val)))
+                if key == "symbols" and isinstance(val, list):
+                    val = [s.upper() for s in val if isinstance(s, str) and len(s) <= 20][:10]
+                if key == "allowed_regimes" and isinstance(val, list):
+                    val = [r for r in val if r in ("BULL", "BEAR", "RANGE", "CRISIS")]
+
+                self._config[key] = val
+
+            log.info("[BOT] Config updated | %s", {k: v for k, v in new_config.items() if k in self._config})
+
+        return {"success": len(errors) == 0, "errors": errors, "config": dict(self._config)}
+
+
+auto_engine = AutonomousEngine(
+    exchange_mgr=exchange_manager,
+    sig_engine=signal_engine,
+    risk_eng=risk_engine,
+    dip_top=dip_top_detector,
+    regime_det=regime_detector,
+    micro_eng=micro_engine,
+    paper_trd=paper_trader,
+)
 
 
 # ===========================================================================
@@ -6245,6 +6822,55 @@ def serve_dashboard():
 @app.route("/<path:path>")
 def serve_static(path):
     return send_from_directory(str(BASE_DIR), path)
+
+
+# ===========================================================================
+# API ROUTES — Autonomous Bot (4 routes)
+# ===========================================================================
+
+@app.route("/api/bot/start", methods=["POST"])
+@rate_limit("bot")
+def api_bot_start():
+    denied = require_auth()
+    if denied:
+        return denied
+    result = auto_engine.start()
+    if result.get("success"):
+        log_audit("bot_started", f"mode={auto_engine._config['mode']}")
+    return jsonify(result), 200 if result.get("success") else 400
+
+
+@app.route("/api/bot/stop", methods=["POST"])
+@rate_limit("bot")
+def api_bot_stop():
+    denied = require_auth()
+    if denied:
+        return denied
+    result = auto_engine.stop()
+    if result.get("success"):
+        log_audit("bot_stopped", "")
+    return jsonify(result), 200 if result.get("success") else 400
+
+
+@app.route("/api/bot/status")
+@rate_limit("bot")
+def api_bot_status():
+    return jsonify(auto_engine.get_status())
+
+
+@app.route("/api/bot/config", methods=["POST"])
+@rate_limit("bot")
+def api_bot_config():
+    denied = require_auth()
+    if denied:
+        return denied
+    body = request.get_json(force=True)
+    if not body or not isinstance(body, dict):
+        return jsonify({"error": "JSON body required"}), 400
+    result = auto_engine.update_config(body)
+    if result.get("success"):
+        log_audit("bot_config_updated", str({k: v for k, v in body.items() if k != "symbols"}))
+    return jsonify(result)
 
 
 # ===========================================================================
