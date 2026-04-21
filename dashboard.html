@@ -2380,16 +2380,51 @@ button:active { opacity: 0.7; }
     gap: 10px;
     margin: 8px 0;
 }
-.gmx-leverage-wrap input[type="range"] {
-    flex: 1;
-    accent-color: var(--accent);
-}
 .gmx-leverage-wrap .lev-val {
     min-width: 40px;
     text-align: center;
     font-weight: 700;
     color: var(--yellow);
     font-size: 13px;
+}
+.gmx-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    height: 3px;
+    background: linear-gradient(90deg, rgba(0,194,255,0.15), rgba(0,194,255,0.35));
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+}
+.gmx-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, rgba(0,194,255,0.9), rgba(0,130,200,0.7));
+    box-shadow: 0 0 8px rgba(0,194,255,0.4), 0 0 2px rgba(0,194,255,0.6);
+    border: 1px solid rgba(0,194,255,0.3);
+    cursor: pointer;
+    transition: box-shadow 0.2s;
+}
+.gmx-slider::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 14px rgba(0,194,255,0.6), 0 0 4px rgba(0,194,255,0.8);
+}
+.gmx-slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, rgba(0,194,255,0.9), rgba(0,130,200,0.7));
+    box-shadow: 0 0 8px rgba(0,194,255,0.4);
+    border: 1px solid rgba(0,194,255,0.3);
+    cursor: pointer;
+}
+.gmx-slider::-moz-range-track {
+    height: 3px;
+    background: linear-gradient(90deg, rgba(0,194,255,0.15), rgba(0,194,255,0.35));
+    border-radius: 3px;
 }
 .gmx-form-row {
     display: flex;
@@ -2989,7 +3024,7 @@ button:active { opacity: 0.7; }
         </select>
         <div class="gmx-leverage-wrap">
             <span style="font-size:11px;color:var(--text-dim)">Leverage:</span>
-            <input type="range" id="gmx-leverage" min="1" max="50" value="5" oninput="updateGMXLevLabel()">
+            <input type="range" id="gmx-leverage" class="gmx-slider" min="1" max="50" value="5" oninput="updateGMXLevLabel()">
             <span class="lev-val" id="gmx-lev-label">5x</span>
         </div>
         <div class="gmx-form-row">
@@ -3003,7 +3038,7 @@ button:active { opacity: 0.7; }
             <button onclick="setGmxCollateralPct(100)" style="flex:1;padding:4px;font-size:10px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">100%</button>
         </div>
         <div style="display:flex;align-items:center;gap:6px;padding:0 2px;margin-bottom:6px">
-            <input type="range" id="gmx-collateral-slider" min="0" max="100" value="0" step="1" oninput="onGmxCollateralSlider()" style="flex:1;accent-color:var(--accent);height:4px">
+            <input type="range" id="gmx-collateral-slider" class="gmx-slider" min="0" max="100" value="0" step="1" oninput="onGmxCollateralSlider()" style="flex:1">
             <span id="gmx-collateral-pct-label" style="font-size:10px;color:var(--text-dim);min-width:30px;text-align:right">0%</span>
         </div>
         <div class="gmx-form-row">
@@ -6537,12 +6572,16 @@ function updateGMXLevLabel() {
 
 var _gmxUsdcBalance = 0;
 
+function _gmxMaxCollateral() {
+    if (_gmxUsdcBalance > 0) return _gmxUsdcBalance;
+    var typed = parseFloat($('gmx-collateral-input').value);
+    if (typed > 0) return typed;
+    return 100;
+}
+
 function setGmxCollateralPct(pct) {
-    if (_gmxUsdcBalance <= 0) {
-        showToast('USDC balance not loaded yet — try again', 'error');
-        return;
-    }
-    var amount = (_gmxUsdcBalance * pct / 100).toFixed(2);
+    var max = _gmxMaxCollateral();
+    var amount = (max * pct / 100).toFixed(2);
     $('gmx-collateral-input').value = amount;
     $('gmx-collateral-slider').value = pct;
     $('gmx-collateral-pct-label').textContent = pct + '%';
@@ -6552,11 +6591,10 @@ function setGmxCollateralPct(pct) {
 function onGmxCollateralSlider() {
     var pct = parseInt($('gmx-collateral-slider').value);
     $('gmx-collateral-pct-label').textContent = pct + '%';
-    if (_gmxUsdcBalance > 0) {
-        var amount = (_gmxUsdcBalance * pct / 100).toFixed(2);
-        $('gmx-collateral-input').value = amount;
-        updateGMXEstimate();
-    }
+    var max = _gmxMaxCollateral();
+    var amount = (max * pct / 100).toFixed(2);
+    $('gmx-collateral-input').value = amount;
+    updateGMXEstimate();
 }
 
 function onGMXMarketChange() {
