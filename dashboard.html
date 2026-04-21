@@ -420,6 +420,14 @@ button:active { opacity: 0.7; }
 }
 .wl-coin-change.up { color: var(--green); }
 .wl-coin-change.down { color: var(--red); }
+.wl-coin-del {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: transparent; border: none; color: var(--text-muted);
+    font-size: 14px; cursor: pointer; display: flex; align-items: center;
+    justify-content: center; flex-shrink: 0; opacity: 0; transition: opacity 0.2s;
+}
+.wl-coin:hover .wl-coin-del { opacity: 1; }
+.wl-coin-del:hover { color: var(--red); background: rgba(246,70,93,0.15); }
 
 .wl-add-bar {
     display: flex;
@@ -720,22 +728,24 @@ button:active { opacity: 0.7; }
 .slide-drawer {
     position: fixed;
     top: 96px;
-    right: 0;
+    right: 12px;
     width: 340px;
-    height: calc(100vh - 96px - 32px);
-    background: rgba(16,20,26,0.82);
+    height: calc(100vh - 96px - 44px);
+    background: rgba(16,20,26,0.85);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
-    border-left: 1px solid rgba(255,255,255,0.08);
-    box-shadow: -12px 0 40px rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05);
     z-index: 250;
     display: flex;
     flex-direction: column;
-    transform: translateX(100%);
+    transform: translateX(calc(100% + 20px));
     transition: transform 0.35s cubic-bezier(0.32,0.72,0,1);
     overflow: hidden;
 }
 .slide-drawer.open { transform: translateX(0); }
+.slide-drawer.dragging { transition: none; opacity: 0.95; }
 
 .slide-drawer .sd-header {
     display: flex;
@@ -869,7 +879,7 @@ button:active { opacity: 0.7; }
 }
 .drawer-handle.open .handle-arrow { transform: rotate(180deg); }
 .drawer-handle.open {
-    right: 340px;
+    right: 364px;
 }
 
 .order-form {
@@ -2701,6 +2711,7 @@ button:active { opacity: 0.7; }
 <div class="slide-drawer" id="slide-drawer">
     <div class="sd-header">
         <span class="sd-title"><span class="sd-dot"></span>Smart Trade</span>
+        <button class="sd-close sd-reset" onclick="resetDrawerPosition()" title="Reset position" style="font-size:12px;margin-right:4px">&#8634;</button>
         <button class="sd-close" onclick="toggleDrawer()">&times;</button>
     </div>
     <div class="sd-tabs">
@@ -3616,38 +3627,67 @@ function clientCalcRSI(closes, period) {
 }
 
 function clientCalcEMA(data, period) {
-    var ema = [];
-    if (data.length < period) return ema;
-    var mult = 2 / (period + 1);
+    var result = new Array(data.length);
+    if (data.length < period) return result;
+    var mult = 2.0 / (period + 1);
     var sum = 0;
-    for (var i = 0; i < period; i++) { sum += data[i]; ema.push(null); }
-    ema[period - 1] = sum / period;
-    for (var j = period; j < data.length; j++) {
-        ema.push(data[j] * mult + ema[ema.length - 1] * (1 - mult));
+    for (var i = 0; i < period; i++) {
+        result[i] = null;
+        sum += data[i];
     }
-    return ema;
+    result[period - 1] = sum / period;
+    for (var j = period; j < data.length; j++) {
+        result[j] = data[j] * mult + result[j - 1] * (1 - mult);
+    }
+    return result;
 }
 
 function clientCalcMACD(closes, fast, slow, sig) {
     fast = fast || 12; slow = slow || 26; sig = sig || 9;
     var emaFast = clientCalcEMA(closes, fast);
     var emaSlow = clientCalcEMA(closes, slow);
-    var line = [];
-    for (var i = 0; i < closes.length; i++) {
-        if (emaFast[i] != null && emaSlow[i] != null) line.push(emaFast[i] - emaSlow[i]);
-        else line.push(null);
+    var n = closes.length;
+    var line = new Array(n);
+    var signal = new Array(n);
+    var histogram = new Array(n);
+
+    // MACD line = EMA fast - EMA slow
+    var startIdx = -1;
+    for (var i = 0; i < n; i++) {
+        if (emaFast[i] != null && emaSlow[i] != null) {
+            line[i] = emaFast[i] - emaSlow[i];
+            if (startIdx < 0) startIdx = i;
+        } else {
+            line[i] = null;
+        }
+        signal[i] = null;
+        histogram[i] = null;
     }
-    var nonNull = line.filter(function(v) { return v != null; });
-    var signalLine = clientCalcEMA(nonNull, sig);
-    var signal = [], histogram = [];
-    var si = 0;
-    for (var j = 0; j < line.length; j++) {
-        if (line[j] == null) { signal.push(null); histogram.push(null); continue; }
-        var sv = signalLine[si] != null ? signalLine[si] : null;
-        signal.push(sv);
-        histogram.push(sv != null ? line[j] - sv : null);
-        si++;
+
+    if (startIdx < 0) return { line: line, signal: signal, histogram: histogram };
+
+    // Signal = EMA(sig) of MACD line, starting from startIdx
+    var sSum = 0;
+    var count = 0;
+    var prevSig = 0;
+    var sMult = 2.0 / (sig + 1);
+    for (var j = startIdx; j < n; j++) {
+        if (line[j] == null) continue;
+        count++;
+        if (count < sig) {
+            sSum += line[j];
+        } else if (count === sig) {
+            sSum += line[j];
+            prevSig = sSum / sig;
+            signal[j] = prevSig;
+            histogram[j] = line[j] - prevSig;
+        } else {
+            prevSig = line[j] * sMult + prevSig * (1 - sMult);
+            signal[j] = prevSig;
+            histogram[j] = line[j] - prevSig;
+        }
     }
+
     return { line: line, signal: signal, histogram: histogram };
 }
 
@@ -6257,6 +6297,7 @@ document.addEventListener('keydown', function(e) {
 
 // ========== SLIDE DRAWER ==========
 var drawerOpen = false;
+var drawerMoved = false;
 
 function toggleDrawer() {
     var drawer = $('slide-drawer');
@@ -6270,6 +6311,18 @@ function toggleDrawer() {
         drawer.classList.remove('open');
         if (handle) handle.classList.remove('open');
     }
+}
+
+function resetDrawerPosition() {
+    var drawer = $('slide-drawer');
+    if (!drawer) return;
+    drawer.style.top = '';
+    drawer.style.right = '';
+    drawer.style.left = '';
+    drawer.style.bottom = '';
+    drawer.classList.remove('dragging');
+    drawerMoved = false;
+    showToast('Panel reset', 'info');
 }
 
 function switchDrawerTab(tab) {
@@ -6310,53 +6363,75 @@ function sendDrawerJarvis() {
     });
 }
 
-// Right-edge hover trigger
+// Drawer drag-to-move (grab header to move)
 (function() {
-    var hoverTimeout = null;
-    document.addEventListener('mousemove', function(e) {
-        if (drawerOpen) return;
-        if (e.clientX >= window.innerWidth - 8) {
-            if (!hoverTimeout) {
-                hoverTimeout = setTimeout(function() {
-                    toggleDrawer();
-                    hoverTimeout = null;
-                }, 300);
-            }
-        } else {
-            if (hoverTimeout) { clearTimeout(hoverTimeout); hoverTimeout = null; }
-        }
-    });
-})();
-
-// Drawer resize (drag left edge)
-(function() {
-    var drawer = null;
-    var handle = null;
-    var resizing = false;
-    var startX = 0;
-    var startW = 340;
+    var dragging = false;
+    var offsetX = 0, offsetY = 0;
 
     document.addEventListener('mousedown', function(e) {
-        drawer = $('slide-drawer');
-        handle = $('drawer-handle');
+        var header = e.target.closest('.sd-header');
+        if (!header || e.target.closest('.sd-close') || e.target.closest('.sd-reset')) return;
+        var drawer = $('slide-drawer');
         if (!drawer || !drawerOpen) return;
+        dragging = true;
         var rect = drawer.getBoundingClientRect();
-        if (Math.abs(e.clientX - rect.left) < 6) {
-            resizing = true;
-            startX = e.clientX;
-            startW = rect.width;
-            e.preventDefault();
-        }
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        drawer.classList.add('dragging');
+        e.preventDefault();
     });
+
     document.addEventListener('mousemove', function(e) {
-        if (!resizing) return;
-        var diff = startX - e.clientX;
-        var newW = Math.min(Math.max(startW + diff, 260), 600);
-        drawer.style.width = newW + 'px';
-        if (handle) handle.style.right = newW + 'px';
+        if (!dragging) return;
+        var drawer = $('slide-drawer');
+        if (!drawer) return;
+        var x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - 100));
+        var y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 100));
+        drawer.style.left = x + 'px';
+        drawer.style.top = y + 'px';
+        drawer.style.right = 'auto';
+        drawerMoved = true;
     });
+
     document.addEventListener('mouseup', function() {
-        resizing = false;
+        if (!dragging) return;
+        dragging = false;
+        var drawer = $('slide-drawer');
+        if (drawer) drawer.classList.remove('dragging');
+    });
+
+    // Touch support for iPad
+    document.addEventListener('touchstart', function(e) {
+        var header = e.target.closest('.sd-header');
+        if (!header || e.target.closest('.sd-close') || e.target.closest('.sd-reset')) return;
+        var drawer = $('slide-drawer');
+        if (!drawer || !drawerOpen) return;
+        dragging = true;
+        var rect = drawer.getBoundingClientRect();
+        var touch = e.touches[0];
+        offsetX = touch.clientX - rect.left;
+        offsetY = touch.clientY - rect.top;
+        drawer.classList.add('dragging');
+    }, { passive: true });
+
+    document.addEventListener('touchmove', function(e) {
+        if (!dragging) return;
+        var drawer = $('slide-drawer');
+        if (!drawer) return;
+        var touch = e.touches[0];
+        var x = Math.max(0, Math.min(touch.clientX - offsetX, window.innerWidth - 100));
+        var y = Math.max(0, Math.min(touch.clientY - offsetY, window.innerHeight - 100));
+        drawer.style.left = x + 'px';
+        drawer.style.top = y + 'px';
+        drawer.style.right = 'auto';
+        drawerMoved = true;
+    }, { passive: true });
+
+    document.addEventListener('touchend', function() {
+        if (!dragging) return;
+        dragging = false;
+        var drawer = $('slide-drawer');
+        if (drawer) drawer.classList.remove('dragging');
     });
 })();
 
@@ -6406,6 +6481,7 @@ function renderWatchlist() {
             + '<div class="wl-coin-info"><span class="wl-coin-sym">' + base + '/USDT</span>'
             + '<span class="wl-coin-price">' + price + '</span></div>'
             + '<span class="wl-coin-change ' + chgClass + '">' + chgSign + chg + '%</span>'
+            + '<button class="wl-coin-del" onclick="event.stopPropagation();removeFromWatchlist(\'' + sym + '\')" title="Remove">&times;</button>'
             + '</div>';
     }
     container.innerHTML = html;
@@ -6423,14 +6499,21 @@ function addWatchlistFromSelect() {
     sel.value = '';
 }
 
-function filterWatchlistDropdown(query) {
+async function filterWatchlistDropdown(query) {
     var drop = $('wl-drop-results');
     if (!drop) return;
     if (!query || query.length < 1) { drop.style.display = 'none'; return; }
+    // Auto-load markets data if not yet loaded
+    if (!marketsData || !marketsData.length) {
+        try {
+            var resp = await fetch(API + '/api/markets');
+            if (resp.ok) { var d = await resp.json(); marketsData = d.markets || []; }
+        } catch (e) {}
+    }
     query = query.toUpperCase();
     var results = (marketsData || []).filter(function(m) {
         return m.symbol.indexOf(query) >= 0 && watchlist.indexOf(m.symbol) < 0;
-    }).slice(0, 12);
+    }).slice(0, 15);
     if (!results.length) { drop.style.display = 'none'; return; }
     var html = '';
     for (var i = 0; i < results.length; i++) {
