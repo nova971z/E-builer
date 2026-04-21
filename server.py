@@ -5480,6 +5480,153 @@ def api_audit_log():
     })
 
 
+@app.route("/api/security/rotate-key", methods=["POST"])
+@rate_limit("settings")
+def api_rotate_key():
+    blocked = require_fernet()
+    if blocked:
+        return blocked
+    denied = require_auth()
+    if denied:
+        return denied
+
+    old_fernet = get_fernet()
+    if not old_fernet:
+        return jsonify({"error": "No existing encryption key"}), 500
+
+    re_encrypted = {}
+    conn = get_db()
+
+    try:
+        anthro_enc = get_setting("anthropic_api_key_enc")
+        if anthro_enc:
+            plain = old_fernet.decrypt(anthro_enc.encode()).decode()
+            re_encrypted["anthropic_api_key_enc"] = plain
+
+        gmx_enc = get_setting("gmx_wallet_enc")
+        if gmx_enc:
+            plain = old_fernet.decrypt(gmx_enc.encode()).decode()
+            re_encrypted["gmx_wallet_enc"] = plain
+
+        rows = conn.execute("SELECT id, api_key_enc, api_secret_enc, passphrase_enc FROM exchanges").fetchall()
+        exchange_plains = []
+        for row in rows:
+            ep = {
+                "id": row["id"],
+                "api_key": old_fernet.decrypt(row["api_key_enc"].encode()).decode() if row["api_key_enc"] else "",
+                "api_secret": old_fernet.decrypt(row["api_secret_enc"].encode()).decode() if row["api_secret_enc"] else "",
+                "passphrase": old_fernet.decrypt(row["passphrase_enc"].encode()).decode() if row["passphrase_enc"] else "",
+            }
+            exchange_plains.append(ep)
+    except Exception:
+        conn.close()
+        log_audit("key_rotation", "Failed: decryption error during re-encryption", success=False)
+        return jsonify({"error": "Failed to decrypt existing data — key rotation aborted"}), 500
+
+    global _fernet_instance
+    new_key = Fernet.generate_key()
+    SECRET_KEY_FILE.write_bytes(new_key)
+    os.chmod(str(SECRET_KEY_FILE), 0o600)
+    _fernet_instance = Fernet(new_key)
+    new_fernet = _fernet_instance
+
+    if "anthropic_api_key_enc" in re_encrypted:
+        set_setting("anthropic_api_key_enc", new_fernet.encrypt(re_encrypted["anthropic_api_key_enc"].encode()).decode())
+    if "gmx_wallet_enc" in re_encrypted:
+        set_setting("gmx_wallet_enc", new_fernet.encrypt(re_encrypted["gmx_wallet_enc"].encode()).decode())
+
+    for ep in exchange_plains:
+        conn.execute(
+            "UPDATE exchanges SET api_key_enc = ?, api_secret_enc = ?, passphrase_enc = ? WHERE id = ?",
+            (
+                new_fernet.encrypt(ep["api_key"].encode()).decode(),
+                new_fernet.encrypt(ep["api_secret"].encode()).decode(),
+                new_fernet.encrypt(ep["passphrase"].encode()).decode() if ep["passphrase"] else "",
+                ep["id"],
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    count = len(re_encrypted) + len(exchange_plains)
+    log_audit("key_rotation", f"Encryption key rotated, {count} items re-encrypted")
+    return jsonify({"success": True, "re_encrypted_count": count})
+
+
+@app.route("/api/security/backup", methods=["POST"])
+@rate_limit("settings")
+def api_security_backup():
+    denied = require_auth()
+    if denied:
+        return denied
+
+    import shutil
+    backup_dir = BASE_DIR / "backups"
+    backup_dir.mkdir(exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"jarvis_{ts}.db"
+
+    try:
+        shutil.copy2(str(DB_PATH), str(backup_path))
+
+        backups = sorted(backup_dir.glob("jarvis_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in backups[10:]:
+            old.unlink()
+
+        log_audit("backup_created", f"Backup: {backup_path.name} ({backup_path.stat().st_size} bytes)")
+        return jsonify({
+            "success": True,
+            "filename": backup_path.name,
+            "size": backup_path.stat().st_size,
+            "backups_kept": min(len(backups), 10),
+        })
+    except Exception:
+        log_audit("backup_created", "Backup failed", success=False)
+        return jsonify({"error": "Backup failed"}), 500
+
+
+@app.route("/api/security/emergency-wipe", methods=["POST"])
+@rate_limit("auth")
+def api_emergency_wipe():
+    denied = require_auth()
+    if denied:
+        return denied
+
+    body = request.get_json(force=True)
+    pin = body.get("pin", "").strip()
+    confirm = body.get("confirm", "")
+
+    if confirm != "WIPE ALL SECRETS":
+        return jsonify({"error": "Confirmation required: send confirm='WIPE ALL SECRETS'"}), 400
+    if not pin or not verify_pin(pin):
+        return jsonify({"error": "Invalid PIN — double confirmation required"}), 401
+
+    wiped = []
+    conn = get_db()
+
+    if get_setting("anthropic_api_key_enc"):
+        delete_setting("anthropic_api_key_enc")
+        wiped.append("anthropic_key")
+    if get_setting("gmx_wallet_enc"):
+        delete_setting("gmx_wallet_enc")
+        delete_setting("gmx_wallet_address")
+        wiped.append("gmx_wallet")
+
+    count = conn.execute("SELECT COUNT(*) as c FROM exchanges").fetchone()["c"]
+    if count > 0:
+        conn.execute("DELETE FROM exchanges")
+        conn.commit()
+        wiped.append(f"exchanges({count})")
+
+    conn.close()
+
+    exchange_manager._adapters.clear()
+
+    log_audit("emergency_wipe", f"Wiped: {', '.join(wiped) or 'nothing'}")
+    return jsonify({"success": True, "wiped": wiped})
+
+
 @app.route("/api/sparklines")
 def api_sparklines():
     pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]

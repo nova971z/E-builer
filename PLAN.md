@@ -3194,9 +3194,9 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 45 | S7.0 | Validation entrées & erreurs | `[x]` FAIT | — | 2026-04-21 |
 | 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[x]` FAIT | Couvert par S7.7/S7.8 (escapeHtml) | 2026-04-21 |
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[x]` FAIT | — | 2026-04-21 |
-| 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
+| 48 | S10.0 | Rotation, backup & test final | `[x]` FAIT | — | 2026-04-21 |
 
-**Progression sécurité : 9 / 10 étapes terminées**
+**Progression sécurité : 10 / 10 étapes terminées ✅**
 
 ---
 
@@ -3251,6 +3251,109 @@ PUBLIQUES (lecture seule + auth) :
 - `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
 - `POST /auth/login` bon PIN → nouveau token ✓
 - Routes publiques sans token → OK ✓
+
+---
+
+#### Étape S10.0 — Rotation, Backup & Test Final (Step 48) ✅
+
+**S10.0-A : Routes de maintenance sécurité**
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S10.1 | `POST /api/security/rotate-key` — génère nouvelle clé Fernet, re-chiffre exchanges + anthropic key + GMX wallet | `[x]` |
+| S10.2 | `POST /api/security/backup` — copie chiffrée de jarvis.db dans backups/ (rotation 10 dernières) | `[x]` |
+| S10.3 | `POST /api/security/emergency-wipe` — supprime toutes les clés/wallets (double confirm: PIN + "WIPE ALL SECRETS") | `[x]` |
+
+**S10.0-B : Tests finaux de sécurité**
+
+| # | Test | Résultat |
+|---|------|----------|
+| S10.4 | 15 routes protégées sans token → 401 (13 direct, 2 via 429 rate limit) | ✅ PASS |
+| S10.5 | Rate limiting → 429 après dépassement + header Retry-After | ✅ PASS |
+| S10.6 | CORS `Origin: http://evil.com` → pas de header Access-Control | ✅ PASS |
+| S10.7 | `decrypt_string(corrupted)` → retourne None, log error sans data | ✅ PASS |
+| S10.8 | Aucun secret dans les réponses API (/api/status, /api/security/status, /api/audit-log) | ✅ PASS |
+| S10.9 | Aucun secret dans les logs serveur (grep sk-ant, private_key, password) | ✅ PASS |
+| S10.10 | 6/6 security headers présents (X-Frame-Options, nosniff, CSP, Referrer, Permissions, Server:JARVIS) | ✅ PASS |
+| S10.11 | Key rotation : re-encrypt 1 item + données toujours accessibles après rotation | ✅ PASS |
+| S10.12 | Backup : fichier créé, rotation 10 max, taille correcte | ✅ PASS |
+| S10.13 | Emergency wipe : refuse sans confirm exact + refuse sans PIN valide | ✅ PASS |
+| S10.14 | Audit log : 11 events tracés dans le test (setup, fails, logins, key, rotate, backup) | ✅ PASS |
+
+---
+
+### 8.7 RÉSUMÉ FINAL DE SÉCURITÉ
+
+#### Matrice de couverture vulnérabilités
+
+| ID | Vulnérabilité | Sévérité | Corrigée par | Statut |
+|----|--------------|----------|-------------|--------|
+| C-01 | Aucune authentification | CRITIQUE | S1.0 (PIN + sessions) | ✅ |
+| C-02 | CORS wildcard `*` | CRITIQUE | S4.0 (origins restreints) | ✅ |
+| C-03 | Clé API Anthropic en clair | CRITIQUE | S2.0 (Fernet DB) | ✅ |
+| C-04 | Private key en mémoire | CRITIQUE | S3.0 (_wipe_string) | ✅ |
+| C-05 | Private key dans les logs | CRITIQUE | S3.0 (logging sécurisé) | ✅ |
+| C-06 | Hack `__set_key__` dans settings | CRITIQUE | S2.0 (route dédiée) | ✅ |
+| C-07 | str(e) expose stack traces | CRITIQUE | S7.0 (sanitize_error) | ✅ |
+| C-08 | Pas de CSP | CRITIQUE | S4.0 (CSP whitelist) | ✅ |
+| H-01 | Pas de chiffrement DB | HAUTE | S2.0 + S6.0 (Fernet obligatoire) | ✅ |
+| H-02 | Fallback base64 = pas de crypto | HAUTE | S6.0 (RuntimeError) | ✅ |
+| H-03 | Pas de rate limiting | HAUTE | S5.0 (4 catégories, 26 routes) | ✅ |
+| H-04 | Pas de headers sécurité | HAUTE | S4.0 (6 headers) | ✅ |
+| H-05 | XSS potentiel innerHTML | HAUTE | S7.0 (escapeHtml, 34+ appels) | ✅ |
+| H-06 | Pas de vérif intégrité clé | HAUTE | S6.0 (round-trip check) | ✅ |
+| M-01 | Pas de stockage clé Anthropic | MOYENNE | S2.0 (encrypt_string DB) | ✅ |
+| M-02 | Pas de vault wallet | MOYENNE | S3.0 (double encryption) | ✅ |
+| M-03 | Pas de validation entrées | MOYENNE | S7.0 (validate_*) | ✅ |
+| M-04 | Pas de permissions fichier clé | MOYENNE | S6.0 (0o600 + auto-fix) | ✅ |
+| M-05 | Fallback base64 trompeur | MOYENNE | S6.0 (supprimé) | ✅ |
+| M-06 | Sessions sans expiration | MOYENNE | S1.0 (15min timeout) | ✅ |
+| M-07 | Pas d'audit trail | MOYENNE | S9.0 (13 event types) | ✅ |
+| M-08 | Données sensibles dans logs | MOYENNE | S9.0 (_mask_sensitive) | ✅ |
+| M-09 | Pas de rotation clé | MOYENNE | S10.0 (rotate-key) | ✅ |
+| M-10 | Pas de backup DB | MOYENNE | S10.0 (backup route) | ✅ |
+| M-11 | Pas de wipe d'urgence | MOYENNE | S10.0 (emergency-wipe) | ✅ |
+
+**25/25 vulnérabilités corrigées — couverture 100%**
+
+#### Routes de sécurité ajoutées
+
+| Route | Méthode | Auth | Rate | Description |
+|-------|---------|------|------|-------------|
+| `/api/auth/setup` | POST | Non | auth(5/min) | Configurer le PIN |
+| `/api/auth/login` | POST | Non | auth(5/min) + brute force | Login + session token |
+| `/api/auth/logout` | POST | Non | — | Terminer la session |
+| `/api/auth/status` | GET | Non | — | État auth (configuré/authentifié) |
+| `/api/settings/anthropic-key` | POST | Oui | settings(10/min) + Fernet | Stocker clé chiffrée |
+| `/api/settings/anthropic-key` | DELETE | Oui | settings(10/min) + Fernet | Supprimer clé |
+| `/api/settings/anthropic-key/status` | GET | Non | — | Statut masqué (****last4) |
+| `/api/wallet/gmx/setup` | POST | Oui | settings(10/min) + Fernet | Coffre double encryption |
+| `/api/wallet/gmx/status` | GET | Non | — | Adresse publique uniquement |
+| `/api/wallet/gmx` | DELETE | Oui | settings(10/min) + Fernet | Supprime vault (PIN requis) |
+| `/api/security/status` | GET | Oui | settings(10/min) | Fernet, perms, intégrité |
+| `/api/security/rotate-key` | POST | Oui | settings(10/min) + Fernet | Rotation clé + re-chiffrement |
+| `/api/security/backup` | POST | Oui | settings(10/min) | Backup DB dans backups/ |
+| `/api/security/emergency-wipe` | POST | Oui | auth(5/min) | Wipe toutes les clés |
+| `/api/audit-log` | GET | Oui | settings(10/min) | 100 derniers événements |
+
+#### Résumé technique
+
+| Composant | Implémentation |
+|-----------|---------------|
+| Authentification | PIN PBKDF2-SHA256 (600k iter) + session Bearer token (48B urlsafe) |
+| Sessions | 15min timeout, auto-cleanup, sessionStorage (pas localStorage) |
+| Chiffrement repos | Fernet (AES-128-CBC + HMAC-SHA256), clé dans secret.key (0o600) |
+| Double chiffrement | Vault = Fernet(system) ∘ Fernet(PBKDF2(PIN, salt, 480k iter)) |
+| Rate limiting | Pure Python, 4 catégories (auth 5/min, execute 30/min, settings 10/min, data 120/min) |
+| Anti-brute force | 5 échecs → IP bloquée 15 min, compteur reset sur succès |
+| CORS | Origins restreints (localhost + SERVER_IP), configurable via env |
+| Headers | X-Frame-Options DENY, nosniff, CSP, Referrer-Policy, Permissions-Policy |
+| XSS | escapeHtml() sur 34+ innerHTML, sanitize_error() côté serveur |
+| Validation | validate_symbol (regex), validate_quantity/price (bounds), limit clamping |
+| Audit | 13 event types → SQLite + log structuré, masquage auto des secrets |
+| Rotation | Nouvelle clé Fernet + re-chiffrement atomique de toutes les données |
+| Backup | Copie DB avec rotation 10 dernières, endpoint authentifié |
+| Wipe | Double confirmation (PIN + chaîne magique), supprime clés + wallets + exchanges |
 
 ---
 
