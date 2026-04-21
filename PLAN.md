@@ -3185,7 +3185,7 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 
 | Step | ID | Étape | Statut | Commit | Date |
 |------|----|-------|--------|--------|------|
-| 39 | S1.0 | Authentification PIN & Sessions | `[ ]` EN ATTENTE | — | — |
+| 39 | S1.0 | Authentification PIN & Sessions | `[x]` FAIT | — | 2026-04-21 |
 | 40 | S2.0 | Stockage sécurisé clé Anthropic | `[x]` FAIT | — | 2026-04-21 |
 | 41 | S3.0 | Coffre-fort GMX Wallet | `[ ]` EN ATTENTE | — | — |
 | 42 | S4.0 | CORS & Headers HTTP | `[ ]` EN ATTENTE | — | — |
@@ -3196,11 +3196,63 @@ S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
 | 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
 | 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
 
-**Progression sécurité : 1 / 10 étapes terminées**
+**Progression sécurité : 2 / 10 étapes terminées**
 
 ---
 
 ### 8.6 SUIVI DÉTAILLÉ PAR SOUS-TÂCHE
+
+#### Étape S1.0 — Authentification PIN & Sessions (Step 39) ✅
+
+| # | Sous-tâche | Fait |
+|---|------------|------|
+| S1.1 | Table SQLite `auth_pin` (pin_hash, pin_salt) | `[x]` |
+| S1.2 | Table SQLite `auth_sessions` (token, created_at, last_active, ip) | `[x]` |
+| S1.3 | Hashage PIN PBKDF2-SHA256 600k itérations + sel 32 bytes | `[x]` |
+| S1.4 | Route `POST /api/auth/setup` — créer le PIN initial + retourner token | `[x]` |
+| S1.5 | Route `POST /api/auth/login` — vérifier PIN + créer session | `[x]` |
+| S1.6 | Route `POST /api/auth/logout` — supprimer session | `[x]` |
+| S1.7 | Route `GET /api/auth/status` — PIN configuré + authenticated | `[x]` |
+| S1.8 | `require_auth()` middleware vérifie header Authorization Bearer | `[x]` |
+| S1.9 | Routes protégées : execute, close, exchanges/add/remove/test, killswitch POST, anthropic-key POST/DELETE | `[x]` |
+| S1.10 | Routes publiques : candles, price, orderbook, trades, ticker, indicators, status, positions, balance, auth/*, anthropic-key/status | `[x]` |
+| S1.11 | Frontend : écran verrouillage glassmorphism (PIN input, setup/login) | `[x]` |
+| S1.12 | Frontend : fetch interceptor ajoute Authorization header automatiquement | `[x]` |
+| S1.13 | Frontend : auto-redirect vers lock screen si 401 reçu | `[x]` |
+| S1.14 | Frontend : sessionStorage pour le token (pas localStorage) | `[x]` |
+| S1.15 | Frontend : auto-lock après 15 min d'inactivité (mouse/key/touch reset) | `[x]` |
+| S1.16 | `secrets.compare_digest()` pour la comparaison timing-safe du hash | `[x]` |
+| S1.17 | Nettoyage sessions expirées à chaque login | `[x]` |
+
+**Vulnérabilités corrigées** : C-01 (aucune auth), H-09 (aucun CSRF — atténué par tokens Bearer)
+
+**Routes protégées vs publiques** :
+```
+PROTÉGÉES (require_auth) :
+  POST /api/execute           POST /api/close
+  POST /api/exchanges/add     DELETE /api/exchanges/remove
+  POST /api/exchanges/test    POST /api/killswitch
+  POST /api/settings/anthropic-key
+  DELETE /api/settings/anthropic-key
+
+PUBLIQUES (lecture seule + auth) :
+  GET /api/candles     GET /api/price        GET /api/orderbook
+  GET /api/trades      GET /api/ticker       GET /api/indicators
+  GET /api/status      GET /api/positions    GET /api/balance
+  GET /api/auth/status POST /api/auth/setup  POST /api/auth/login
+  GET /api/settings/anthropic-key/status
+```
+
+**Tests passés** :
+- `GET /auth/status` sans PIN → `pin_configured: false, authenticated: true` ✓
+- `POST /auth/setup` avec PIN "1234" → token retourné ✓
+- `POST /execute` sans token → 401 `auth_required` ✓
+- `POST /execute` avec token → route exécutée ✓
+- `POST /auth/login` mauvais PIN → 401 `Invalid PIN` ✓
+- `POST /auth/login` bon PIN → nouveau token ✓
+- Routes publiques sans token → OK ✓
+
+---
 
 #### Étape S2.0 — Stockage sécurisé clé Anthropic (Step 40) ✅
 

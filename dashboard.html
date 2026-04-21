@@ -3140,6 +3140,19 @@ button:active { opacity: 0.7; }
     </div>
 </div>
 
+<!-- AUTH LOCK SCREEN -->
+<div id="auth-lock-screen" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(8,10,15,0.92);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);display:none;align-items:center;justify-content:center;flex-direction:column">
+    <div style="text-align:center;max-width:340px;padding:32px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:20px;backdrop-filter:blur(20px)">
+        <div style="font-size:40px;margin-bottom:12px">&#128274;</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px">J.A.R.V.I.S.</div>
+        <div id="auth-subtitle" style="font-size:12px;color:var(--text-dim);margin-bottom:20px">Enter your PIN to unlock</div>
+        <input type="password" id="auth-pin-input" placeholder="PIN" maxlength="20" autocomplete="off" spellcheck="false" style="width:100%;padding:12px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;color:var(--text);font-size:18px;text-align:center;letter-spacing:8px;outline:none;font-family:var(--font-mono)" onkeydown="if(event.key==='Enter')authSubmit()">
+        <div id="auth-error" style="font-size:11px;color:var(--red);margin-top:8px;min-height:16px"></div>
+        <button onclick="authSubmit()" style="width:100%;margin-top:12px;padding:10px;background:var(--accent);color:#000;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Unlock</button>
+        <div id="auth-setup-hint" style="display:none;font-size:10px;color:var(--text-muted);margin-top:12px">First time? Choose a PIN (4-20 chars) to secure your dashboard.</div>
+    </div>
+</div>
+
 <!-- ALERT MODAL -->
 <div class="modal-overlay" id="modal-alert" style="display:none">
     <div class="modal" style="width:380px">
@@ -7261,8 +7274,124 @@ function toggleTheme() {
     if (btn) btn.textContent = currentTheme === 'dark' ? '\u263C' : '\u263E';
 }
 
+// ========== AUTHENTICATION ==========
+var authToken = sessionStorage.getItem('jarvis_auth_token') || '';
+var authIsSetup = false;
+var authLastActivity = Date.now();
+var AUTH_TIMEOUT = 15 * 60 * 1000;
+
+var _origFetch = window.fetch;
+window.fetch = function(url, opts) {
+    opts = opts || {};
+    if (authToken && typeof url === 'string' && url.indexOf('/api/') !== -1) {
+        opts.headers = opts.headers || {};
+        if (typeof opts.headers.set === 'function') {
+            opts.headers.set('Authorization', 'Bearer ' + authToken);
+        } else {
+            opts.headers['Authorization'] = 'Bearer ' + authToken;
+        }
+    }
+    return _origFetch.call(window, url, opts).then(function(resp) {
+        if (resp.status === 401 && typeof url === 'string' && url.indexOf('/api/auth/') === -1) {
+            showLockScreen();
+        }
+        return resp;
+    });
+};
+
+function showLockScreen() {
+    var ls = $('auth-lock-screen');
+    if (ls) {
+        ls.style.display = 'flex';
+        var inp = $('auth-pin-input');
+        if (inp) { inp.value = ''; inp.focus(); }
+        $('auth-error').textContent = '';
+    }
+}
+
+function hideLockScreen() {
+    var ls = $('auth-lock-screen');
+    if (ls) ls.style.display = 'none';
+    authLastActivity = Date.now();
+}
+
+async function checkAuthStatus() {
+    try {
+        var resp = await _origFetch(API + '/api/auth/status', {
+            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        });
+        var data = await resp.json();
+        authIsSetup = data.pin_configured;
+        if (!data.pin_configured) {
+            $('auth-subtitle').textContent = 'Create a PIN to secure your dashboard';
+            $('auth-setup-hint').style.display = 'block';
+            showLockScreen();
+        } else if (!data.authenticated) {
+            $('auth-subtitle').textContent = 'Enter your PIN to unlock';
+            $('auth-setup-hint').style.display = 'none';
+            showLockScreen();
+        } else {
+            hideLockScreen();
+        }
+    } catch (e) {
+        hideLockScreen();
+    }
+}
+
+async function authSubmit() {
+    var pin = $('auth-pin-input').value.trim();
+    if (!pin) return;
+    var errEl = $('auth-error');
+
+    if (!authIsSetup) {
+        if (pin.length < 4) { errEl.textContent = 'PIN must be at least 4 characters'; return; }
+        try {
+            var resp = await _origFetch(API + '/api/auth/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pin: pin }),
+            });
+            var data = await resp.json();
+            if (data.error) { errEl.textContent = data.error; return; }
+            authToken = data.token;
+            sessionStorage.setItem('jarvis_auth_token', authToken);
+            authIsSetup = true;
+            hideLockScreen();
+            showToast('PIN configured — dashboard secured', 'success');
+        } catch (e) { errEl.textContent = 'Connection error'; }
+    } else {
+        try {
+            var resp = await _origFetch(API + '/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pin: pin }),
+            });
+            var data = await resp.json();
+            if (data.error) { errEl.textContent = data.error; return; }
+            authToken = data.token;
+            sessionStorage.setItem('jarvis_auth_token', authToken);
+            hideLockScreen();
+            showToast('Unlocked', 'success');
+        } catch (e) { errEl.textContent = 'Connection error'; }
+    }
+}
+
+document.addEventListener('mousemove', function() { authLastActivity = Date.now(); });
+document.addEventListener('keydown', function() { authLastActivity = Date.now(); });
+document.addEventListener('touchstart', function() { authLastActivity = Date.now(); });
+
+setInterval(function() {
+    if (authIsSetup && authToken && (Date.now() - authLastActivity > AUTH_TIMEOUT)) {
+        authToken = '';
+        sessionStorage.removeItem('jarvis_auth_token');
+        showLockScreen();
+        showToast('Session expired — locked', 'warning');
+    }
+}, 30000);
+
 // ========== INIT ON DOM READY ==========
 document.addEventListener('DOMContentLoaded', function() {
+    checkAuthStatus();
     // Apply saved theme
     if (currentTheme === 'light') {
         document.documentElement.setAttribute('data-theme', 'light');

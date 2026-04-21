@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import time
@@ -515,6 +516,20 @@ def init_db():
         triggered_at TEXT
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS auth_pin (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        pin_hash TEXT NOT NULL,
+        pin_salt TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS auth_sessions (
+        token TEXT PRIMARY KEY,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_active TEXT DEFAULT (datetime('now')),
+        ip_address TEXT
+    )""")
+
     c.execute("""CREATE TABLE IF NOT EXISTS scheduled_orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -616,6 +631,81 @@ def get_anthropic_key():
             log.warning("Failed to decrypt stored Anthropic key")
             return ""
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Authentication — PIN + Session tokens
+# ---------------------------------------------------------------------------
+
+AUTH_SESSION_TIMEOUT = 900  # 15 minutes inactivity
+AUTH_PBKDF2_ITERATIONS = 600_000
+
+def _hash_pin(pin, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(32)
+    h = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), AUTH_PBKDF2_ITERATIONS)
+    return h.hex(), salt
+
+def is_pin_configured():
+    conn = get_db()
+    row = conn.execute("SELECT pin_hash FROM auth_pin WHERE id = 1").fetchone()
+    conn.close()
+    return row is not None
+
+def verify_pin(pin):
+    conn = get_db()
+    row = conn.execute("SELECT pin_hash, pin_salt FROM auth_pin WHERE id = 1").fetchone()
+    conn.close()
+    if not row:
+        return False
+    h, _ = _hash_pin(pin, row["pin_salt"])
+    return secrets.compare_digest(h, row["pin_hash"])
+
+def create_session(ip=""):
+    token = secrets.token_urlsafe(48)
+    conn = get_db()
+    conn.execute("INSERT INTO auth_sessions (token, ip_address) VALUES (?, ?)", (token, ip))
+    conn.commit()
+    conn.close()
+    return token
+
+def validate_session(token):
+    if not token:
+        return False
+    conn = get_db()
+    row = conn.execute("SELECT last_active FROM auth_sessions WHERE token = ?", (token,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    last = datetime.fromisoformat(row["last_active"])
+    if (datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)).total_seconds() > AUTH_SESSION_TIMEOUT:
+        conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+        return False
+    conn.execute("UPDATE auth_sessions SET last_active = datetime('now') WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+    return True
+
+def cleanup_expired_sessions():
+    conn = get_db()
+    conn.execute(
+        "DELETE FROM auth_sessions WHERE datetime(last_active, '+' || ? || ' seconds') < datetime('now')",
+        (AUTH_SESSION_TIMEOUT,),
+    )
+    conn.commit()
+    conn.close()
+
+def require_auth():
+    """Check auth. Returns None if OK, or a Flask response tuple if unauthorized."""
+    if not is_pin_configured():
+        return None
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+    if not validate_session(token):
+        return jsonify({"error": "Authentication required", "auth_required": True}), 401
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3852,6 +3942,8 @@ def api_jarvis():
 
 @app.route("/api/execute", methods=["POST"])
 def api_execute():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     symbol = body.get("symbol", "BTCUSDT").upper()
     side = body.get("side", "long").lower()
@@ -4060,6 +4152,8 @@ def api_balance():
 
 @app.route("/api/close", methods=["POST"])
 def api_close():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     trade_id = body.get("trade_id")
     symbol = body.get("symbol", "")
@@ -4098,11 +4192,78 @@ def api_paper_history():
 
 
 # ===========================================================================
+# API ROUTES — Authentication (4 routes)
+# ===========================================================================
+
+@app.route("/api/auth/status")
+def api_auth_status():
+    configured = is_pin_configured()
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+    authenticated = validate_session(token) if configured else True
+    return jsonify({"pin_configured": configured, "authenticated": authenticated})
+
+
+@app.route("/api/auth/setup", methods=["POST"])
+def api_auth_setup():
+    if is_pin_configured():
+        return jsonify({"error": "PIN already configured. Use change-pin to modify."}), 400
+    body = request.get_json(force=True)
+    pin = body.get("pin", "").strip()
+    if len(pin) < 4 or len(pin) > 20:
+        return jsonify({"error": "PIN must be 4-20 characters"}), 400
+
+    pin_hash, salt = _hash_pin(pin)
+    conn = get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO auth_pin (id, pin_hash, pin_salt) VALUES (1, ?, ?)",
+        (pin_hash, salt),
+    )
+    conn.commit()
+    conn.close()
+
+    token = create_session(request.remote_addr)
+    log.info("PIN configured, first session created for %s", request.remote_addr)
+    return jsonify({"success": True, "token": token})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    if not is_pin_configured():
+        return jsonify({"error": "No PIN configured yet. Use /api/auth/setup first."}), 400
+    body = request.get_json(force=True)
+    pin = body.get("pin", "").strip()
+
+    if not verify_pin(pin):
+        log.warning("Failed login attempt from %s", request.remote_addr)
+        return jsonify({"error": "Invalid PIN"}), 401
+
+    cleanup_expired_sessions()
+    token = create_session(request.remote_addr)
+    log.info("Login success from %s", request.remote_addr)
+    return jsonify({"success": True, "token": token})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+    if token:
+        conn = get_db()
+        conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+    return jsonify({"success": True})
+
+
+# ===========================================================================
 # API ROUTES — Anthropic Key Management (3 routes)
 # ===========================================================================
 
 @app.route("/api/settings/anthropic-key", methods=["POST"])
 def api_set_anthropic_key():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     key = body.get("key", "").strip()
     if not key:
@@ -4139,6 +4300,8 @@ def api_anthropic_key_status():
 
 @app.route("/api/settings/anthropic-key", methods=["DELETE"])
 def api_delete_anthropic_key():
+    denied = require_auth()
+    if denied: return denied
     enc = get_setting("anthropic_api_key_enc")
     if not enc:
         return jsonify({"error": "No stored key to delete (env var keys cannot be deleted from here)"}), 404
@@ -4153,6 +4316,8 @@ def api_delete_anthropic_key():
 
 @app.route("/api/exchanges/add", methods=["POST"])
 def api_exchanges_add():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     name = body.get("name", "").strip()
     exchange_type = body.get("type", "").strip().lower()
@@ -4178,6 +4343,8 @@ def api_exchanges_list():
 
 @app.route("/api/exchanges/remove", methods=["DELETE"])
 def api_exchanges_remove():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     exchange_id = body.get("id")
     if not exchange_id:
@@ -4187,6 +4354,8 @@ def api_exchanges_remove():
 
 @app.route("/api/exchanges/test", methods=["POST"])
 def api_exchanges_test():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     exchange_id = body.get("id")
     if not exchange_id:
@@ -4660,6 +4829,8 @@ def api_drawdown():
 
 @app.route("/api/killswitch", methods=["POST"])
 def api_killswitch():
+    denied = require_auth()
+    if denied: return denied
     body = request.get_json(force=True)
     active = bool(body.get("active", False))
     reason = body.get("reason", "Manual toggle")
