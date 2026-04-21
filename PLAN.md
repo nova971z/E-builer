@@ -3061,3 +3061,148 @@ Ne PAS faire un commit séparé pour la mise à jour du PLAN.md.
 Le PLAN.md est un outil vivant, pas un livrable — il évolue avec le code.
 
 ---
+
+## 8. PLAN SÉCURITÉ — 10 ÉTAPES
+
+> **Date de l'audit** : 2026-04-21
+> **Fichiers audités** : `server.py` (~5200 lignes), `dashboard.html` (~7260 lignes)
+> **Objectif** : sécuriser le stockage des clés API Anthropic, du portefeuille GMX,
+> et corriger toutes les vulnérabilités identifiées pour un déploiement production.
+
+---
+
+### 8.1 RÉSUMÉ DE L'AUDIT DE SÉCURITÉ
+
+#### Statistiques
+
+| Sévérité | Nombre | % |
+|----------|--------|---|
+| CRITIQUE | 8 | 27% |
+| HAUTE | 9 | 31% |
+| MOYENNE | 8 | 27% |
+| BASSE | 4 | 14% |
+| **TOTAL** | **29** | 100% |
+
+---
+
+### 8.2 VULNÉRABILITÉS DÉTAILLÉES — CLASSÉES PAR SÉVÉRITÉ
+
+#### 🔴 CRITIQUE (8 vulnérabilités)
+
+| # | ID | Fichier | Ligne(s) | Vulnérabilité | Description |
+|---|-----|---------|----------|---------------|-------------|
+| 1 | C-01 | server.py | 384 | **Aucune authentification** | Zéro auth — toutes les 50+ routes API sont publiquement accessibles. N'importe qui connaissant l'IP:port peut exécuter des trades, ajouter/supprimer des exchanges, lire les clés. |
+| 2 | C-02 | server.py | 384 | **CORS non restreint** | `CORS(app)` sans paramètre = n'importe quel site web peut appeler toutes les routes API. Un attaquant peut créer une page qui exécute des ordres depuis le navigateur de la victime. |
+| 3 | C-03 | server.py | 568, 575 | **Fallback base64 si Fernet absent** | `encrypt_string()` et `decrypt_string()` tombent en base64 (aucun chiffrement) si `cryptography` n'est pas installé. Les clés API sont alors stockées en clair décodable. |
+| 4 | C-04 | server.py | 2275-2278 | **Private key GMX en mémoire indéfiniment** | `self._account = Web3Account.from_key(private_key)` — la clé privée reste en RAM tant que l'adaptateur existe. Aucun nettoyage, aucun timeout. Un dump mémoire = fonds volés. |
+| 5 | C-05 | server.py | 2278 | **Private key loggée dans les exceptions** | `log.error("GMXAdapter: invalid private key: %s", e)` — l'exception peut contenir des fragments de la clé privée dans le message d'erreur. |
+| 6 | C-06 | dashboard.html | 5126 | **Hack __set_key__ non fonctionnel** | `saveSettings()` envoie la clé Anthropic via `{message: '__set_key__:' + key}` à `/api/jarvis` — le serveur n'a pas de handler, la clé est envoyée comme message à Claude API. La clé Anthropic est transmise à un service tiers. |
+| 7 | C-07 | dashboard.html | 6457-6468 | **XSS via innerHTML (GMX Entry Plan)** | `container.innerHTML = '...' + signals + '...'` — les signaux du serveur sont injectés sans échappement. Un serveur compromis ou MITM peut exécuter du JS arbitraire. |
+| 8 | C-08 | dashboard.html | Absent | **Aucun Content-Security-Policy** | Pas de CSP dans le `<head>` — aucune protection contre l'injection de scripts externes, inline scripts malveillants, ou chargement de ressources tierces. |
+
+#### 🟠 HAUTE (9 vulnérabilités)
+
+| # | ID | Fichier | Ligne(s) | Vulnérabilité | Description |
+|---|-----|---------|----------|---------------|-------------|
+| 9 | H-01 | server.py | 4158, 4227, 4264, 4294, 4408, 4721, 4746, 4785, 4797, 4809, 4888, 4969, 5005, 5162 | **14× `str(e)` exposé au client** | 14 endpoints retournent `jsonify({"error": str(e)})` — les stack traces Python complètes sont envoyées au frontend. Fuite de chemins internes, versions de bibliothèques, structure du code. |
+| 10 | H-02 | server.py | 572-576 | **Aucun try/except dans decrypt_string()** | Si la clé Fernet est corrompue ou les données altérées, `decrypt_string()` crash le serveur avec une exception non gérée. Aucun fallback gracieux. |
+| 11 | H-03 | server.py | Absent | **Aucun rate limiting** | Zéro protection contre le brute force, le spam d'ordres, ou le DDoS. Un attaquant peut envoyer 10000 requêtes/seconde sur `/api/execute`. |
+| 12 | H-04 | server.py | Absent | **Aucun header de sécurité HTTP** | Pas de `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`, `Referrer-Policy`, `Permissions-Policy`. Le dashboard peut être intégré dans une iframe malveillante (clickjacking). |
+| 13 | H-05 | dashboard.html | 4183, 4202 | **XSS via innerHTML (Order Book)** | `asksEl.innerHTML = asksHtml` et `bidsEl.innerHTML = bidsHtml` — les prix/quantités du carnet d'ordres injectés sans échappement HTML. |
+| 14 | H-06 | dashboard.html | 4258 | **XSS via innerHTML (Recent Trades)** | `el.innerHTML = html` — les trades récents (prix, quantité, heure) injectés sans échappement. |
+| 15 | H-07 | dashboard.html | 4295 | **XSS via innerHTML (Ticker Footer)** | `tickerEl.innerHTML = html` — les symboles et prix du ticker injectés sans échappement. `t.symbol` peut contenir du HTML malveillant. |
+| 16 | H-08 | dashboard.html | 5157 | **XSS via innerHTML (Exchange List)** | `el.innerHTML = html` — `ex.name` et `ex.status` injectés sans échappement + injection onclick via `ex.id`. |
+| 17 | H-09 | dashboard.html | 5175, 4919, 5195 | **Aucun token CSRF** | Toutes les requêtes POST/DELETE (execute, exchanges/add, exchanges/remove, killswitch, close, alerts) sont envoyées sans token CSRF. Attaque cross-site possible. |
+
+#### 🟡 MOYENNE (8 vulnérabilités)
+
+| # | ID | Fichier | Ligne(s) | Vulnérabilité | Description |
+|---|-----|---------|----------|---------------|-------------|
+| 18 | M-01 | server.py | 67 | **Clé Anthropic uniquement via env var** | `ANTHROPIC_API_KEY = os.environ.get(...)` — aucune route pour la sauvegarder/modifier depuis le dashboard. Le hack `__set_key__` (C-06) ne fonctionne pas. L'utilisateur ne peut pas configurer JARVIS AI depuis l'interface. |
+| 19 | M-02 | server.py | 554-559 | **Aucune rotation de clé Fernet** | La clé `secret.key` est générée une fois, jamais renouvelée. Si compromise, toutes les données chiffrées sont exposées à vie. Aucun mécanisme de re-chiffrement. |
+| 20 | M-03 | server.py | 3830-3860 | **Aucune validation profonde sur /api/execute** | Le symbole n'est pas validé (regex), la quantité n'a pas de maximum, le levier n'est pas borné côté serveur. Un appel crafté peut passer n'importe quelle valeur. |
+| 21 | M-04 | server.py | Absent | **Aucun audit trail** | Aucun log structuré des opérations sensibles (ajout/suppression d'exchange, trades exécutés, tentatives d'accès). Impossible de retracer une intrusion. |
+| 22 | M-05 | dashboard.html | 4547, 5154, 6334 | **Injection onclick avec données serveur** | `onclick="closePosition('" + p.id + "')"` — si `p.id` contient `'); alert('XSS'); //`, le JS est exécuté. Même risque pour `ex.id` et `p.symbol`. |
+| 23 | M-06 | dashboard.html | 3060, 3110 | **Champs secrets sans autocomplete="off"** | Les champs pour la clé Anthropic et le secret exchange n'ont pas `autocomplete="off"`. Le navigateur peut sauvegarder et auto-remplir les secrets. |
+| 24 | M-07 | dashboard.html | 5167 | **Variables clés non nettoyées après envoi** | `const apiKey = $('ex-key').value` — la variable reste en mémoire JS après `addExchange()`. Pas de `= ''` après envoi. Accessible via DevTools. |
+| 25 | M-08 | dashboard.html | 6527 | **XSS via err.message dans innerHTML** | `'Scan error: ' + err.message` injecté dans innerHTML. Un message d'erreur crafté peut exécuter du JS. |
+
+#### 🟢 BASSE (4 vulnérabilités)
+
+| # | ID | Fichier | Ligne(s) | Vulnérabilité | Description |
+|---|-----|---------|----------|---------------|-------------|
+| 26 | B-01 | server.py | 383 | **Flask en mode debug potentiel** | `Flask(__name__)` sans `debug=False` explicite. Si lancé avec `FLASK_DEBUG=1`, le debugger interactif est accessible (exécution de code arbitraire). |
+| 27 | B-02 | server.py | Absent | **Pas de vérification permissions secret.key au runtime** | Les permissions `0o600` sont fixées à la création mais jamais revérifiées. Un `chmod` accidentel n'est pas détecté. |
+| 28 | B-03 | dashboard.html | 3106 | **Champ API key en type="text"** | `<input type="text" id="ex-key">` — la clé API exchange est visible en clair à l'écran. Devrait être `type="password"`. |
+| 29 | B-04 | dashboard.html | 6772 | **localStorage non chiffré** | La watchlist et les préférences sont en localStorage brut. Si un XSS est exploité, toutes ces données sont volées. Risque mineur car pas de secrets stockés actuellement. |
+
+---
+
+### 8.3 SQUELETTE DES 10 ÉTAPES DE SÉCURITÉ
+
+> **Convention** : Les étapes sécurité utilisent le préfixe `S` (S1.0 à S10.0).
+> Chaque étape sera détaillée avec ses sous-tâches au moment de l'implémentation.
+> Les colonnes "Corrige" réfèrent aux IDs de vulnérabilités ci-dessus.
+
+| Step | ID | Titre | Objectif | Corrige |
+|------|----|-------|----------|---------|
+| 39 | S1.0 | **Authentification PIN & Sessions** | Protéger toutes les routes sensibles par un PIN hashé PBKDF2 + tokens de session avec expiration + écran de verrouillage glassmorphism + auto-lock 15 min. | C-01, H-09 |
+| 40 | S2.0 | **Stockage sécurisé clé Anthropic** | Créer des routes dédiées pour sauvegarder/lire/supprimer la clé Anthropic chiffrée en DB, corriger le hack `__set_key__`, modifier JARVIS pour lire depuis la DB si env vide. | C-06, M-01 |
+| 41 | S3.0 | **Coffre-fort GMX Wallet** | Stocker la clé privée GMX avec double chiffrement (Fernet + PBKDF2 dérivé du PIN), nettoyage mémoire après usage, affichage adresse publique uniquement, modal sécurisé. | C-04, C-05 |
+| 42 | S4.0 | **CORS & Headers HTTP** | Restreindre CORS aux origines autorisées, ajouter CSP/X-Frame-Options/HSTS/nosniff/Referrer-Policy/Permissions-Policy, supprimer le header Server Flask. | C-02, C-08, H-04 |
+| 43 | S5.0 | **Rate Limiting & Anti-brute force** | Implémenter un rate limiter pure Python par IP avec limites par catégorie (auth 5/min, execute 30/min, data 120/min), blocage IP après 5 échecs auth, réponse 429. | H-03 |
+| 44 | S6.0 | **Blindage du chiffrement** | Supprimer le fallback base64, ajouter try/except à decrypt_string(), vérifier l'intégrité Fernet au démarrage, vérifier permissions secret.key, route /api/security/status. | C-03, H-02, B-02 |
+| 45 | S7.0 | **Validation des entrées & assainissement erreurs** | Fonctions validate_symbol/quantity/price, remplacer les 14× `str(e)` par des messages génériques, appliquer la validation à toutes les routes sensibles. | H-01, M-03 |
+| 46 | S8.0 | **Sécurité Frontend (XSS & DOM)** | Fonction `escapeHtml()`, corriger tous les innerHTML dangereux (order book, trades, ticker, exchange list, GMX), sécuriser les onclick dynamiques, autocomplete="off", nettoyage variables. | H-05, H-06, H-07, H-08, M-05, M-06, M-07, M-08, B-03 |
+| 47 | S9.0 | **Audit Trail & Logging sécurisé** | Table audit_log, tracer auth/trades/clés/settings, masquer les secrets dans les logs, route GET /api/audit-log, onglet Security Log dans le dashboard. | M-04, C-05 |
+| 48 | S10.0 | **Rotation des clés, backup & test final** | Rotation Fernet avec re-chiffrement, backup DB chiffré, wipe d'urgence, test de pénétration complet de toutes les routes, matrice de couverture finale. | M-02, B-01, B-04 |
+
+---
+
+### 8.4 MATRICE DE DÉPENDANCES
+
+```
+S1.0 (Auth)          ← aucune dépendance (PREMIÈRE ÉTAPE OBLIGATOIRE)
+  │
+  ├── S2.0 (Clé Anthropic)   ← nécessite S1.0 (routes protégées par auth)
+  ├── S3.0 (Wallet GMX)      ← nécessite S1.0 (PIN pour dérivation PBKDF2)
+  ├── S5.0 (Rate Limiting)   ← nécessite S1.0 (protection brute force sur /auth/login)
+  │
+  S4.0 (CORS & Headers)      ← indépendant, peut être fait en parallèle avec S1.0
+  S6.0 (Chiffrement)         ← indépendant, peut être fait en parallèle
+  S7.0 (Validation)          ← indépendant, peut être fait en parallèle
+  S8.0 (Frontend XSS)        ← indépendant, peut être fait en parallèle
+  │
+  S9.0 (Audit Trail)         ← nécessite S1.0 (log des events auth)
+  S10.0 (Test final)         ← nécessite S1-S9 terminées (DERNIÈRE ÉTAPE)
+```
+
+**Ordre d'exécution recommandé** : S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10
+
+---
+
+### 8.5 TABLEAU DE SUIVI SÉCURITÉ
+
+| Step | ID | Étape | Statut | Commit | Date |
+|------|----|-------|--------|--------|------|
+| 39 | S1.0 | Authentification PIN & Sessions | `[ ]` EN ATTENTE | — | — |
+| 40 | S2.0 | Stockage sécurisé clé Anthropic | `[ ]` EN ATTENTE | — | — |
+| 41 | S3.0 | Coffre-fort GMX Wallet | `[ ]` EN ATTENTE | — | — |
+| 42 | S4.0 | CORS & Headers HTTP | `[ ]` EN ATTENTE | — | — |
+| 43 | S5.0 | Rate Limiting & Anti-brute force | `[ ]` EN ATTENTE | — | — |
+| 44 | S6.0 | Blindage du chiffrement | `[ ]` EN ATTENTE | — | — |
+| 45 | S7.0 | Validation entrées & erreurs | `[ ]` EN ATTENTE | — | — |
+| 46 | S8.0 | Sécurité Frontend (XSS & DOM) | `[ ]` EN ATTENTE | — | — |
+| 47 | S9.0 | Audit Trail & Logging sécurisé | `[ ]` EN ATTENTE | — | — |
+| 48 | S10.0 | Rotation, backup & test final | `[ ]` EN ATTENTE | — | — |
+
+**Progression sécurité : 0 / 10 étapes terminées**
+
+---
+
+### 8.6 SUIVI DÉTAILLÉ PAR SOUS-TÂCHE (sera rempli étape par étape)
+
+> Chaque étape sera détaillée ici au moment de son implémentation,
+> avec les sous-tâches S1.1, S1.2, ... exactes et les lignes d'insertion.
+
+---
