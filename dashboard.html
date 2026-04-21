@@ -2993,8 +2993,14 @@ button:active { opacity: 0.7; }
             <span class="lev-val" id="gmx-lev-label">5x</span>
         </div>
         <div class="gmx-form-row">
-            <input type="number" id="gmx-collateral-input" placeholder="Collateral (USDC)" step="0.01" min="1">
+            <input type="number" id="gmx-collateral-input" placeholder="Collateral (USDC)" step="0.01" min="1" oninput="updateGMXEstimate()">
             <input type="number" id="gmx-price-input" placeholder="Price (market)" step="0.01">
+        </div>
+        <div style="display:flex;gap:4px;padding:0 2px;margin-bottom:6px">
+            <button onclick="setGmxCollateralPct(25)" style="flex:1;padding:4px;font-size:10px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">25%</button>
+            <button onclick="setGmxCollateralPct(50)" style="flex:1;padding:4px;font-size:10px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">50%</button>
+            <button onclick="setGmxCollateralPct(75)" style="flex:1;padding:4px;font-size:10px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">75%</button>
+            <button onclick="setGmxCollateralPct(100)" style="flex:1;padding:4px;font-size:10px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">100%</button>
         </div>
         <div class="gmx-form-row">
             <input type="number" id="gmx-tp-input" placeholder="Take Profit" step="0.01">
@@ -6525,6 +6531,18 @@ function updateGMXLevLabel() {
     updateGMXEstimate();
 }
 
+var _gmxUsdcBalance = 0;
+
+function setGmxCollateralPct(pct) {
+    if (_gmxUsdcBalance <= 0) {
+        showToast('USDC balance not loaded yet — try again', 'error');
+        return;
+    }
+    var amount = (_gmxUsdcBalance * pct / 100).toFixed(2);
+    $('gmx-collateral-input').value = amount;
+    updateGMXEstimate();
+}
+
 function onGMXMarketChange() {
     updateGMXEstimate();
     loadGMXEntryPlan();
@@ -6578,7 +6596,9 @@ function loadGMXWallet() {
             if (balances[i].exchange === 'GMX') {
                 var assets = balances[i].assets || {};
                 $('gmx-eth-bal').textContent = assets.ETH ? assets.ETH.total.toFixed(4) : '0.0000';
-                $('gmx-usdc-bal').textContent = assets.USDC ? '$' + fmt(assets.USDC.total) : '$0.00';
+                var usdcBal = assets.USDC ? assets.USDC.total : 0;
+                _gmxUsdcBalance = usdcBal;
+                $('gmx-usdc-bal').textContent = '$' + fmt(usdcBal);
                 var coll = assets.GMX_COLLATERAL;
                 $('gmx-collateral').textContent = coll ? '$' + fmt(coll.used) : '$0.00';
                 return;
@@ -6697,7 +6717,7 @@ function executeGMXOrder(side) {
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.success || data.order_id) {
             showToast('GMX ' + side.toUpperCase() + ' order sent! TX: ' + (data.tx_hash || data.order_id || '').substring(0, 10) + '...', 'success');
-            playSound('order');
+            if (typeof playSound === 'function') playSound('order');
             setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
         } else {
             showToast('GMX order failed: ' + (data.error || 'Unknown error'), 'error');
@@ -6717,7 +6737,7 @@ function closeGMXPosition(symbol) {
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.success) {
             showToast('Position closed: ' + symbol + ' | PnL: $' + (data.pnl_at_close || 0).toFixed(2), 'success');
-            playSound('close');
+            if (typeof playSound === 'function') playSound('close');
             setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
         } else {
             showToast('Close failed: ' + (data.error || 'Unknown'), 'error');
