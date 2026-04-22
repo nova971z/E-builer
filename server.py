@@ -3762,6 +3762,18 @@ class GMXAdapter(ExchangeAdapter):
         collateral_decimals = 6
         collateral_amount_raw = int(collateral_usd * 10**collateral_decimals)
 
+        usdc_balance = self._get_token_balance(collateral_token, collateral_decimals)
+        if usdc_balance < collateral_usd:
+            return {"success": False, "error": f"Insufficient USDC: have ${usdc_balance:.2f}, need ${collateral_usd:.2f}", "exchange": "GMX"}
+
+        execution_fee = self._estimate_execution_fee()
+        gas_price = self._w3.eth.gas_price
+        gas_cost_estimate = 1500000 * gas_price / 10**18
+        total_eth_needed = (execution_fee / 10**18) + gas_cost_estimate
+        eth_balance = self._w3.eth.get_balance(self._account.address) / 10**18
+        if eth_balance < total_eth_needed:
+            return {"success": False, "error": f"Insufficient ETH: have {eth_balance:.4f}, need ~{total_eth_needed:.4f}", "exchange": "GMX"}
+
         slippage_mult = GMX_DEFAULT_SLIPPAGE_BPS / 10000
         if is_long:
             acceptable_price = int(ref_price * (1 + slippage_mult) * 10**30)
@@ -3769,7 +3781,6 @@ class GMXAdapter(ExchangeAdapter):
             acceptable_price = int(ref_price * (1 - slippage_mult) * 10**30)
 
         trigger_price = int(price * 10**30) if price and not is_market else 0
-        execution_fee = self._estimate_execution_fee()
 
         exchange_router = self._contracts.get("exchange_router")
         order_vault = self._contracts.get("order_vault")
@@ -3965,9 +3976,6 @@ class GMXAdapter(ExchangeAdapter):
                 if p["symbol"] == normalized:
                     target = p
                     break
-        if not target and positions:
-            target = positions[0]
-
         if not target:
             return {"success": False, "error": f"No position found for {symbol}"}
 
