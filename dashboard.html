@@ -7163,15 +7163,18 @@ function loadGMXPositions() {
         var html = '';
         for (var i = 0; i < positions.length; i++) {
             var p = positions[i];
-            var pnlClass = p.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-            var pnlSign = p.pnl >= 0 ? '+' : '';
+            var pnl = p.pnl || 0;
+            var lev = p.leverage || 0;
+            var sizeUsd = p.size_usd || 0;
+            var pnlClass = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+            var pnlSign = pnl >= 0 ? '+' : '';
             var sym = escapeHtml(String(p.symbol).replace('USDT', ''));
             html += '<tr>'
                 + '<td>' + sym + '</td>'
                 + '<td style="color:' + (p.side === 'long' ? 'var(--green)' : 'var(--red)') + '">' + escapeHtml(String(p.side).toUpperCase()) + '</td>'
-                + '<td>$' + fmtK(p.size_usd) + '</td>'
-                + '<td>' + p.leverage.toFixed(0) + 'x</td>'
-                + '<td class="' + pnlClass + '">' + pnlSign + '$' + p.pnl.toFixed(2) + '</td>'
+                + '<td>$' + fmtK(sizeUsd) + '</td>'
+                + '<td>' + lev.toFixed(0) + 'x</td>'
+                + '<td class="' + pnlClass + '">' + pnlSign + '$' + pnl.toFixed(2) + '</td>'
                 + '<td><button onclick="closeGMXPosition(\'' + escapeHtml(p.symbol) + '\')" style="background:var(--red);color:#fff;border:none;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:10px">Close</button></td>'
                 + '</tr>';
         }
