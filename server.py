@@ -3880,9 +3880,9 @@ class GMXAdapter(ExchangeAdapter):
 
             if is_tp:
                 if is_long_close:
-                    acceptable = int(trigger_price_usd * 0.997 * 10**30)
-                else:
                     acceptable = int(trigger_price_usd * 1.003 * 10**30)
+                else:
+                    acceptable = int(trigger_price_usd * 0.997 * 10**30)
             else:
                 if is_long_close:
                     acceptable = int(trigger_price_usd * 1.003 * 10**30)
@@ -3911,7 +3911,7 @@ class GMXAdapter(ExchangeAdapter):
                     0,
                     0,
                 ),
-                GMX_ORDER_TYPE_LIMIT_DECREASE,
+                GMX_ORDER_TYPE_LIMIT_DECREASE if is_tp else GMX_ORDER_TYPE_STOP_LOSS_DECREASE,
                 GMX_DECREASE_POSITION_SWAP_TYPE,
                 not is_long_close,
                 True,
