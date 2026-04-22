@@ -8091,14 +8091,25 @@ class AutonomousEngine:
                     ccxt_side = "buy" if direction == "long" else "sell"
                     if smart_executor:
                         smart_executor.set_gmx_adapter(adapter)
-                        result = smart_executor.execute_with_retry(
-                            symbol=symbol, side=ccxt_side, order_type="market",
-                            size_usd=size_usd, leverage=leverage,
-                            take_profit=tp, stop_loss=sl,
-                            max_retries=3)
+                        order_dict = {
+                            "symbol": symbol,
+                            "direction": direction,
+                            "side": ccxt_side,
+                            "order_type": "market",
+                            "size_usd": size_usd,
+                            "quantity": size_usd,
+                            "leverage": leverage,
+                            "tp": tp,
+                            "sl": sl,
+                            "price": price,
+                        }
+                        result = smart_executor.execute_with_retry(order_dict, max_retries=3)
                     else:
-                        result = adapter.place_order(symbol, ccxt_side, "market",
-                                                     size_usd, None, leverage, tp, sl)
+                        collateral_for_order = size_usd / leverage if leverage > 0 else size_usd
+                        result = adapter.place_order_by_collateral(
+                            symbol, ccxt_side, "market",
+                            collateral_usd=collateral_for_order,
+                            leverage=leverage, tp=tp, sl=sl)
                     trade_record["result"] = result
 
             self._state["trades_today"] += 1
