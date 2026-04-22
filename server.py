@@ -66,6 +66,14 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "jarvis.db"
 SECRET_KEY_FILE = BASE_DIR / "secret.key"
 BINANCE_BASE = "https://api.binance.com"
+BINANCE_ENDPOINTS = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+    "https://api.binance.us",
+]
 BINANCE_FAPI = "https://fapi.binance.com"
 STOOQ_BASE = "https://stooq.com/q/l/"
 ALTERNATIVE_ME = "https://api.alternative.me"
@@ -1154,20 +1162,26 @@ def rate_limit(category):
 # ---------------------------------------------------------------------------
 
 def fetch_binance(endpoint, params=None, base=None, ttl=15):
-    base = base or BINANCE_BASE
     cache_key = f"binance:{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
     cached = cache.get(cache_key, ttl=ttl)
     if cached is not None:
         return cached
-    try:
-        resp = _http_session.get(f"{base}{endpoint}", params=params, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        cache.set(cache_key, data)
-        return data
-    except requests.RequestException as e:
-        log.warning("Binance %s failed: %s", endpoint, e)
-        return None
+
+    endpoints = [base] if base else BINANCE_ENDPOINTS
+    for base_url in endpoints:
+        try:
+            resp = _http_session.get(base_url + endpoint, params=params, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                cache.set(cache_key, data)
+                return data
+            if resp.status_code == 403:
+                continue
+        except Exception:
+            continue
+
+    log.warning("All Binance endpoints failed for %s", endpoint)
+    return None
 
 
 def transform_klines(raw):
