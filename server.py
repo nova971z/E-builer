@@ -297,6 +297,7 @@ GMX_EXCHANGE_ROUTER_ABI = [
                     {
                         "components": [
                             {"internalType": "address", "name": "receiver", "type": "address"},
+                            {"internalType": "address", "name": "cancellationReceiver", "type": "address"},
                             {"internalType": "address", "name": "callbackContract", "type": "address"},
                             {"internalType": "address", "name": "uiFeeReceiver", "type": "address"},
                             {"internalType": "address", "name": "market", "type": "address"},
@@ -325,7 +326,9 @@ GMX_EXCHANGE_ROUTER_ABI = [
                     {"internalType": "enum Order.DecreasePositionSwapType", "name": "decreasePositionSwapType", "type": "uint8"},
                     {"internalType": "bool", "name": "isLong", "type": "bool"},
                     {"internalType": "bool", "name": "shouldUnwrapNativeToken", "type": "bool"},
+                    {"internalType": "bool", "name": "autoCancel", "type": "bool"},
                     {"internalType": "bytes32", "name": "referralCode", "type": "bytes32"},
+                    {"internalType": "bytes32[]", "name": "dataList", "type": "bytes32[]"},
                 ],
                 "internalType": "struct IBaseOrderUtils.CreateOrderParams",
                 "name": "params",
@@ -3576,6 +3579,7 @@ class GMXAdapter(ExchangeAdapter):
         order_params = (
             (
                 self._account.address,
+                self._account.address,
                 "0x0000000000000000000000000000000000000000",
                 "0x0000000000000000000000000000000000000000",
                 Web3.to_checksum_address(market["market_token"]),
@@ -3595,7 +3599,9 @@ class GMXAdapter(ExchangeAdapter):
             GMX_DECREASE_POSITION_SWAP_TYPE,
             is_long,
             True,
+            False,
             GMX_REFERRAL_CODE,
+            [],
         )
 
         with self._nonce_lock:
@@ -3732,6 +3738,7 @@ class GMXAdapter(ExchangeAdapter):
         order_params = (
             (
                 self._account.address,
+                self._account.address,
                 "0x0000000000000000000000000000000000000000",
                 "0x0000000000000000000000000000000000000000",
                 Web3.to_checksum_address(market["market_token"]),
@@ -3751,7 +3758,9 @@ class GMXAdapter(ExchangeAdapter):
             GMX_DECREASE_POSITION_SWAP_TYPE,
             is_long,
             True,
+            False,
             GMX_REFERRAL_CODE,
+            [],
         )
 
         try:
@@ -3846,6 +3855,7 @@ class GMXAdapter(ExchangeAdapter):
             order_params = (
                 (
                     self._account.address,
+                    self._account.address,
                     "0x0000000000000000000000000000000000000000",
                     "0x0000000000000000000000000000000000000000",
                     Web3.to_checksum_address(market["market_token"]),
@@ -3865,7 +3875,9 @@ class GMXAdapter(ExchangeAdapter):
                 GMX_DECREASE_POSITION_SWAP_TYPE,
                 not is_long_close,
                 True,
+                False,
                 GMX_REFERRAL_CODE,
+                [],
             )
 
             send_wnt_data = exchange_router.functions.sendWnt(
@@ -3958,6 +3970,7 @@ class GMXAdapter(ExchangeAdapter):
         order_params = (
             (
                 self._account.address,
+                self._account.address,
                 "0x0000000000000000000000000000000000000000",
                 "0x0000000000000000000000000000000000000000",
                 Web3.to_checksum_address(market["market_token"]),
@@ -3977,7 +3990,9 @@ class GMXAdapter(ExchangeAdapter):
             GMX_DECREASE_POSITION_SWAP_TYPE,
             is_long,
             True,
+            False,
             GMX_REFERRAL_CODE,
+            [],
         )
 
         try:
