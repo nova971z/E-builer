@@ -351,6 +351,26 @@ GMX_EXCHANGE_ROUTER_ABI = [
     },
 ]
 
+GMX_ROUTER_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "plugin", "type": "address"}],
+        "name": "approvePlugin",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "", "type": "address"},
+            {"internalType": "address", "name": "", "type": "address"},
+        ],
+        "name": "approvedPlugins",
+        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
 GMX_ERC20_ABI = [
     {
         "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
@@ -3185,6 +3205,10 @@ def get_gmx_contracts(w3, testnet=False):
             "data_store": Web3.to_checksum_address(addresses["DataStore"]),
             "order_vault": Web3.to_checksum_address(addresses["OrderVault"]),
             "router": Web3.to_checksum_address(addresses["Router"]),
+            "router_contract": w3.eth.contract(
+                address=Web3.to_checksum_address(addresses["Router"]),
+                abi=GMX_ROUTER_ABI,
+            ),
         }
     except Exception as e:
         log.error("Failed to instantiate GMX contracts: %s", e)
@@ -3609,6 +3633,22 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         with self._nonce_lock:
+            try:
+                router_contract = self._contracts.get("router_contract")
+                if router_contract:
+                    is_approved = router_contract.functions.approvedPlugins(
+                        self._account.address, exchange_router.address
+                    ).call()
+                    if not is_approved:
+                        log.info("GMX: approving ExchangeRouter as plugin on Router...")
+                        approve_tx = router_contract.functions.approvePlugin(
+                            exchange_router.address
+                        ).build_transaction(self._build_tx())
+                        tx_hash_approve = self._sign_and_send(approve_tx)
+                        log.info("GMX: Router plugin approved, tx: %s", tx_hash_approve)
+            except Exception as e:
+                return {"success": False, "error": f"Router plugin approval failed: {e}", "exchange": "GMX"}
+
             try:
                 approval_tx = self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
                 if approval_tx:
