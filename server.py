@@ -3645,20 +3645,41 @@ class GMXAdapter(ExchangeAdapter):
 
         with self._nonce_lock:
             try:
-                usdc_contract = get_erc20_contract(self._w3, collateral_token)
-                transfer_tx = usdc_contract.functions.transfer(
-                    order_vault, collateral_amount_raw
-                ).build_transaction(self._build_tx())
-                transfer_hash = self._sign_and_send(transfer_tx)
-                log.info("GMX: USDC transferred to OrderVault, tx: %s", transfer_hash)
+                router_contract = self._contracts.get("router_contract")
+                if router_contract:
+                    is_approved = router_contract.functions.approvedPlugins(
+                        self._account.address, exchange_router.address
+                    ).call()
+                    if not is_approved:
+                        log.info("GMX: approving ExchangeRouter as Router plugin (one-time)...")
+                        approve_tx = router_contract.functions.approvePlugin(
+                            exchange_router.address
+                        ).build_transaction(self._build_tx())
+                        plugin_hash = self._sign_and_send(approve_tx)
+                        log.info("GMX: plugin approved, tx: %s", plugin_hash)
+                    else:
+                        log.info("GMX: ExchangeRouter already approved as plugin")
+            except Exception as e:
+                log.error("GMX plugin approval failed: %s (type: %s)", e, type(e).__name__)
+                return {"success": False, "error": f"Router plugin approval failed: {e}", "exchange": "GMX"}
+
+            try:
+                approval_tx = self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
+                if approval_tx:
+                    log.info("GMX: USDC approved for Router, tx: %s", approval_tx)
             except Exception as e:
                 self._pending_nonce = None
-                log.error("GMX USDC transfer failed: %s", e)
-                return {"success": False, "error": f"USDC transfer to OrderVault failed: {e}", "exchange": "GMX"}
+                return {"success": False, "error": f"Token approval failed: {e}", "exchange": "GMX"}
 
             try:
                 send_wnt_data = exchange_router.functions.sendWnt(
                     order_vault, execution_fee
+                )._encode_transaction_data()
+
+                send_tokens_data = exchange_router.functions.sendTokens(
+                    Web3.to_checksum_address(collateral_token),
+                    order_vault,
+                    collateral_amount_raw,
                 )._encode_transaction_data()
 
                 create_order_data = exchange_router.functions.createOrder(
@@ -3668,19 +3689,19 @@ class GMXAdapter(ExchangeAdapter):
                 total_value = execution_fee
                 multicall_data = [
                     bytes.fromhex(send_wnt_data[2:]),
+                    bytes.fromhex(send_tokens_data[2:]),
                     bytes.fromhex(create_order_data[2:]),
                 ]
 
                 base_tx = self._build_tx(value=total_value)
-                raw_tx_data = exchange_router.functions.multicall(multicall_data)._encode_transaction_data()
                 base_tx["to"] = exchange_router.address
-                base_tx["data"] = raw_tx_data
+                base_tx["data"] = exchange_router.functions.multicall(multicall_data)._encode_transaction_data()
 
                 tx_hash = self._sign_and_send(base_tx)
 
             except Exception as e:
                 self._pending_nonce = None
-                log.error("GMX place_order_by_collateral final error: %s (type: %s)", e, type(e).__name__)
+                log.error("GMX place_order_by_collateral failed: %s (type: %s)", e, type(e).__name__)
                 return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
         result = {
