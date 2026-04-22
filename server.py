@@ -3236,7 +3236,7 @@ class GMXAdapter(ExchangeAdapter):
         self._account = None
         self._contracts = {}
         self._initialized = False
-        self._nonce_lock = threading.Lock()
+        self._nonce_lock = threading.RLock()
         self._pending_nonce = None
 
         if not HAS_WEB3:
@@ -3306,6 +3306,7 @@ class GMXAdapter(ExchangeAdapter):
             if receipt.get("status") == 0:
                 self._pending_nonce = None
                 raise Exception(f"Transaction reverted on-chain: {tx_hash.hex()}")
+            self._pending_nonce = None
         except Exception as e:
             if "reverted" in str(e):
                 self._pending_nonce = None
