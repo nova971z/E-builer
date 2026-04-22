@@ -3354,23 +3354,36 @@ class GMXAdapter(ExchangeAdapter):
         return market_address[:10] + "..."
 
     def _get_index_price(self, symbol):
-        """Fetch current index price from Binance for PnL calculation."""
-        try:
-            key = f"gmx_price_{symbol}"
-            cached = cache.get(key)
-            if cached:
-                return cached
-            resp = requests.get(
-                f"{BINANCE_BASE}/api/v3/ticker/price",
-                params={"symbol": symbol}, timeout=3
-            )
-            if resp.status_code == 200:
-                price = float(resp.json()["price"])
-                cache.set(key, price, ttl=5)
-                return price
-        except Exception:
-            pass
-        return 0.0
+        """Fetch current index price with multiple fallback sources."""
+        key = f"gmx_price_{symbol}"
+        cached = cache.get(key)
+        if cached:
+            return cached
+
+        price = 0.0
+        sources = [
+            ("https://api.binance.com/api/v3/ticker/price", {"symbol": symbol}, lambda d: float(d["price"])),
+            ("https://api.binance.us/api/v3/ticker/price", {"symbol": symbol}, lambda d: float(d["price"])),
+            ("https://api1.binance.com/api/v3/ticker/price", {"symbol": symbol}, lambda d: float(d["price"])),
+            ("https://api.coingecko.com/api/v3/simple/price", {"ids": self._symbol_to_cg(symbol), "vs_currencies": "usd"}, lambda d: float(list(d.values())[0]["usd"])),
+        ]
+        for url, params, extract in sources:
+            try:
+                resp = _http_session.get(url, params=params, timeout=5)
+                if resp.status_code == 200:
+                    price = extract(resp.json())
+                    if price > 0:
+                        cache.set(key, price, ttl=5)
+                        return price
+            except Exception:
+                continue
+        return price
+
+    @staticmethod
+    def _symbol_to_cg(symbol):
+        mapping = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
+                    "ARBUSDT": "arbitrum", "DOGEUSDT": "dogecoin"}
+        return mapping.get(symbol, "bitcoin")
 
     def get_positions(self):
         if not HAS_WEB3:
@@ -9274,13 +9287,33 @@ def api_execute():
     if risk_engine._is_kill_switch_active():
         return jsonify({"error": "Kill switch is active — all trading suspended", "kill_switch": True}), 403
 
-    # Get current price if market order
+    # Get current price if market order — try multiple sources
     if price <= 0:
         price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=2)
         if price_data:
             price = float(price_data.get("price", 0))
         if price <= 0:
-            return jsonify({"error": "Could not determine current price"}), 502
+            for fallback_url in ["https://api1.binance.com", "https://api.binance.us"]:
+                try:
+                    r = _http_session.get(f"{fallback_url}/api/v3/ticker/price", params={"symbol": symbol}, timeout=5)
+                    if r.status_code == 200:
+                        price = float(r.json().get("price", 0))
+                        if price > 0:
+                            break
+                except Exception:
+                    continue
+        if price <= 0:
+            cg_map = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "ARBUSDT": "arbitrum", "DOGEUSDT": "dogecoin"}
+            cg_id = cg_map.get(symbol)
+            if cg_id:
+                try:
+                    r = _http_session.get("https://api.coingecko.com/api/v3/simple/price", params={"ids": cg_id, "vs_currencies": "usd"}, timeout=5)
+                    if r.status_code == 200:
+                        price = float(r.json().get(cg_id, {}).get("usd", 0))
+                except Exception:
+                    pass
+        if price <= 0:
+            return jsonify({"error": "Could not determine current price from any source"}), 502
 
     # Advanced order types — create scheduled orders
     if order_type in ("oco", "trailing", "iceberg", "dca"):
