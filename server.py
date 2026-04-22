@@ -3620,23 +3620,21 @@ class GMXAdapter(ExchangeAdapter):
                 log.info("GMX ORDER DEBUG: order_vault=%s, router=%s, exchange_router=%s",
                          order_vault, router_addr, exchange_router.address)
 
-                send_wnt_data = exchange_router.encodeABI(
-                    fn_name='sendWnt', args=[order_vault, execution_fee]
-                )
+                send_wnt_data = exchange_router.functions.sendWnt(
+                    order_vault, execution_fee
+                )._encode_transaction_data()
                 log.info("GMX DEBUG: sendWnt calldata OK (%d bytes)", len(send_wnt_data))
 
-                send_tokens_data = exchange_router.encodeABI(
-                    fn_name='sendTokens', args=[
-                        Web3.to_checksum_address(collateral_token),
-                        order_vault,
-                        collateral_amount_raw,
-                    ]
-                )
+                send_tokens_data = exchange_router.functions.sendTokens(
+                    Web3.to_checksum_address(collateral_token),
+                    order_vault,
+                    collateral_amount_raw,
+                )._encode_transaction_data()
                 log.info("GMX DEBUG: sendTokens calldata OK (%d bytes)", len(send_tokens_data))
 
-                create_order_data = exchange_router.encodeABI(
-                    fn_name='createOrder', args=[order_params]
-                )
+                create_order_data = exchange_router.functions.createOrder(
+                    order_params
+                )._encode_transaction_data()
                 log.info("GMX DEBUG: createOrder calldata OK (%d bytes)", len(create_order_data))
 
                 total_value = execution_fee
@@ -3796,10 +3794,11 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         try:
-            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
-            send_tokens_data = exchange_router.encodeABI(fn_name='sendTokens', args=[
-                Web3.to_checksum_address(collateral_token), order_vault, collateral_amount_raw])
-            create_order_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
+            send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
+            send_tokens_data = exchange_router.functions.sendTokens(
+                Web3.to_checksum_address(collateral_token), order_vault, collateral_amount_raw
+            )._encode_transaction_data()
+            create_order_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
             total_value = execution_fee
             multicall_tx = exchange_router.functions.multicall([
@@ -3901,8 +3900,8 @@ class GMXAdapter(ExchangeAdapter):
                 [],
             )
 
-            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
-            create_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
+            send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
+            create_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
             multicall_tx = exchange_router.functions.multicall(
                 [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
@@ -4012,8 +4011,8 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         try:
-            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
-            create_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
+            send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
+            create_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
             multicall_tx = exchange_router.functions.multicall(
                 [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
