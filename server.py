@@ -615,6 +615,23 @@ def init_db():
         status TEXT DEFAULT 'open'
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS alert_config (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        config TEXT NOT NULL,
+        events TEXT,
+        enabled INTEGER DEFAULT 1
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS notification_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT DEFAULT (datetime('now')),
+        alert_type TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        message TEXT NOT NULL,
+        data TEXT
+    )""")
+
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
@@ -5573,6 +5590,202 @@ performance_tracker = PerformanceTracker()
 
 
 # ---------------------------------------------------------------------------
+# Alert Manager — multi-channel notification system with anti-spam
+# ---------------------------------------------------------------------------
+
+_ALERT_PRIORITIES = {
+    "CIRCUIT_BREAKER": "CRITICAL", "ERROR": "CRITICAL",
+    "TRADE_OPENED": "HIGH", "TRADE_CLOSED": "HIGH",
+    "REGIME_CHANGE": "HIGH", "MACRO_EVENT": "HIGH", "DRAWDOWN": "HIGH",
+    "SIGNAL_STRONG": "MEDIUM", "DIP_DETECTED": "MEDIUM",
+    "TOP_DETECTED": "MEDIUM", "GEOPOLITICAL": "MEDIUM",
+    "BOT_STATUS": "LOW",
+}
+
+_PRIORITY_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+
+class AlertManager:
+
+    def __init__(self):
+        self._alerts = deque(maxlen=500)
+        self._webhooks = []
+        self._telegram = None
+        self._discord_url = None
+        self._lock = threading.Lock()
+        self._cooldowns = {}
+        self._cooldown_seconds = 300
+        self._alert_id_counter = 0
+        self._load_channels()
+
+    def _load_channels(self):
+        try:
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT channel, config, events, enabled FROM alert_config WHERE enabled=1"
+            ).fetchall()
+            conn.close()
+            for ch, cfg_json, ev_json, _ in rows:
+                try:
+                    cfg = json.loads(cfg_json)
+                except Exception:
+                    continue
+                events = None
+                if ev_json:
+                    try:
+                        events = json.loads(ev_json)
+                    except Exception:
+                        pass
+                if ch == "webhook":
+                    self._webhooks.append({"url": cfg.get("url", ""), "events": events})
+                elif ch == "telegram":
+                    self._telegram = {"token": cfg.get("token", ""), "chat_id": cfg.get("chat_id", "")}
+                elif ch == "discord":
+                    self._discord_url = cfg.get("url", "")
+        except Exception:
+            pass
+
+    def send(self, alert_type, message, priority=None, data=None):
+        if priority is None:
+            priority = _ALERT_PRIORITIES.get(alert_type, "MEDIUM")
+
+        now = time.time()
+        cooldown_key = f"{alert_type}:{message[:40]}"
+        with self._lock:
+            last = self._cooldowns.get(cooldown_key, 0)
+            if now - last < self._cooldown_seconds and priority != "CRITICAL":
+                return None
+            self._cooldowns[cooldown_key] = now
+            self._alert_id_counter += 1
+            aid = self._alert_id_counter
+
+        alert = {
+            "id": aid,
+            "type": alert_type,
+            "priority": priority,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": data or {},
+        }
+
+        with self._lock:
+            self._alerts.append(alert)
+
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO notification_log (alert_type, priority, message, data) VALUES (?,?,?,?)",
+                (alert_type, priority, message, json.dumps(data or {})))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+        threading.Thread(target=self._dispatch_all, args=(alert,), daemon=True).start()
+        return alert
+
+    def get_recent(self, limit=50, priority=None, alert_type=None, since_id=0):
+        with self._lock:
+            out = list(self._alerts)
+        if since_id:
+            out = [a for a in out if a["id"] > since_id]
+        if priority:
+            min_ord = _PRIORITY_ORDER.get(priority, 0)
+            out = [a for a in out if _PRIORITY_ORDER.get(a["priority"], 0) >= min_ord]
+        if alert_type:
+            out = [a for a in out if a["type"] == alert_type]
+        return out[-limit:]
+
+    def add_webhook(self, url, events=None):
+        self._webhooks.append({"url": url, "events": events})
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO alert_config (channel, config, events, enabled) VALUES (?,?,?,1)",
+                ("webhook", json.dumps({"url": url}),
+                 json.dumps(events) if events else None))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return True
+
+    def configure_telegram(self, bot_token, chat_id):
+        self._telegram = {"token": bot_token, "chat_id": chat_id}
+        try:
+            conn = get_db()
+            conn.execute("DELETE FROM alert_config WHERE channel='telegram'")
+            conn.execute(
+                "INSERT INTO alert_config (channel, config, enabled) VALUES (?,?,1)",
+                ("telegram", json.dumps({"token": bot_token, "chat_id": chat_id})))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    def configure_discord(self, webhook_url):
+        self._discord_url = webhook_url
+        try:
+            conn = get_db()
+            conn.execute("DELETE FROM alert_config WHERE channel='discord'")
+            conn.execute(
+                "INSERT INTO alert_config (channel, config, enabled) VALUES (?,?,1)",
+                ("discord", json.dumps({"url": webhook_url})))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    def _dispatch_all(self, alert):
+        for wh in self._webhooks:
+            evts = wh.get("events")
+            if evts and alert["type"] not in evts:
+                continue
+            self._dispatch_webhook(alert, wh["url"])
+        if self._telegram:
+            self._dispatch_telegram(alert)
+        if self._discord_url:
+            self._dispatch_discord(alert)
+
+    def _dispatch_webhook(self, alert, url):
+        try:
+            requests.post(url, json=alert, timeout=5)
+        except Exception:
+            pass
+
+    def _dispatch_telegram(self, alert):
+        if not self._telegram:
+            return
+        prio_emoji = {"CRITICAL": "\U0001F534", "HIGH": "\U0001F7E0",
+                      "MEDIUM": "\U0001F535", "LOW": "⚪"}
+        emoji = prio_emoji.get(alert["priority"], "⚪")
+        text = f"{emoji} *{alert['type']}*\n{alert['message']}"
+        try:
+            url = f"https://api.telegram.org/bot{self._telegram['token']}/sendMessage"
+            requests.post(url, json={
+                "chat_id": self._telegram["chat_id"],
+                "text": text, "parse_mode": "Markdown",
+            }, timeout=5)
+        except Exception:
+            pass
+
+    def _dispatch_discord(self, alert):
+        if not self._discord_url:
+            return
+        prio_emoji = {"CRITICAL": "\U0001F534", "HIGH": "\U0001F7E0",
+                      "MEDIUM": "\U0001F535", "LOW": "⚪"}
+        emoji = prio_emoji.get(alert["priority"], "⚪")
+        content = f"{emoji} **{alert['type']}** — {alert['message']}"
+        try:
+            requests.post(self._discord_url, json={"content": content}, timeout=5)
+        except Exception:
+            pass
+
+
+alert_manager = AlertManager()
+
+
+# ---------------------------------------------------------------------------
 # Macro-Economic & Geopolitical Data Engine
 # Aggregates free data sources (no API keys) into a single macro score that
 # the AutonomousEngine uses to adjust risk appetite and signal thresholds.
@@ -6496,6 +6709,13 @@ class CircuitBreakerSystem:
         if len(self._actions_log) > 200:
             self._actions_log = self._actions_log[-200:]
         log.warning("[CB] Level %d (%s) TRIGGERED — %s", level, meta["name"], reason)
+        try:
+            prio = "CRITICAL" if level >= 3 else "HIGH"
+            alert_manager.send("CIRCUIT_BREAKER",
+                               f"Circuit Breaker L{level} ({meta['name']}) triggered: {reason}",
+                               priority=prio, data={"level": level, "reason": reason})
+        except Exception:
+            pass
 
     def _reset_level(self, level, reason):
         self._levels[level] = False
@@ -7132,6 +7352,11 @@ class AutonomousEngine:
             log.info("[BOT] Started | mode=%s | interval=%ds | symbols=%s",
                      self._config["mode"], self._config["scan_interval"],
                      ",".join(self._config["symbols"]))
+            try:
+                alert_manager.send("BOT_STATUS",
+                    f"Bot started — mode={self._config['mode']}, symbols={','.join(self._config['symbols'])}")
+            except Exception:
+                pass
             return {"success": True, "mode": self._config["mode"]}
 
     def stop(self):
@@ -7140,6 +7365,10 @@ class AutonomousEngine:
                 return {"success": False, "error": "Bot is not running"}
             self._running = False
             log.info("[BOT] Stop requested")
+            try:
+                alert_manager.send("BOT_STATUS", "Bot stopped by user")
+            except Exception:
+                pass
             return {"success": True}
 
     # ----- main loop --------------------------------------------------------
@@ -7269,6 +7498,19 @@ class AutonomousEngine:
         regime_info = self._regime.detect(ohlcv, raw_ind)
         regime = regime_info.get("regime", "RANGE")
 
+        prev_regime = self._state.get("_last_regimes", {}).get(symbol)
+        if prev_regime and prev_regime != regime:
+            try:
+                alert_manager.send("REGIME_CHANGE",
+                    f"Regime changed: {prev_regime} → {regime} on {symbol}",
+                    data={"symbol": symbol, "from": prev_regime, "to": regime})
+            except Exception:
+                pass
+        if "_last_regimes" not in self._state:
+            self._state["_last_regimes"] = {}
+        self._state["_last_regimes"][symbol] = regime
+        self._state["_last_regime"] = regime
+
         if regime not in self._config["allowed_regimes"]:
             self._state["last_signals"][symbol] = {
                 "skipped": True, "reason": f"Regime {regime} not allowed",
@@ -7279,6 +7521,25 @@ class AutonomousEngine:
         signal_info = self._signal_engine.generate(raw_ind, regime_info)
         risk_check = self._risk_engine.check(signal_info)
         dip_top_info = self._dip_top.analyze(symbol, ohlcv, raw_ind)
+
+        try:
+            sig_score = abs(signal_info.get("score", 0))
+            sig_conf = signal_info.get("confidence", 0)
+            if sig_score >= 200 and sig_conf >= 70:
+                alert_manager.send("SIGNAL_STRONG",
+                    f"Strong {signal_info['direction'].upper()} signal on {symbol} (score: {signal_info['score']}, confidence: {sig_conf}%)",
+                    data={"symbol": symbol, "score": signal_info["score"], "confidence": sig_conf})
+            dip_score = dip_top_info.get("confluence_score", 0)
+            if dip_top_info.get("is_dip") and dip_score >= 70:
+                alert_manager.send("DIP_DETECTED",
+                    f"Major dip detected on {symbol} (score: {dip_score})",
+                    data={"symbol": symbol, "score": dip_score})
+            if dip_top_info.get("is_top") and dip_score >= 70:
+                alert_manager.send("TOP_DETECTED",
+                    f"Distribution top detected on {symbol} (score: {dip_score})",
+                    data={"symbol": symbol, "score": dip_score})
+        except Exception:
+            pass
 
         strat_pick = self._select_strategy(symbol, ohlcv, raw_ind, regime_info, dip_top_info)
 
@@ -7552,6 +7813,13 @@ class AutonomousEngine:
                         trade_record["_pt_id"] = pt_id
                 except Exception:
                     pass
+                try:
+                    alert_manager.send("TRADE_OPENED",
+                        f"Opened {direction.upper()} {symbol} @{price:,.2f} ({strategy}, {leverage}x, ${size_usd:.2f})",
+                        data={"symbol": symbol, "direction": direction, "price": price,
+                              "strategy": strategy, "leverage": leverage})
+                except Exception:
+                    pass
             else:
                 err = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
                 log.warning("[BOT] Trade failed | %s %s | %s", symbol, direction, err)
@@ -7562,6 +7830,11 @@ class AutonomousEngine:
             log.error("[BOT] Execution error | %s | %s", symbol, exc)
             if self._cb:
                 self._cb.trigger_execution_error(phantom_order=True)
+            try:
+                alert_manager.send("ERROR", f"Execution error on {symbol}: {exc}",
+                                   priority="CRITICAL")
+            except Exception:
+                pass
 
         with self._lock:
             self._trade_log.append(trade_record)
@@ -7816,6 +8089,14 @@ class AutonomousEngine:
                     "regime": regime,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
+        except Exception:
+            pass
+        try:
+            sign = "+" if pnl >= 0 else ""
+            alert_manager.send("TRADE_CLOSED",
+                f"Closed {symbol} @{exit_price:,.2f} ({sign}${pnl:.2f}, {exit_reason})",
+                data={"symbol": symbol, "pnl": pnl, "exit_price": exit_price,
+                      "exit_reason": exit_reason})
         except Exception:
             pass
 
@@ -10931,6 +11212,57 @@ def api_performance_export():
         csv_data,
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=jarvis_trades.csv"})
+
+
+# ---------------------------------------------------------------------------
+# Alert system routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/alerts")
+@rate_limit("bot")
+def api_alerts():
+    limit = int(request.args.get("limit", 50))
+    priority = request.args.get("priority")
+    atype = request.args.get("type")
+    since_id = int(request.args.get("since_id", 0))
+    alerts = alert_manager.get_recent(limit=limit, priority=priority,
+                                      alert_type=atype, since_id=since_id)
+    return jsonify({"alerts": alerts, "count": len(alerts)})
+
+
+@app.route("/api/alerts/webhook", methods=["POST"])
+@rate_limit("bot")
+def api_alerts_webhook():
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "url required"}), 400
+    channel = data.get("channel", "webhook")
+    events = data.get("events")
+    if channel == "telegram":
+        token = data.get("token", "")
+        chat_id = data.get("chat_id", "")
+        if not token or not chat_id:
+            return jsonify({"error": "token and chat_id required for Telegram"}), 400
+        alert_manager.configure_telegram(token, chat_id)
+        return jsonify({"success": True, "channel": "telegram"})
+    elif channel == "discord":
+        alert_manager.configure_discord(url)
+        return jsonify({"success": True, "channel": "discord"})
+    else:
+        alert_manager.add_webhook(url, events)
+        return jsonify({"success": True, "channel": "webhook"})
+
+
+@app.route("/api/alerts/test", methods=["POST"])
+@rate_limit("bot")
+def api_alerts_test():
+    alert = alert_manager.send("BOT_STATUS",
+                               "Test alert from J.A.R.V.I.S. — system operational",
+                               priority="MEDIUM",
+                               data={"test": True})
+    return jsonify({"success": True, "alert": alert})
 
 
 # ===========================================================================
