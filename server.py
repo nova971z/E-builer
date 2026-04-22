@@ -115,6 +115,12 @@ ECONOMIC_CALENDAR = [
 
 GMX_RPC_MAINNET = os.environ.get("GMX_RPC_URL", "https://arb1.arbitrum.io/rpc")
 GMX_RPC_TESTNET = os.environ.get("GMX_RPC_TESTNET_URL", "https://sepolia-rollup.arbitrum.io/rpc")
+GMX_RPC_FALLBACKS = [
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one-rpc.publicnode.com",
+    "https://arbitrum.llamarpc.com",
+    "https://1rpc.io/arb",
+]
 
 GMX_V2_CONTRACTS_MAINNET = {
     "ExchangeRouter": "0x1C3fa76e6E1088bCE750f23a5BFcffa1efEF6A41",
@@ -3172,29 +3178,38 @@ def get_web3(rpc_url=None, testnet=False):
         return None, False
 
     if rpc_url is None:
-        rpc_url = GMX_RPC_TESTNET if testnet else GMX_RPC_MAINNET
+        if testnet:
+            urls_to_try = [GMX_RPC_TESTNET]
+        else:
+            custom = os.environ.get("GMX_RPC_URL")
+            urls_to_try = [custom] if custom else GMX_RPC_FALLBACKS
+    else:
+        urls_to_try = [rpc_url]
 
     with _web3_lock:
-        if rpc_url in _web3_instances:
-            w3 = _web3_instances[rpc_url]
-            try:
-                if w3.is_connected():
-                    return w3, True
-            except Exception:
-                pass
-            del _web3_instances[rpc_url]
+        for url in urls_to_try:
+            if url in _web3_instances:
+                w3 = _web3_instances[url]
+                try:
+                    if w3.is_connected():
+                        return w3, True
+                except Exception:
+                    pass
+                del _web3_instances[url]
 
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
-            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-            if w3.is_connected():
-                _web3_instances[rpc_url] = w3
-                log.info("Web3 connected: %s (chain=%d)", rpc_url, w3.eth.chain_id)
-                return w3, True
-            return w3, False
-        except Exception as e:
-            log.error("Web3 connection failed (%s): %s", rpc_url, e)
-            return None, False
+        for url in urls_to_try:
+            try:
+                w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 10}))
+                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+                if w3.is_connected():
+                    _web3_instances[url] = w3
+                    log.info("Web3 connected: %s (chain=%d)", url, w3.eth.chain_id)
+                    return w3, True
+            except Exception as e:
+                log.warning("Web3 RPC failed %s: %s", url, e)
+                continue
+
+    return None, False
 
 
 def get_gmx_contracts(w3, testnet=False):
@@ -3321,7 +3336,7 @@ class GMXAdapter(ExchangeAdapter):
         tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
         self._pending_nonce = used_nonce + 1
         try:
-            receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=15)
             if receipt.get("status") == 0:
                 self._pending_nonce = None
                 raise Exception(f"Transaction reverted on-chain: {tx_hash.hex()}")
