@@ -3760,6 +3760,486 @@ class GMXAdapter(ExchangeAdapter):
 
 
 # ---------------------------------------------------------------------------
+# Smart Execution Engine — Slippage protection, gas optimization, retry logic
+# ---------------------------------------------------------------------------
+
+class SmartExecutionEngine:
+    """Handles order execution with pre-flight checks, gas optimization,
+    slippage protection, and exponential backoff retry."""
+
+    _RETRYABLE_ERRORS = (
+        "gas too low", "replacement transaction underpriced",
+        "nonce too low", "timeout", "connection", "rpc",
+        "server error", "502", "503", "504",
+    )
+
+    _NON_RETRYABLE_ERRORS = (
+        "insufficient", "balance", "rejected", "reverted",
+        "execution reverted", "invalid opcode",
+    )
+
+    GAS_ESTIMATES = {
+        "market_increase": 800000,
+        "limit_increase": 750000,
+        "market_decrease": 700000,
+        "limit_decrease": 700000,
+        "approval": 80000,
+    }
+
+    MAX_GAS_PRICE_GWEI = 0.5
+    GAS_BUFFER_MULT = 1.2
+    MAX_EXECUTION_TIMEOUT = 90
+    POSITION_FEE_BPS = 5
+
+    def __init__(self, gmx_adapter=None, cb_system=None):
+        self._gmx = gmx_adapter
+        self._cb = cb_system
+        self._execution_log = []
+        self._pending_orders = {}
+        self._gas_cache = {"price": None, "ts": 0}
+        self._lock = threading.Lock()
+
+    def set_gmx_adapter(self, adapter):
+        self._gmx = adapter
+
+    # --- PRE-EXECUTION CHECKS ---
+
+    def pre_flight_check(self, order):
+        """Validate everything before sending order."""
+        issues = []
+        gas_est = 0
+
+        if self._cb:
+            allowed = self._cb.get_max_allowed_action()
+            if allowed == "blocked":
+                issues.append("Circuit breaker: trading blocked")
+                return {"ok": False, "issues": issues, "gas_estimate": 0}
+            if allowed == "close_only" and order.get("action") != "close":
+                issues.append("Circuit breaker: close-only mode")
+                return {"ok": False, "issues": issues, "gas_estimate": 0}
+
+        if not self._gmx:
+            issues.append("No GMX adapter configured")
+            return {"ok": False, "issues": issues, "gas_estimate": 0}
+
+        if not HAS_WEB3:
+            issues.append("web3.py not installed")
+            return {"ok": False, "issues": issues, "gas_estimate": 0}
+
+        w3 = self._gmx._w3
+        if not w3 or not w3.is_connected():
+            issues.append("Not connected to Arbitrum RPC")
+            return {"ok": False, "issues": issues, "gas_estimate": 0}
+
+        if not self._gmx._has_signer():
+            issues.append("No signing account (private key)")
+            return {"ok": False, "issues": issues, "gas_estimate": 0}
+
+        order_type_key = order.get("order_type", "market_increase")
+        gas_est = int(self.GAS_ESTIMATES.get(order_type_key, 800000) * self.GAS_BUFFER_MULT)
+
+        gas_price_info = self.get_optimal_gas_price()
+        if not gas_price_info["acceptable"]:
+            issues.append(f"Gas price too high: {gas_price_info['gwei']:.3f} gwei (max {self.MAX_GAS_PRICE_GWEI})")
+
+        try:
+            address = self._gmx._account.address
+            eth_balance = w3.eth.get_balance(address) / 10**18
+            exec_fee_eth = GMX_EXECUTION_FEE_BUFFER_WEI / 10**18
+            gas_cost_eth = gas_est * gas_price_info["wei"] / 10**18 if gas_price_info["wei"] else 0.001
+            total_eth_needed = exec_fee_eth + gas_cost_eth
+
+            if eth_balance < total_eth_needed:
+                issues.append(f"Insufficient ETH for gas: have {eth_balance:.6f}, need ~{total_eth_needed:.6f}")
+
+            collateral_usd = order.get("collateral_usd", 0)
+            if collateral_usd > 0:
+                usdc_balance = self._gmx._get_token_balance(
+                    GMX_V2_TOKENS.get("USDC", ""), 6)
+                if usdc_balance < collateral_usd:
+                    issues.append(f"Insufficient USDC: have {usdc_balance:.2f}, need {collateral_usd:.2f}")
+        except Exception as exc:
+            issues.append(f"Balance check failed: {exc}")
+
+        try:
+            nonce = w3.eth.get_transaction_count(self._gmx._account.address, "pending")
+            confirmed_nonce = w3.eth.get_transaction_count(self._gmx._account.address, "latest")
+            if nonce > confirmed_nonce:
+                issues.append(f"Pending transactions detected: {nonce - confirmed_nonce} unconfirmed")
+        except Exception:
+            pass
+
+        return {"ok": len(issues) == 0, "issues": issues, "gas_estimate": gas_est}
+
+    # --- GAS OPTIMIZATION ---
+
+    def get_optimal_gas_price(self):
+        """Get current gas price with caching (refresh every 30s)."""
+        now = time.time()
+        with self._lock:
+            if self._gas_cache["price"] and now - self._gas_cache["ts"] < 30:
+                return self._gas_cache["price"]
+
+        result = {"wei": 0, "gwei": 0.0, "acceptable": True}
+
+        if not self._gmx or not self._gmx._w3:
+            result["acceptable"] = False
+            return result
+
+        try:
+            gas_price = self._gmx._w3.eth.gas_price
+            gwei = gas_price / 10**9
+            result = {
+                "wei": gas_price,
+                "gwei": round(gwei, 4),
+                "acceptable": gwei <= self.MAX_GAS_PRICE_GWEI,
+            }
+        except Exception:
+            result["acceptable"] = False
+
+        with self._lock:
+            self._gas_cache = {"price": result, "ts": now}
+        return result
+
+    def estimate_execution_cost(self, order):
+        """Total cost: gas + GMX execution fee + position fee in USD."""
+        gas_info = self.get_optimal_gas_price()
+        order_type_key = order.get("order_type", "market_increase")
+        gas_units = int(self.GAS_ESTIMATES.get(order_type_key, 800000) * self.GAS_BUFFER_MULT)
+        gas_cost_eth = gas_units * gas_info["wei"] / 10**18 if gas_info["wei"] else 0.001
+
+        exec_fee_eth = GMX_EXECUTION_FEE_BUFFER_WEI / 10**18
+
+        size_usd = order.get("size_usd", 0)
+        position_fee_usd = size_usd * self.POSITION_FEE_BPS / 10000 * 2
+
+        eth_price = 0.0
+        try:
+            eth_price = self._gmx._get_index_price("ETHUSDT") if self._gmx else 0
+        except Exception:
+            eth_price = 3000.0
+
+        gas_cost_usd = (gas_cost_eth + exec_fee_eth) * eth_price
+        total_usd = gas_cost_usd + position_fee_usd
+
+        return {
+            "gas_eth": round(gas_cost_eth, 6),
+            "execution_fee_eth": round(exec_fee_eth, 6),
+            "gas_usd": round(gas_cost_usd, 2),
+            "position_fee_usd": round(position_fee_usd, 2),
+            "total_cost_usd": round(total_usd, 2),
+            "size_usd": size_usd,
+            "cost_pct_of_size": round(total_usd / size_usd * 100, 3) if size_usd > 0 else 0,
+        }
+
+    # --- SLIPPAGE PROTECTION ---
+
+    def calculate_acceptable_price(self, current_price, direction, slippage_bps=None,
+                                    volatility_mult=1.0):
+        """Calculate max/min acceptable price with dynamic slippage."""
+        if slippage_bps is None:
+            slippage_bps = GMX_DEFAULT_SLIPPAGE_BPS
+
+        adjusted_bps = slippage_bps * max(1.0, volatility_mult)
+        adjusted_bps = min(adjusted_bps, 200)
+
+        slippage_frac = adjusted_bps / 10000
+        if direction == "long":
+            return current_price * (1 + slippage_frac)
+        else:
+            return current_price * (1 - slippage_frac)
+
+    def check_pool_liquidity(self, market_config, size_usd):
+        """Check if order size is reasonable relative to pool."""
+        warnings = []
+        if size_usd > 500000:
+            warnings.append(f"Large order ${size_usd:,.0f} — check GMX OI caps")
+        if size_usd > 50000:
+            warnings.append(f"Order ${size_usd:,.0f} may have significant price impact")
+        return {"ok": len(warnings) == 0, "warnings": warnings}
+
+    def detect_price_impact(self, size_usd, direction):
+        """Estimate price impact based on order size."""
+        if size_usd < 10000:
+            return {"impact_pct": 0.01, "acceptable": True}
+        if size_usd < 50000:
+            impact = size_usd / 10000000 * 100
+            return {"impact_pct": round(impact, 3), "acceptable": impact < 0.5}
+        impact = size_usd / 5000000 * 100
+        return {"impact_pct": round(impact, 3), "acceptable": impact < 0.5,
+                "suggestion": "Consider splitting into smaller orders"}
+
+    # --- EXECUTION ---
+
+    def execute_order(self, order):
+        """Execute order with full protection pipeline."""
+        start_time = time.time()
+        log_entry = {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "order": {k: v for k, v in order.items() if k != "private_key"},
+            "steps": [],
+            "result": None,
+        }
+
+        preflight = self.pre_flight_check(order)
+        log_entry["steps"].append({"step": "pre_flight", "result": preflight})
+        if not preflight["ok"]:
+            log_entry["result"] = {"success": False, "error": "Pre-flight failed",
+                                    "issues": preflight["issues"]}
+            self._log(log_entry)
+            return log_entry["result"]
+
+        cost = self.estimate_execution_cost(order)
+        log_entry["steps"].append({"step": "cost_estimate", "result": cost})
+        size_usd = order.get("size_usd", 0)
+        if cost["cost_pct_of_size"] > 5.0:
+            log_entry["result"] = {"success": False,
+                                    "error": f"Execution cost {cost['cost_pct_of_size']:.1f}% of position too high"}
+            self._log(log_entry)
+            return log_entry["result"]
+
+        current_price = order.get("price", 0)
+        direction = order.get("direction", "long")
+        acceptable = self.calculate_acceptable_price(current_price, direction)
+        log_entry["steps"].append({"step": "acceptable_price",
+                                    "price": current_price, "acceptable": round(acceptable, 4)})
+
+        liquidity = self.check_pool_liquidity(None, size_usd)
+        log_entry["steps"].append({"step": "liquidity", "result": liquidity})
+
+        impact = self.detect_price_impact(size_usd, direction)
+        log_entry["steps"].append({"step": "price_impact", "result": impact})
+        if not impact.get("acceptable", True):
+            log.warning("[EXEC] High price impact %.3f%% for $%.0f %s",
+                        impact["impact_pct"], size_usd, direction)
+
+        symbol = order.get("symbol", "")
+        leverage = order.get("leverage", 1)
+        tp = order.get("tp")
+        sl = order.get("sl")
+        side = "buy" if direction == "long" else "sell"
+
+        try:
+            result = self._gmx.place_order(symbol, side, "market",
+                                            order.get("quantity", size_usd),
+                                            None, leverage, tp, sl)
+            elapsed = time.time() - start_time
+            result["execution_time_s"] = round(elapsed, 2)
+            result["cost_estimate"] = cost
+            result["acceptable_price"] = round(acceptable, 4)
+
+            if result.get("success"):
+                tx_hash = result.get("tx_hash", "")
+                if tx_hash:
+                    with self._lock:
+                        self._pending_orders[tx_hash] = {
+                            "symbol": symbol, "direction": direction,
+                            "size_usd": size_usd, "submitted_at": time.time(),
+                            "status": "pending",
+                        }
+
+                actual_price = result.get("price", current_price)
+                if current_price > 0 and actual_price > 0:
+                    slippage = abs(actual_price - current_price) / current_price * 100
+                    result["slippage_pct"] = round(slippage, 4)
+
+            log_entry["result"] = result
+            self._log(log_entry)
+            return result
+
+        except Exception as exc:
+            log_entry["result"] = {"success": False, "error": str(exc)}
+            self._log(log_entry)
+            if self._cb:
+                err_lower = str(exc).lower()
+                if "slippage" in err_lower or "price" in err_lower:
+                    self._cb.trigger_execution_error(slippage_pct=10)
+            return {"success": False, "error": str(exc)}
+
+    def execute_with_retry(self, order, max_retries=3):
+        """Execute with exponential backoff retry for transient errors."""
+        last_error = ""
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                backoff = 2 ** attempt
+                log.info("[EXEC] Retry %d/%d in %ds — last error: %s",
+                         attempt, max_retries, backoff, last_error)
+                time.sleep(backoff)
+
+                self._gas_cache["ts"] = 0
+                preflight = self.pre_flight_check(order)
+                if not preflight["ok"]:
+                    non_retryable = any(
+                        nr in issue.lower()
+                        for issue in preflight["issues"]
+                        for nr in self._NON_RETRYABLE_ERRORS
+                    )
+                    if non_retryable:
+                        return {"success": False, "error": "Non-retryable: " + "; ".join(preflight["issues"]),
+                                "attempts": attempt + 1}
+
+            result = self.execute_order(order)
+            if result.get("success"):
+                result["attempts"] = attempt + 1
+                return result
+
+            last_error = result.get("error", "unknown")
+            err_lower = last_error.lower()
+
+            is_retryable = any(rt in err_lower for rt in self._RETRYABLE_ERRORS)
+            is_non_retryable = any(nr in err_lower for nr in self._NON_RETRYABLE_ERRORS)
+
+            if is_non_retryable or not is_retryable:
+                result["attempts"] = attempt + 1
+                result["retry_stopped"] = "non-retryable error"
+                return result
+
+        return {"success": False, "error": f"Max retries ({max_retries}) exhausted: {last_error}",
+                "attempts": max_retries + 1}
+
+    # --- POSITION MANAGEMENT ON-CHAIN ---
+
+    def close_position_smart(self, position, urgency="normal"):
+        """Close position with urgency-adjusted parameters."""
+        if not self._gmx:
+            return {"success": False, "error": "No GMX adapter"}
+
+        symbol = position.get("symbol", "")
+
+        if urgency == "emergency":
+            log.warning("[EXEC] Emergency close %s — max slippage", symbol)
+            return self._gmx.close_position(symbol)
+
+        if urgency == "high":
+            return self._gmx.close_position(symbol)
+
+        gas_info = self.get_optimal_gas_price()
+        if not gas_info["acceptable"]:
+            log.info("[EXEC] Gas high for close %s — proceeding anyway (close)", symbol)
+
+        return self._gmx.close_position(symbol)
+
+    def modify_position(self, position, new_sl=None, new_tp=None):
+        """Modify position TP/SL by placing conditional decrease orders."""
+        if not self._gmx:
+            return {"success": False, "error": "No GMX adapter"}
+
+        symbol = position.get("symbol", "")
+        market = gmx_symbol_to_market(symbol)
+        if not market:
+            return {"success": False, "error": f"Unknown market for {symbol}"}
+
+        results = {}
+        is_long = position.get("side") == "long"
+        quantity = position.get("quantity", 0)
+
+        if new_tp:
+            try:
+                self._gmx._place_tp_sl_order(symbol, market, not is_long, quantity, new_tp, is_tp=True)
+                results["tp"] = {"success": True, "price": new_tp}
+            except Exception as exc:
+                results["tp"] = {"success": False, "error": str(exc)}
+
+        if new_sl:
+            try:
+                self._gmx._place_tp_sl_order(symbol, market, not is_long, quantity, new_sl, is_tp=False)
+                results["sl"] = {"success": True, "price": new_sl}
+            except Exception as exc:
+                results["sl"] = {"success": False, "error": str(exc)}
+
+        return {"success": True, "modifications": results}
+
+    # --- MONITORING ---
+
+    def get_pending_orders(self):
+        """Return orders that haven't been confirmed yet."""
+        now = time.time()
+        with self._lock:
+            pending = []
+            for tx_hash, info in list(self._pending_orders.items()):
+                age = now - info["submitted_at"]
+                entry = dict(info)
+                entry["tx_hash"] = tx_hash
+                entry["age_seconds"] = round(age, 0)
+                if age > 300:
+                    entry["status"] = "possibly_stuck"
+                pending.append(entry)
+            return pending
+
+    def confirm_order(self, tx_hash):
+        """Mark an order as confirmed (called when on-chain confirmation received)."""
+        with self._lock:
+            if tx_hash in self._pending_orders:
+                self._pending_orders[tx_hash]["status"] = "confirmed"
+                del self._pending_orders[tx_hash]
+
+    def get_execution_stats(self):
+        """Statistics on execution quality."""
+        with self._lock:
+            logs = list(self._execution_log)
+
+        if not logs:
+            return {"total_executions": 0, "success_rate": 0, "avg_slippage_pct": 0,
+                    "avg_gas_cost_usd": 0, "avg_execution_time_s": 0,
+                    "worst_slippage_pct": 0, "total_gas_spent_usd": 0}
+
+        total = len(logs)
+        successes = sum(1 for l in logs if l.get("result", {}).get("success"))
+        slippages = [l["result"].get("slippage_pct", 0) for l in logs
+                     if l.get("result", {}).get("success") and l["result"].get("slippage_pct") is not None]
+        gas_costs = [l["result"].get("cost_estimate", {}).get("gas_usd", 0) for l in logs
+                     if l.get("result", {}).get("success")]
+        exec_times = [l["result"].get("execution_time_s", 0) for l in logs
+                      if l.get("result", {}).get("success") and l["result"].get("execution_time_s")]
+
+        return {
+            "total_executions": total,
+            "successes": successes,
+            "failures": total - successes,
+            "success_rate": round(successes / total * 100, 1) if total > 0 else 0,
+            "avg_slippage_pct": round(sum(slippages) / len(slippages), 4) if slippages else 0,
+            "worst_slippage_pct": round(max(slippages), 4) if slippages else 0,
+            "avg_gas_cost_usd": round(sum(gas_costs) / len(gas_costs), 2) if gas_costs else 0,
+            "total_gas_spent_usd": round(sum(gas_costs), 2),
+            "avg_execution_time_s": round(sum(exec_times) / len(exec_times), 2) if exec_times else 0,
+            "pending_orders": len(self._pending_orders),
+            "recent_executions": total,
+        }
+
+    def cleanup_stuck_orders(self, max_age_s=600):
+        """Remove orders from pending tracking if too old."""
+        now = time.time()
+        cleaned = 0
+        with self._lock:
+            for tx_hash in list(self._pending_orders.keys()):
+                age = now - self._pending_orders[tx_hash]["submitted_at"]
+                if age > max_age_s:
+                    self._pending_orders[tx_hash]["status"] = "expired"
+                    del self._pending_orders[tx_hash]
+                    cleaned += 1
+        if cleaned:
+            log.info("[EXEC] Cleaned %d stuck orders", cleaned)
+        return cleaned
+
+    def _log(self, entry):
+        with self._lock:
+            self._execution_log.append(entry)
+            if len(self._execution_log) > 500:
+                self._execution_log = self._execution_log[-500:]
+        success = entry.get("result", {}).get("success", False)
+        order = entry.get("order", {})
+        log.info("[EXEC] %s | %s %s $%.0f | %s",
+                 "OK" if success else "FAIL",
+                 order.get("direction", "?"),
+                 order.get("symbol", "?"),
+                 order.get("size_usd", 0),
+                 entry.get("result", {}).get("error", ""))
+
+
+smart_executor = SmartExecutionEngine(cb_system=circuit_breakers)
+
+
+# ---------------------------------------------------------------------------
 # Exchange Manager — Multi-exchange routing + persistence
 # ---------------------------------------------------------------------------
 
@@ -6516,8 +6996,16 @@ class AutonomousEngine:
                     log.warning("[BOT] No exchange adapter available")
                 else:
                     ccxt_side = "buy" if direction == "long" else "sell"
-                    result = adapter.place_order(symbol, ccxt_side, "market",
-                                                 size_usd, None, leverage, tp, sl)
+                    if smart_executor:
+                        smart_executor.set_gmx_adapter(adapter)
+                        result = smart_executor.execute_with_retry(
+                            symbol=symbol, side=ccxt_side, order_type="market",
+                            size_usd=size_usd, leverage=leverage,
+                            take_profit=tp, stop_loss=sl,
+                            max_retries=3)
+                    else:
+                        result = adapter.place_order(symbol, ccxt_side, "market",
+                                                     size_usd, None, leverage, tp, sl)
                     trade_record["result"] = result
 
             self._state["trades_today"] += 1
@@ -9800,6 +10288,27 @@ def api_macro_geopolitical():
         return jsonify({"risk_score": 0, "alert_level": "UNKNOWN", "events": [],
                         "error": "unavailable"})
     return jsonify(geo)
+
+
+# ---------------------------------------------------------------------------
+# Smart Execution routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/execution/stats")
+@rate_limit("bot")
+def api_execution_stats():
+    if not smart_executor:
+        return jsonify({"error": "SmartExecutionEngine not available"}), 503
+    return jsonify(smart_executor.get_execution_stats())
+
+
+@app.route("/api/execution/pending")
+@rate_limit("bot")
+def api_execution_pending():
+    if not smart_executor:
+        return jsonify({"error": "SmartExecutionEngine not available"}), 503
+    return jsonify({"pending_orders": smart_executor.get_pending_orders()})
 
 
 # ===========================================================================
