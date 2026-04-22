@@ -281,6 +281,17 @@ GMX_EXCHANGE_ROUTER_ABI = [
     },
     {
         "inputs": [
+            {"internalType": "address", "name": "token", "type": "address"},
+            {"internalType": "address", "name": "receiver", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"},
+        ],
+        "name": "sendTokens",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+    {
+        "inputs": [
             {
                 "components": [
                     {
@@ -3600,13 +3611,23 @@ class GMXAdapter(ExchangeAdapter):
                     order_vault, execution_fee
                 ).build_transaction({"from": self._account.address})["data"]
 
+                send_tokens_data = exchange_router.functions.sendTokens(
+                    Web3.to_checksum_address(collateral_token),
+                    order_vault,
+                    collateral_amount_raw
+                ).build_transaction({"from": self._account.address})["data"]
+
                 create_order_data = exchange_router.functions.createOrder(
                     order_params
                 ).build_transaction({"from": self._account.address})["data"]
 
                 total_value = execution_fee
                 multicall_tx = exchange_router.functions.multicall(
-                    [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_order_data[2:])]
+                    [
+                        bytes.fromhex(send_wnt_data[2:]),
+                        bytes.fromhex(send_tokens_data[2:]),
+                        bytes.fromhex(create_order_data[2:]),
+                    ]
                 ).build_transaction(self._build_tx(value=total_value))
 
                 tx_hash = self._sign_and_send(multicall_tx)
@@ -3738,13 +3759,23 @@ class GMXAdapter(ExchangeAdapter):
                 order_vault, execution_fee
             ).build_transaction({"from": self._account.address})["data"]
 
+            send_tokens_data = exchange_router.functions.sendTokens(
+                Web3.to_checksum_address(collateral_token),
+                order_vault,
+                collateral_amount_raw
+            ).build_transaction({"from": self._account.address})["data"]
+
             create_order_data = exchange_router.functions.createOrder(
                 order_params
             ).build_transaction({"from": self._account.address})["data"]
 
             total_value = execution_fee
             multicall_tx = exchange_router.functions.multicall(
-                [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_order_data[2:])]
+                [
+                    bytes.fromhex(send_wnt_data[2:]),
+                    bytes.fromhex(send_tokens_data[2:]),
+                    bytes.fromhex(create_order_data[2:]),
+                ]
             ).build_transaction(self._build_tx(value=total_value))
 
             tx_hash = self._sign_and_send(multicall_tx)
