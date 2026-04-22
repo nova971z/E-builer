@@ -777,14 +777,17 @@ def sanitize_error(e):
     safe_prefixes = (
         "Failed to fetch", "Invalid", "Quantity", "Price", "No ", "Could not",
         "Kill switch", "PIN", "Not found", "Unsupported", "Too many",
-        "Authentication", "Encryption", "Already",
+        "Authentication", "Encryption", "Already", "Insufficient",
+        "Cannot", "Token approval", "GMX", "Web3", "Nonce", "Gas",
+        "Transaction", "Contract", "RPC", "Timeout", "Connection",
+        "execution reverted", "insufficient funds",
     )
     msg = str(e)
     for prefix in safe_prefixes:
-        if msg.startswith(prefix):
-            return msg
-    log.debug("Sanitized error: %s", msg)
-    return "Internal server error"
+        if msg.lower().startswith(prefix.lower()):
+            return msg[:200]
+    log.error("Sanitized error (hidden from user): %s", msg)
+    return "Internal server error — check server logs"
 
 
 # ---------------------------------------------------------------------------
@@ -9426,6 +9429,9 @@ def api_execute():
     else:
         result = adapter.place_order(symbol, ccxt_side, order_type, quantity,
                                       price if order_type == "limit" else None, leverage, tp, sl)
+
+    if isinstance(result, dict) and result.get("error"):
+        log.error("Trade execution error: %s | symbol=%s side=%s collateral=%s", result["error"], symbol, side, collateral_usd)
 
     if isinstance(result, dict) and result.get("success"):
         conn = get_db()
