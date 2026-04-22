@@ -1,0 +1,63 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Le bot automatisé (Autobot, classe vers ligne 7580) exécute des trades via SmartExecutionEngine.
+Deux bugs empêchent le bot de fonctionner.
+
+## BUG A — execute_with_retry() reçoit des kwargs au lieu d'un dict (lignes 8079-8085)
+L'appel actuel :
+```python
+result = smart_executor.execute_with_retry(
+    symbol=symbol, side=ccxt_side, order_type="market",
+    size_usd=size_usd, leverage=leverage,
+    take_profit=tp, stop_loss=sl,
+    max_retries=3)
+```
+Mais la signature est `def execute_with_retry(self, order, max_retries=3)` qui attend un DICT.
+Cela provoque un TypeError immédiat — le bot ne peut JAMAIS trader.
+
+CORRECTION : Construire un dict et le passer :
+```python
+                        smart_executor.set_gmx_adapter(adapter)
+                        order_dict = {
+                            "symbol": symbol,
+                            "direction": direction,
+                            "side": ccxt_side,
+                            "order_type": "market",
+                            "size_usd": size_usd,
+                            "quantity": size_usd,
+                            "leverage": leverage,
+                            "tp": tp,
+                            "sl": sl,
+                            "price": price,
+                        }
+                        result = smart_executor.execute_with_retry(order_dict, max_retries=3)
+```
+
+## BUG B — place_order() reçoit size_usd comme quantity (ligne 8087-8088)
+Quand le SmartExecutionEngine n'est pas dispo, le bot appelle directement :
+```python
+result = adapter.place_order(symbol, ccxt_side, "market",
+                             size_usd, None, leverage, tp, sl)
+```
+Ici `size_usd` (ex: 100 dollars) est passé comme `quantity` (nombre de coins).
+Pour BTC à $87000, ça tenterait d'acheter 100 BTC ($8.7M) au lieu de $100.
+
+CORRECTION : Utiliser place_order_by_collateral au lieu de place_order, car le bot raisonne en USD :
+```python
+                    else:
+                        collateral_for_order = size_usd / leverage if leverage > 0 else size_usd
+                        result = adapter.place_order_by_collateral(
+                            symbol, ccxt_side, "market",
+                            collateral_usd=collateral_for_order,
+                            leverage=leverage, tp=tp, sl=sl)
+```
+
+## INSTRUCTIONS
+1. Édite lignes 8079-8085 : remplacer par construction de order_dict
+2. Édite lignes 8086-8088 : remplacer place_order par place_order_by_collateral
+3. python3 -m py_compile server.py
+4. Commit : "fix: autobot execute_with_retry dict + use place_order_by_collateral"
+5. Push sur claude/jarvis-trading-dashboard-HGW7A

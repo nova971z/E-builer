@@ -1,0 +1,61 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Le VPS (IP 178.104.233.254) est bloqué par Binance (403 Forbidden).
+Tous les endpoints market data échouent : /api/candles, /api/indicators, /api/price, /api/orderbook.
+Le fix : ajouter des fallback vers des API non-bloquées.
+
+## ARCHITECTURE ACTUELLE
+- fetch_binance() (chercher avec grep, vers ligne 530-560) est le wrapper central pour Binance.
+- Il utilise BINANCE_BASE = "https://api.binance.com" (vers ligne 69).
+
+## CORRECTION : Ajouter rotation d'URLs dans fetch_binance()
+
+Après la constante BINANCE_BASE (vers ligne 69), ajouter une liste de fallbacks :
+```python
+BINANCE_ENDPOINTS = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+    "https://api.binance.us",
+]
+```
+
+Modifier fetch_binance() pour essayer chaque endpoint en cas de 403/timeout :
+```python
+def fetch_binance(endpoint, params=None, ttl=10, timeout=5):
+    cache_key = f"binance:{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
+    cached = cache.get(cache_key, ttl=ttl)
+    if cached is not None:
+        return cached
+
+    for base_url in BINANCE_ENDPOINTS:
+        try:
+            resp = _http_session.get(base_url + endpoint, params=params, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                cache.set(cache_key, data)
+                return data
+            if resp.status_code == 403:
+                continue  # essayer le prochain endpoint
+        except Exception:
+            continue
+
+    log.warning("All Binance endpoints failed for %s", endpoint)
+    return None
+```
+
+NE PAS modifier la signature publique de fetch_binance() — elle est appelée partout.
+Garder le même comportement de retour (dict ou None).
+
+## INSTRUCTIONS
+1. Ajoute BINANCE_ENDPOINTS après BINANCE_BASE
+2. Réécris fetch_binance() avec la rotation (garde la même signature)
+3. python3 -m py_compile server.py
+4. Teste : relance le serveur et curl http://localhost:5000/api/candles?symbol=BTCUSDT&interval=1h&limit=5
+5. Commit : "fix: Binance API 403 fallback with endpoint rotation"
+6. Push sur claude/jarvis-trading-dashboard-HGW7A

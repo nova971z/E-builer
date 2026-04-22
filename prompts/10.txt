@@ -1,0 +1,62 @@
+Tu travailles sur /home/user/E-builer/server.py et /home/user/E-builer/dashboard.html.
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Les prompts 1-9 ont corrigé 22 bugs. Ce prompt final fait le test d'intégration.
+
+## ÉTAPE 1 — Vérification syntaxe
+```bash
+python3 -m py_compile server.py
+```
+Si erreur → corrige et recommence.
+
+## ÉTAPE 2 — Redémarrer le serveur
+```bash
+fuser -k 5000/tcp 2>/dev/null; sleep 2
+nohup python3 server.py > jarvis.log 2>&1 &
+sleep 4
+```
+
+## ÉTAPE 3 — Tests API (tous doivent retourner 200)
+Exécuter ces curls et vérifier les réponses :
+```bash
+curl -s http://localhost:5000/api/status | python3 -m json.tool
+curl -s http://localhost:5000/api/positions | python3 -m json.tool
+curl -s http://localhost:5000/api/candles?symbol=BTCUSDT&interval=1h&limit=3
+curl -s http://localhost:5000/api/price?symbol=BTCUSDT
+curl -s http://localhost:5000/api/balance | python3 -m json.tool
+curl -s http://localhost:5000/api/killswitch/status
+curl -s http://localhost:5000/api/drawdown
+curl -s http://localhost:5000/api/paper/status
+```
+
+## ÉTAPE 4 — Vérifications spécifiques
+1. /api/positions doit retourner `{"positions": [...]}` (objet avec clé positions, PAS un array)
+2. /api/candles doit retourner des données (vérifier que le fallback Binance fonctionne)
+3. /api/status doit montrer status: "online"
+4. Vérifier jarvis.log : `tail -30 jarvis.log` — aucune erreur/traceback
+
+## ÉTAPE 5 — Vérification serveur stable
+```bash
+sleep 10
+ps aux | grep "python3 server.py" | grep -v grep
+```
+Le processus doit toujours tourner (pas de Exit 1).
+
+## ÉTAPE 6 — Rapport
+Donne un tableau résumé :
+| Test | Résultat | Détail |
+|------|----------|--------|
+| Syntaxe | ✓/✗ | |
+| Serveur démarré | ✓/✗ | PID |
+| /api/status | ✓/✗ | |
+| /api/positions format | ✓/✗ | {"positions":[...]} |
+| /api/candles | ✓/✗ | données reçues |
+| Serveur stable 10s | ✓/✗ | |
+| Logs propres | ✓/✗ | |
+
+Si tout est ✓ : commit final "test: integration validation after 22 bug fixes" + push.
+Si des ✗ : diagnostique et corrige avant de commit.
+
+Dashboard accessible : http://178.104.233.254:5000

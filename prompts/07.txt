@@ -1,0 +1,46 @@
+Tu travailles sur /home/user/E-builer/dashboard.html (9020 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Le panneau GMX a sa propre fonction loadGMXPositions() (ligne 7142) qui appelle /api/gmx/positions.
+Ce endpoint retourne le bon format {"positions": [...]}, mais le rendu peut crasher sur des données incomplètes.
+
+## BUG A — Crash sur p.pnl et p.leverage null (lignes 7157, 7165)
+```javascript
+var pnlClass = p.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';       // TypeError si undefined
+p.leverage.toFixed(0)                                        // TypeError si undefined
+p.pnl.toFixed(2)                                            // TypeError si undefined
+```
+
+CORRECTION : Ajouter null safety au début de la boucle for (après `var p = positions[i];` ligne 7156) :
+```javascript
+            var pnl = p.pnl || 0;
+            var lev = p.leverage || 0;
+            var sizeUsd = p.size_usd || 0;
+```
+Et remplacer dans le HTML :
+- `p.pnl >= 0` → `pnl >= 0`
+- `p.pnl.toFixed(2)` → `pnl.toFixed(2)`
+- `p.leverage.toFixed(0)` → `lev.toFixed(0)`
+- `p.size_usd` → `sizeUsd`
+
+## BUG B — closeGMXPosition ne passe pas l'auth header (ligne 7316-7319)
+Vérifier que closeGMXPosition envoie bien le header Authorization. S'il manque, le /api/close retournera 401.
+
+Ligne 7316-7319, vérifier que le fetch inclut :
+```javascript
+headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken},
+```
+
+## BUG C — Le panneau GMX se rafraîchit uniquement si ouvert (ligne 7462-7464)
+Les positions GMX ne sont rafraîchies que si le panneau est visible. Mais le footer et l'onglet principal doivent aussi voir les positions GMX.
+
+CORRECTION : Dans startAutoRefresh() (autour de la ligne 7452), ajouter aussi loadPositions() au même intervalle de 60s si ce n'est pas déjà fait (vérifier que la ligne `loadPositions();` existe dans le block des 60s).
+
+## INSTRUCTIONS
+1. Édite loadGMXPositions() : null safety pour pnl, leverage, size_usd
+2. Vérifie closeGMXPosition() : auth header présent
+3. Vérifie startAutoRefresh() : loadPositions() dans le bloc 60s
+4. Commit : "fix: null safety GMX positions panel + verify auth headers"
+5. Push sur claude/jarvis-trading-dashboard-HGW7A

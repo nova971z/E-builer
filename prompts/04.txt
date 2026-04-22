@@ -1,0 +1,44 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+GMXAdapter a deux méthodes de fermeture et d'ouverture avec des failles de sécurité.
+
+## BUG A — close_position() ferme la première position par défaut (ligne 3963)
+```python
+if not target and positions:
+    target = positions[0]   # DANGEREUX : ferme une position au hasard
+```
+Si le symbole demandé ne correspond à aucune position, le code ferme silencieusement la PREMIÈRE position trouvée — potentiellement la mauvaise. Ça peut fermer un BTC quand l'user veut fermer un ETH.
+
+CORRECTION : Supprimer ce fallback. Si aucune position ne matche, retourner une erreur explicite.
+Remplacer les lignes 3963-3964 par rien (supprimer ces 2 lignes). Le code tombera directement dans le check ligne 3966 `if not target:` qui retourne l'erreur.
+
+## BUG B — place_order() ne vérifie ni USDC ni ETH (lignes 3726-3755)
+Contrairement à place_order_by_collateral() qui vérifie le solde USDC (ligne 3568-3570) et le solde ETH (ligne 3572-3579), la méthode place_order() ne fait AUCUNE vérification avant d'envoyer la transaction. Si le wallet manque de fonds, la TX sera envoyée, consommera du gas ETH, et revertera on-chain.
+
+CORRECTION : Ajouter les mêmes vérifications après la ligne 3754 (après le calcul de collateral_usd et size_delta_usd), AVANT la construction de order_params. Insérer entre la ligne 3754 et 3756 :
+
+```python
+        usdc_balance = self._get_token_balance(collateral_token, collateral_decimals)
+        if usdc_balance < collateral_usd:
+            return {"success": False, "error": f"Insufficient USDC: have ${usdc_balance:.2f}, need ${collateral_usd:.2f}", "exchange": "GMX"}
+
+        execution_fee = self._estimate_execution_fee()
+        gas_price = self._w3.eth.gas_price
+        gas_cost_estimate = 1500000 * gas_price / 10**18
+        total_eth_needed = (execution_fee / 10**18) + gas_cost_estimate
+        eth_balance = self._w3.eth.get_balance(self._account.address) / 10**18
+        if eth_balance < total_eth_needed:
+            return {"success": False, "error": f"Insufficient ETH: have {eth_balance:.4f}, need ~{total_eth_needed:.4f}", "exchange": "GMX"}
+```
+
+ATTENTION : la variable `execution_fee` est déjà calculée plus bas (ligne 3767). Après ton insertion, supprime la ligne 3767 `execution_fee = self._estimate_execution_fee()` pour éviter le double calcul.
+
+## INSTRUCTIONS
+1. Édite close_position() : supprime lignes 3963-3964
+2. Édite place_order() : insère les vérifs balance après ligne 3754, supprime la ligne 3767
+3. python3 -m py_compile server.py
+4. Commit : "fix: remove dangerous close_position fallback + add balance checks to place_order"
+5. Push sur claude/jarvis-trading-dashboard-HGW7A

@@ -1,0 +1,86 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Le système GMX utilise un seul RPC public (arb1.arbitrum.io/rpc) qui est rate-limité.
+Le wait_for_transaction_receipt bloque pendant 60s (excessif sur Arbitrum, confirmation en 1-3s).
+
+## BUG A — Un seul RPC, pas de fallback (ligne 108)
+```python
+GMX_RPC_MAINNET = os.environ.get("GMX_RPC_URL", "https://arb1.arbitrum.io/rpc")
+```
+
+CORRECTION : Modifier get_web3() (ligne 3150) pour essayer plusieurs RPCs.
+Ajouter après la ligne 109 :
+```python
+GMX_RPC_FALLBACKS = [
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one-rpc.publicnode.com",
+    "https://arbitrum.llamarpc.com",
+    "https://1rpc.io/arb",
+]
+```
+
+Modifier get_web3() pour essayer les fallbacks si le RPC principal échoue.
+Si rpc_url est le défaut (pas un custom env var), essayer chaque fallback :
+```python
+def get_web3(rpc_url=None, testnet=False):
+    if not HAS_WEB3:
+        return None, False
+
+    if rpc_url is None:
+        if testnet:
+            urls_to_try = [GMX_RPC_TESTNET]
+        else:
+            custom = os.environ.get("GMX_RPC_URL")
+            urls_to_try = [custom] if custom else GMX_RPC_FALLBACKS
+    else:
+        urls_to_try = [rpc_url]
+
+    with _web3_lock:
+        # Check cache first
+        for url in urls_to_try:
+            if url in _web3_instances:
+                w3 = _web3_instances[url]
+                try:
+                    if w3.is_connected():
+                        return w3, True
+                except Exception:
+                    pass
+                del _web3_instances[url]
+
+        # Try connecting
+        for url in urls_to_try:
+            try:
+                w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 10}))
+                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+                if w3.is_connected():
+                    _web3_instances[url] = w3
+                    log.info("Web3 connected: %s (chain=%d)", url, w3.eth.chain_id)
+                    return w3, True
+            except Exception as e:
+                log.warning("Web3 RPC failed %s: %s", url, e)
+                continue
+
+    return None, False
+```
+
+## BUG B — Timeout 60s bloque le thread Flask (ligne 3305)
+```python
+receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+```
+Arbitrum confirme en 1-3s. 60s est excessif et bloque le thread du serveur.
+
+CORRECTION : Réduire à 15s :
+```python
+receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=15)
+```
+
+## INSTRUCTIONS
+1. Ajoute GMX_RPC_FALLBACKS après ligne 109
+2. Réécris get_web3() avec fallback
+3. Change timeout 60 → 15 à la ligne 3305
+4. python3 -m py_compile server.py
+5. Commit : "fix: Arbitrum RPC fallback chain + reduce receipt timeout to 15s"
+6. Push sur claude/jarvis-trading-dashboard-HGW7A
