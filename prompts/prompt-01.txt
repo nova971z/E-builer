@@ -1,0 +1,42 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes) et /home/user/E-builer/dashboard.html (9020 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE SYSTÈME
+J.A.R.V.I.S. Trading System v3.0 — Flask backend (server.py) + vanilla JS SPA (dashboard.html).
+Trading GMX V2 Perpetuals on-chain sur Arbitrum One via ExchangeRouter multicall.
+Les trades GMX fonctionnent (confirmé Arbiscan TX 0x08e1a08e44...) mais l'affichage et le cache sont cassés.
+
+## 2 BUGS À CORRIGER
+
+### BUG A — Cache.set() TypeError (server.py)
+La méthode Cache.set() à la ligne 485 a la signature `def set(self, key, data)` — elle n'accepte PAS de paramètre `ttl`.
+Or le code appelle `cache.set(key, price, ttl=5)` à la ligne 3421 dans _get_index_price() et `cache.set(cache_key, result, ttl=30)` dans d'autres endroits.
+Cela provoque un TypeError à chaque appel → le prix n'est JAMAIS mis en cache → chaque requête refait un fetch réseau.
+
+CORRECTION : Modifier Cache.set() pour accepter un paramètre ttl optionnel qui sera stocké avec l'entrée et vérifié dans Cache.get().
+Actuellement Cache.get() prend déjà un `ttl` en paramètre (ligne 478 : `def get(self, key, ttl=60)`), mais il n'est pas stocké côté set().
+Rends Cache.set() capable de stocker un TTL par entrée : `def set(self, key, data, ttl=None)`.
+Dans Cache.get(), si l'entrée a un `ttl` stocké, utilise-le au lieu du paramètre `ttl` de get().
+
+### BUG B — /api/positions retourne le mauvais format (server.py ligne 9528-9538)
+Le backend retourne un tableau JSON brut :
+```python
+return jsonify(paper_pos + live_pos)   # → [pos1, pos2, ...]
+```
+Le frontend loadPositions() (dashboard.html ligne 4999) attend un objet :
+```javascript
+const positions = data.positions || [];
+```
+Résultat : data.positions = undefined → toujours tableau vide → "No open positions" affiché même avec des positions réelles.
+
+CORRECTION : Modifier la route /api/positions (ligne 9528-9538) pour retourner :
+```python
+return jsonify({"positions": paper_pos + live_pos})
+```
+
+## INSTRUCTIONS
+1. Édite UNIQUEMENT les lignes concernées, ne touche à rien d'autre
+2. python3 -m py_compile server.py après chaque modification
+3. Commit : "fix: Cache.set() ttl support + /api/positions response format"
+4. Push sur claude/jarvis-trading-dashboard-HGW7A

@@ -1,0 +1,68 @@
+Tu travailles sur /home/user/E-builer/dashboard.html (9020 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+Le prompt précédent a corrigé le format de /api/positions (retourne maintenant {"positions": [...]}).
+Mais les positions GMX ne s'affichent toujours pas correctement car les NOMS DE CHAMPS ne matchent pas entre backend et frontend.
+
+## CE QUE LE BACKEND GMX RETOURNE (server.py lignes 3502-3520)
+Chaque position GMX a ces champs :
+```json
+{
+  "symbol": "BTCUSDT",
+  "side": "long",           ← MINUSCULE
+  "quantity": 0.00012,
+  "size_usd": 25.00,
+  "entry_price": 87000.0,
+  "current_price": 87500.0,
+  "leverage": 5.0,
+  "collateral_usd": 5.00,
+  "collateral_token": "USDC",
+  "pnl": 0.35,
+  "pnl_pct": 7.00,
+  "liquidation_price": 70000.0,
+  "market_address": "0x47c...",
+  "exchange": "GMX",
+  "type": "perpetual",
+  "mode": "live"
+}
+```
+
+## CE QUE LE FRONTEND ATTEND (dashboard.html lignes 5017-5036)
+```javascript
+p.side      → attend "LONG"/"SHORT" en MAJUSCULE pour le CSS
+p.size      → n'existe pas, backend envoie "quantity" et "size_usd"
+p.mark_price → n'existe pas, backend envoie "current_price"
+p.liq_price  → n'existe pas, backend envoie "liquidation_price"
+p.margin     → n'existe pas, backend envoie "collateral_usd"
+p.unrealized_pnl → n'existe pas, backend envoie "pnl"
+p.roe_pct    → n'existe pas, backend envoie "pnl_pct"
+p.id         → N'EXISTE PAS dans les données GMX (pas de champ id)
+p.tp / p.sl  → N'EXISTENT PAS
+```
+
+## CORRECTION À FAIRE
+Modifier la fonction loadPositions() (dashboard.html lignes 4994-5044) pour mapper les deux formats.
+Chaque position `p` doit être normalisée AVANT le rendu :
+```javascript
+var side = (p.side || '').toUpperCase();
+var size = p.size || p.size_usd || (p.quantity * (p.entry_price || 0));
+var markPrice = p.mark_price || p.current_price || p.entry_price || 0;
+var liqPrice = p.liq_price || p.liquidation_price || 0;
+var margin = p.margin || p.collateral_usd || 0;
+var unrealizedPnl = p.unrealized_pnl || p.pnl || 0;
+var roePct = p.roe_pct || p.pnl_pct || 0;
+var posId = p.id || p.market_address || p.symbol;
+```
+
+Aussi, le bouton Close (ligne 5035) doit passer le symbole :
+AVANT : `onclick="closePosition('" + escapeHtml(p.id) + "')"`
+APRÈS : `onclick="closePosition('" + escapeHtml(posId) + "', '" + escapeHtml(p.symbol) + "')"`
+
+## INSTRUCTIONS
+1. Modifie UNIQUEMENT loadPositions() — n'ajoute pas de nouvelles fonctions
+2. Utilise le pattern de normalisation ci-dessus au début de la boucle for
+3. Remplace les références aux anciens champs dans le HTML généré
+4. Commit : "fix: normalize position fields for GMX compatibility in loadPositions()"
+5. Push sur claude/jarvis-trading-dashboard-HGW7A

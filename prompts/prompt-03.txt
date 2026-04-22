@@ -1,0 +1,67 @@
+Tu travailles sur /home/user/E-builer/server.py (11735 lignes).
+Dashboard live : http://178.104.233.254:5000
+Branche git : claude/jarvis-trading-dashboard-HGW7A
+
+## CONTEXTE
+GMX V2 Perpetuals sur Arbitrum. Les ordres TP/SL sont placés via _place_tp_sl_order() (ligne 3865).
+Deux bugs critiques rendent les TP/SL non fonctionnels.
+
+## BUG A — SL utilise le mauvais type d'ordre (ligne 3909)
+Actuellement, TOUS les ordres (TP et SL) utilisent GMX_ORDER_TYPE_LIMIT_DECREASE (type 5).
+C'est correct pour TP, mais FAUX pour SL.
+
+Types GMX V2 :
+- Type 5 (LIMIT_DECREASE) : s'exécute quand le prix MONTE au-dessus du trigger (pour long) → c'est un TP
+- Type 6 (STOP_LOSS_DECREASE) : s'exécute quand le prix DESCEND sous le trigger (pour long) → c'est un SL
+
+La constante existe déjà : GMX_ORDER_TYPE_STOP_LOSS_DECREASE = 6 (ligne 176)
+
+CORRECTION : Le type d'ordre doit dépendre de is_tp :
+```python
+# Ligne 3909 — REMPLACER :
+GMX_ORDER_TYPE_LIMIT_DECREASE,
+# PAR :
+GMX_ORDER_TYPE_LIMIT_DECREASE if is_tp else GMX_ORDER_TYPE_STOP_LOSS_DECREASE,
+```
+
+## BUG B — TP acceptable price inversé (lignes 3876-3885)
+Le paramètre `is_long_close` reçoit `not is_long` de l'appelant (lignes 3710, 3718).
+Donc pour une position LONG → is_long_close = False, pour SHORT → is_long_close = True.
+
+L'isLong dans l'ordre GMX (ligne 3911) = `not is_long_close`, ce qui donne :
+- LONG position → isLong = True (correct, on decrease un long)
+- SHORT position → isLong = False (correct, on decrease un short)
+
+Règles GMX V2 pour acceptable price sur DECREASE :
+- isLong=True (close long, on VEND) : acceptable = MINIMUM price → doit être SOUS le trigger
+- isLong=False (close short, on ACHÈTE) : acceptable = MAXIMUM price → doit être AU-DESSUS du trigger
+
+Code actuel (FAUX) :
+```python
+if is_tp:
+    if is_long_close:      # SHORT position → isLong=False → max price
+        acceptable = trigger * 0.997   # FAUX : devrait être * 1.003
+    else:                  # LONG position → isLong=True → min price
+        acceptable = trigger * 1.003   # FAUX : devrait être * 0.997
+```
+
+CORRECTION — Inverser les valeurs TP :
+```python
+if is_tp:
+    if is_long_close:      # SHORT position : acceptable = max → trigger * 1.003
+        acceptable = int(trigger_price_usd * 1.003 * 10**30)
+    else:                  # LONG position : acceptable = min → trigger * 0.997
+        acceptable = int(trigger_price_usd * 0.997 * 10**30)
+else:  # SL — ces valeurs sont déjà correctes, NE PAS Y TOUCHER
+    if is_long_close:
+        acceptable = int(trigger_price_usd * 1.003 * 10**30)
+    else:
+        acceptable = int(trigger_price_usd * 0.997 * 10**30)
+```
+
+## INSTRUCTIONS
+1. Édite UNIQUEMENT les lignes 3876-3885 (acceptable price) et la ligne 3909 (order type)
+2. NE TOUCHE PAS au bloc SL (else) — il est déjà correct
+3. python3 -m py_compile server.py
+4. Commit : "fix: SL order type STOP_LOSS_DECREASE + correct TP acceptable price"
+5. Push sur claude/jarvis-trading-dashboard-HGW7A
