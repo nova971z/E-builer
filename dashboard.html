@@ -7204,7 +7204,23 @@ function updateGMXEstimate() {
     }).catch(function() {});
 }
 
+var _gmxOrderPending = false;
+
+function _setGMXButtons(disabled) {
+    var btns = document.querySelectorAll('.gmx-btn-long, .gmx-btn-short');
+    for (var i = 0; i < btns.length; i++) {
+        btns[i].disabled = disabled;
+        btns[i].style.opacity = disabled ? '0.5' : '1';
+        btns[i].style.pointerEvents = disabled ? 'none' : 'auto';
+    }
+}
+
 function executeGMXOrder(side) {
+    if (_gmxOrderPending) {
+        showToast('Order already in progress — please wait', 'error');
+        return;
+    }
+
     var header = $('gmx-header');
     if (header && header.classList.contains('disconnected')) {
         showToast('Connect your GMX wallet first', 'error');
@@ -7226,6 +7242,10 @@ function executeGMXOrder(side) {
         showToast('Minimum collateral is $1', 'error');
         return;
     }
+    if (collateral > 10000) {
+        showToast('Maximum single order: $10,000', 'error');
+        return;
+    }
 
     if (leverage > 20 && !confirm('Leverage ' + leverage + 'x exceeds recommended 20x. Proceed?')) {
         return;
@@ -7241,7 +7261,9 @@ function executeGMXOrder(side) {
     if (sl > 0) confirmMsg += '\nSL: $' + sl;
     if (!confirm(confirmMsg + '\n\nConfirm trade?')) return;
 
-    showToast('Sending ' + side.toUpperCase() + ' order...', 'info', 5000);
+    _gmxOrderPending = true;
+    _setGMXButtons(true);
+    showToast('Sending ' + side.toUpperCase() + ' order...', 'info', 15000);
 
     var payload = {
         symbol: symbol,
@@ -7281,6 +7303,9 @@ function executeGMXOrder(side) {
             showToast('Network error: ' + err.message, 'error');
             console.error('GMX order network error:', err);
         }
+    }).finally(function() {
+        _gmxOrderPending = false;
+        _setGMXButtons(false);
     });
 }
 
