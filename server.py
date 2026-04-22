@@ -34,6 +34,9 @@ import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
+_http_session = requests.Session()
+_http_session.headers.update({"Connection": "keep-alive", "User-Agent": "JARVIS/3.0"})
+
 try:
     from cryptography.fernet import Fernet
     HAS_FERNET = True
@@ -462,8 +465,27 @@ class Cache:
         with self._lock:
             self._store.pop(key, None)
 
+    def cleanup(self, max_age=600):
+        now = time.time()
+        with self._lock:
+            expired = [k for k, v in self._store.items() if now - v["ts"] > max_age]
+            for k in expired:
+                del self._store[k]
+        return len(expired)
+
 
 cache = Cache()
+
+
+def _cache_gc_loop():
+    while True:
+        time.sleep(600)
+        try:
+            cache.cleanup(600)
+        except Exception:
+            pass
+
+threading.Thread(target=_cache_gc_loop, daemon=True, name="cache-gc").start()
 
 
 # ---------------------------------------------------------------------------
@@ -1059,10 +1081,13 @@ _rate_limiter = RateLimiter()
 
 RATE_LIMITS = {
     "auth":        (5,   60),
-    "execute":     (30,  60),
+    "execute":     (60,  3600),
     "settings":    (10,  60),
     "market_data": (120, 60),
     "bot":         (20,  60),
+    "bot_start":   (5,   3600),
+    "bot_config":  (20,  3600),
+    "webhook":     (10,  86400),
 }
 
 
@@ -1102,7 +1127,7 @@ def fetch_binance(endpoint, params=None, base=None, ttl=15):
     if cached is not None:
         return cached
     try:
-        resp = requests.get(f"{base}{endpoint}", params=params, timeout=5)
+        resp = _http_session.get(f"{base}{endpoint}", params=params, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         cache.set(cache_key, data)
@@ -4282,7 +4307,7 @@ class SmartExecutionEngine:
                  entry.get("result", {}).get("error", ""))
 
 
-smart_executor = SmartExecutionEngine(cb_system=circuit_breakers)
+smart_executor = SmartExecutionEngine(cb_system=None)
 
 
 # ---------------------------------------------------------------------------
@@ -6756,6 +6781,7 @@ class CircuitBreakerSystem:
 
 
 circuit_breakers = CircuitBreakerSystem()
+smart_executor._cb = circuit_breakers
 
 
 # ---------------------------------------------------------------------------
@@ -7310,17 +7336,19 @@ class AutonomousEngine:
         self._config = {
             "enabled": False,
             "mode": "paper",
-            "scan_interval": 60,
-            "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-            "max_concurrent_positions": 3,
-            "min_signal_score": 150,
-            "min_confidence": 60,
-            "allowed_regimes": ["BULL", "BEAR", "RANGE"],
+            "scan_interval": 120,
+            "symbols": ["BTCUSDT", "ETHUSDT"],
+            "max_concurrent_positions": 2,
+            "min_signal_score": 180,
+            "min_confidence": 70,
+            "allowed_regimes": ["STRONG_BULL", "STRONG_BEAR"],
             "strategy": "auto",
-            "risk_per_trade_pct": 2.0,
-            "daily_loss_limit_pct": 5.0,
-            "max_trades_per_day": 10,
-            "cooldown_after_loss": 300,
+            "risk_per_trade_pct": 1.0,
+            "daily_loss_limit_pct": 3.0,
+            "max_trades_per_day": 5,
+            "cooldown_after_loss": 600,
+            "leverage_max": 5,
+            "auto_adjust": False,
         }
 
         self._state = {
@@ -7491,6 +7519,29 @@ class AutonomousEngine:
         ohlcv = transform_klines(raw)
         if len(ohlcv) < 50:
             return
+
+        current_price = ohlcv[-1]["close"]
+        last_prices = self._price_history.get(symbol, [])
+        if last_prices:
+            prev_price = last_prices[-1][1]
+            if prev_price > 0:
+                divergence_pct = abs(current_price - prev_price) / prev_price * 100
+                if divergence_pct > 5.0:
+                    ticker = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=2)
+                    if ticker:
+                        confirm_price = float(ticker.get("price", 0))
+                        if confirm_price > 0:
+                            confirm_div = abs(current_price - confirm_price) / confirm_price * 100
+                            if confirm_div > 3.0:
+                                log.warning("[BOT] Price divergence on %s: kline=%.2f ticker=%.2f (%.1f%%) — skipping",
+                                            symbol, current_price, confirm_price, confirm_div)
+                                try:
+                                    alert_manager.send("ERROR",
+                                        f"Price divergence on {symbol}: {divergence_pct:.1f}% between scans — skipped",
+                                        priority="HIGH", data={"symbol": symbol, "divergence_pct": divergence_pct})
+                                except Exception:
+                                    pass
+                                return
 
         indicators = compute_all_indicators(ohlcv)
         raw_ind = indicators["_raw"]
@@ -7726,6 +7777,8 @@ class AutonomousEngine:
     def _execute_trade(self, symbol, direction, size_usd, price, signal_info,
                        strategy, leverage=1, exit_conditions=None):
         mode = self._config["mode"]
+        lev_max = self._config.get("leverage_max", 20)
+        leverage = max(1, min(leverage, lev_max))
         exit_conditions = exit_conditions or {}
         tp = exit_conditions.get("take_profit")
         sl = exit_conditions.get("stop_loss")
@@ -8229,6 +8282,8 @@ class AutonomousEngine:
                     val = max(1, min(50, int(val)))
                 if key == "cooldown_after_loss":
                     val = max(0, min(3600, int(val)))
+                if key == "leverage_max":
+                    val = max(1, min(20, int(val)))
                 if key == "symbols" and isinstance(val, list):
                     val = [s.upper() for s in val if isinstance(s, str) and len(s) <= 20][:10]
                 if key == "allowed_regimes" and isinstance(val, list):
@@ -11001,7 +11056,7 @@ def api_bot_strategy_override():
     return jsonify({"success": True, "strategy": name, "config": result.get("config", {})})
 
 @app.route("/api/bot/start", methods=["POST"])
-@rate_limit("bot")
+@rate_limit("bot_start")
 def api_bot_start():
     denied = require_auth()
     if denied:
@@ -11031,7 +11086,7 @@ def api_bot_status():
 
 
 @app.route("/api/bot/config", methods=["POST"])
-@rate_limit("bot")
+@rate_limit("bot_config")
 def api_bot_config():
     denied = require_auth()
     if denied:
@@ -11232,10 +11287,12 @@ def api_alerts():
 
 
 @app.route("/api/alerts/webhook", methods=["POST"])
-@rate_limit("bot")
+@rate_limit("webhook")
 def api_alerts_webhook():
     data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        return jsonify({"error": "URL must start with http:// or https://"}), 400
     if not url:
         return jsonify({"error": "url required"}), 400
     channel = data.get("channel", "webhook")

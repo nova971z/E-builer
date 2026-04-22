@@ -3998,3 +3998,161 @@ MacroDataEngine aggregates macro-economic and geopolitical data from free source
 - [x] py_compile verified ✓
 
 ---
+
+## ENHANCEMENT PROMPTS 5-10 — COMPLETED ✓
+
+### Prompt 5: Circuit Breakers + Advanced Position Manager + CapitalProtector ✓
+- [x] CircuitBreakerSystem — 7 independent levels (YELLOW→SYSTEM_FAULT)
+- [x] CapitalProtector — HWM tracking, 3 risk tiers, half-Kelly position sizing
+- [x] AdvancedPositionManager — 8 close reasons, correlation groups, portfolio heat
+- [x] AutonomousEngine integration (CB auto-stop at L3+, PM for position lifecycle)
+- [x] 3 API routes: /api/risk/circuit-breakers, /api/risk/acknowledge, /api/risk/portfolio
+
+### Prompt 6: Dashboard Bot Control Panel + Macro View ✓
+- [x] CSS: bot-control-panel, circuit-breaker-bar, position-heat-map, macro-dashboard
+- [x] HTML: 5 sections (Bot Status, CB bar, Positions, Strategy Perf, Macro)
+- [x] JS: loadBotStatus(), loadCircuitBreakers(), loadMacroDashboard(), switchDrawerTabBot()
+
+### Prompt 7: SmartExecutionEngine ✓
+- [x] SmartExecutionEngine class — pre-flight checks, gas optimization, slippage protection
+- [x] execute_with_retry() — exponential backoff (2s/4s/8s)
+- [x] close_position_smart() — 3 urgency levels
+- [x] AutonomousEngine routes live orders through smart_executor
+- [x] 2 API routes: /api/execution/stats, /api/execution/pending
+
+### Prompt 8: Performance Tracking + Analytics ✓
+- [x] bot_trades SQLite table (25 columns)
+- [x] PerformanceTracker class — Sharpe, Sortino, profit factor, max drawdown, expectancy, calmar
+- [x] Equity curve, breakdowns by strategy/symbol/hour/regime, streak analysis
+- [x] Auto-improvement: recommendations + strategy weights + should_auto_adjust
+- [x] 5 API routes: /api/performance, equity, breakdown, recommendations, export
+- [x] Dashboard "Perf" tab with metrics grid, equity chart, heatmap, recommendations
+
+### Prompt 9: Alert System + Notifications + Voice Commands ✓
+- [x] AlertManager class — multi-channel (webhook, Telegram, Discord)
+- [x] Anti-spam cooldowns (5min per type, CRITICAL bypasses)
+- [x] Integrations: CB triggers, trades, regime changes, signals, dip/top, errors
+- [x] 3 API routes: /api/alerts, /api/alerts/webhook, /api/alerts/test
+- [x] Dashboard: notification panel, browser notifications, priority sounds
+- [x] 12 new voice commands with French speech synthesis readback
+
+### Prompt 10: Deployment Hardening + Tests ✓
+- [x] Rate limiting: bot_start (5/h), bot_config (20/h), execute (60/h), webhook (10/day)
+- [x] Conservative defaults: paper mode, 2 symbols, 120s scan, 5x max leverage
+- [x] Anti-manipulation: price divergence >5% triggers second-source verification
+- [x] Leverage hard cap enforcement in _execute_trade
+- [x] HTTP session with keep-alive for API performance
+- [x] Cache garbage collection every 10 minutes
+- [x] Webhook URL validation (HTTP/HTTPS only)
+- [x] Scripts: test-bot.sh, deploy.sh, monitor.sh, gradual-deploy.sh
+
+---
+
+## AUTONOMOUS BOT ARCHITECTURE (Final)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DATA LAYER                                │
+│  Binance API (klines, ticker, orderbook, trades, funding)   │
+│  MacroDataEngine (Fed, Treasury, VIX, BTC.D, DXY, geo)     │
+│  RSS feeds (news)  ·  Alternative.me (Fear & Greed)         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                  INTELLIGENCE LAYER                          │
+│  AdvancedRegimeDetector (6 states, transition probs)        │
+│  SignalEngine (11 indicators, -300 to +300 score)           │
+│  DipTopDetector (RSI divergence, volume climax, Wyckoff)    │
+│  compute_all_indicators() (SMA/EMA/RSI/MACD/BB/ATR/...)    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                   STRATEGY LAYER                             │
+│  StrategySelector + 6 strategies:                            │
+│    trend · mean_reversion · breakout · dip_hunter           │
+│    momentum_scalp · macro_event                              │
+│  Performance-weighted selection via PerformanceTracker       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                     RISK LAYER                               │
+│  CircuitBreakerSystem (7 levels, independent triggers)      │
+│  AdvancedPositionManager (portfolio heat, correlation)      │
+│  CapitalProtector (half-Kelly, HWM, 3 risk tiers)          │
+│  RiskEngine (7 veto conditions)                              │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                  EXECUTION LAYER                             │
+│  SmartExecutionEngine (pre-flight, gas, slippage, retry)    │
+│  GMXAdapter (GMX V2 Perpetuals on Arbitrum)                 │
+│  MEXCAdapter (CCXT)  ·  PaperTrader (virtual)               │
+│  MicroPositionEngine (position sizing)                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│                 MONITORING LAYER                              │
+│  PerformanceTracker (Sharpe/Sortino/PF/MDD/equity curve)    │
+│  AlertManager (webhook, Telegram, Discord, browser)         │
+│  Audit logging  ·  Health checks  ·  Monitoring scripts     │
+└─────────────────────────────────────────────────────────────┘
+
+            AutonomousEngine ties all layers together
+            Runs in daemon thread · 120s scan interval
+```
+
+## DEPLOYMENT PHASES
+
+| Phase | Mode | Config | Criteria to Advance |
+|-------|------|--------|-------------------|
+| 1. Observation | paper, 0 trades | score=300, conf=99 | 48h of clean signals |
+| 2. Paper | paper, real signals | 2 symbols, 5x lev | 100 trades, PF > 1.2 |
+| 3. Micro Live | micro_live, $5-10 | BTC/ETH, 3x lev | 50 live trades validated |
+| 4. Gradual | micro_live, $25-50 | 3 symbols, 5x lev | Stable for 2 weeks |
+| 5. Production | live, full config | 5 symbols, 10x lev | Ongoing monitoring |
+
+**NEVER auto-transition from paper to live. Always manual.**
+
+## MONITORING CHECKLIST
+
+### Daily
+- [ ] Check bot P&L and drawdown
+- [ ] Check circuit breaker status (no L3+ triggers)
+- [ ] Verify bot is running and responsive
+- [ ] Review alert log for anomalies
+
+### Weekly
+- [ ] Review strategy performance breakdown
+- [ ] Check performance recommendations
+- [ ] Verify disk/memory/DB size via monitor.sh
+- [ ] Backup database
+
+### Monthly
+- [ ] Full performance review (Sharpe, Sortino, profit factor)
+- [ ] Adjust strategy weights based on analytics
+- [ ] Review and update allowed regimes
+- [ ] Consider phase advancement if criteria met
+
+## FILE INVENTORY (Final)
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| server.py | ~11,400 | Flask backend — all APIs, intelligence, trading logic |
+| dashboard.html | ~8,800 | Frontend SPA — charts, bot control, performance |
+| lw-charts.js | ~4,600 | TradingView Lightweight Charts (vendored) |
+| PLAN.md | ~4,200 | This file — roadmap, architecture, checklists |
+| CLAUDE.md | ~100 | Claude Code project conventions |
+| requirements.txt | ~10 | Python dependencies |
+| .gitignore | ~10 | Git exclusions |
+| scripts/start.sh | ~30 | Start server |
+| scripts/kill.sh | ~15 | Stop server |
+| scripts/health-check.sh | ~40 | Route health checks |
+| scripts/backup.sh | ~20 | Database backup |
+| scripts/export-trades.sh | ~10 | CSV trade export |
+| scripts/code-review.sh | ~30 | Static analysis |
+| scripts/test-bot.sh | ~150 | Automated test suite |
+| scripts/deploy.sh | ~100 | Deployment with rollback |
+| scripts/monitor.sh | ~80 | Cron monitoring |
+| scripts/gradual-deploy.sh | ~200 | 5-phase gradual deployment |
+
+---
