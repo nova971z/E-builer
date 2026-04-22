@@ -114,7 +114,7 @@ GMX_V2_CONTRACTS_MAINNET = {
     "OrderVault": "0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5",
     "DataStore": "0xFD70de6b91282D8017aA4E741e9Ae325CAb992d8",
     "Reader": "0x470fbC46bcC0f16532691Df360A07d8Bf5ee0789",
-    "OrderHandler": "0x352f684ab9e97a6321a13CF03A61316B681D9fD2",
+    "OrderHandler": "0x63492B775e30a9E6b4b4761c12605EB9d071d5e9",
 }
 
 GMX_V2_CONTRACTS_TESTNET = {
@@ -133,13 +133,13 @@ GMX_V2_TOKENS = {
     "WBTC": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
     "ARB": "0x912CE59144191C1204E64559FE8253a0e49E6548",
     "SOL": "0x2bcC6D6CdBbDC0a4071e48bb3B969b06B3330c07",
-    "DOGE": "0xC4da4c24fd591125c3F47b340b6f4f76111f1c88",
+    "DOGE": "0xC4da4c24fd591125c3F47b340b6f4f76111883d8",
 }
 
 GMX_V2_MARKETS = {
     "BTCUSDT": {
-        "market_token": "0x47c031236e19d024b42f8AE6DA7A0261C4f1F660",
-        "index_token": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+        "market_token": "0x47c031236e19d024b42f8AE6780E44A573170703",
+        "index_token": "0x47904963fc8b2340414262125aF798B9655E58Cd",
         "long_token": "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
         "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
     },
@@ -163,7 +163,7 @@ GMX_V2_MARKETS = {
     },
     "DOGEUSDT": {
         "market_token": "0x6853EA96FF216fAb11D2d930CE3C508556A4bdc4",
-        "index_token": "0xC4da4c24fd591125c3F47b340b6f4f76111f1c88",
+        "index_token": "0xC4da4c24fd591125c3F47b340b6f4f76111883d8",
         "long_token": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
         "short_token": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
     },
@@ -348,26 +348,6 @@ GMX_EXCHANGE_ROUTER_ABI = [
         "name": "multicall",
         "outputs": [{"internalType": "bytes[]", "name": "results", "type": "bytes[]"}],
         "stateMutability": "payable",
-        "type": "function",
-    },
-]
-
-GMX_ROUTER_ABI = [
-    {
-        "inputs": [{"internalType": "address", "name": "plugin", "type": "address"}],
-        "name": "approvePlugin",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "", "type": "address"},
-            {"internalType": "address", "name": "", "type": "address"},
-        ],
-        "name": "approvedPlugins",
-        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
-        "stateMutability": "view",
         "type": "function",
     },
 ]
@@ -3216,10 +3196,6 @@ def get_gmx_contracts(w3, testnet=False):
             "data_store": Web3.to_checksum_address(addresses["DataStore"]),
             "order_vault": Web3.to_checksum_address(addresses["OrderVault"]),
             "router": Web3.to_checksum_address(addresses["Router"]),
-            "router_contract": w3.eth.contract(
-                address=Web3.to_checksum_address(addresses["Router"]),
-                abi=GMX_ROUTER_ABI,
-            ),
         }
     except Exception as e:
         log.error("Failed to instantiate GMX contracts: %s", e)
@@ -3321,13 +3297,20 @@ class GMXAdapter(ExchangeAdapter):
 
     def _sign_and_send(self, tx):
         """Sign, broadcast, and wait for confirmation. Returns tx hash."""
+        used_nonce = tx.get("nonce", 0)
         signed = self._w3.eth.account.sign_transaction(tx, self._account.key)
         tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        self._pending_nonce = used_nonce + 1
         try:
-            self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            if receipt.get("status") == 0:
+                self._pending_nonce = None
+                raise Exception(f"Transaction reverted on-chain: {tx_hash.hex()}")
         except Exception as e:
+            if "reverted" in str(e):
+                self._pending_nonce = None
+                raise
             log.warning("Tx sent but confirmation timeout: %s — %s", tx_hash.hex(), e)
-        self._pending_nonce = None
         return tx_hash.hex()
 
     def _get_token_balance(self, token_address, decimals=18):
@@ -3608,7 +3591,6 @@ class GMXAdapter(ExchangeAdapter):
             acceptable_price = int(ref_price * (1 - slippage_mult) * 10**30)
 
         trigger_price = int(price * 10**30) if price and not is_market else 0
-        execution_fee = self._estimate_execution_fee()
 
         exchange_router = self._contracts.get("exchange_router")
         order_vault = self._contracts.get("order_vault")
@@ -3648,25 +3630,6 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         with self._nonce_lock:
-            try:
-                router_contract = self._contracts.get("router_contract")
-                if router_contract:
-                    is_approved = router_contract.functions.approvedPlugins(
-                        self._account.address, exchange_router.address
-                    ).call()
-                    if not is_approved:
-                        log.info("GMX: approving ExchangeRouter as Router plugin (one-time)...")
-                        approve_tx = router_contract.functions.approvePlugin(
-                            exchange_router.address
-                        ).build_transaction(self._build_tx())
-                        plugin_hash = self._sign_and_send(approve_tx)
-                        log.info("GMX: plugin approved, tx: %s", plugin_hash)
-                    else:
-                        log.info("GMX: ExchangeRouter already approved as plugin")
-            except Exception as e:
-                log.error("GMX plugin approval failed: %s (type: %s)", e, type(e).__name__)
-                return {"success": False, "error": f"Router plugin approval failed: {e}", "exchange": "GMX"}
-
             try:
                 approval_tx = self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
                 if approval_tx:
@@ -3844,23 +3807,26 @@ class GMXAdapter(ExchangeAdapter):
             [],
         )
 
-        try:
-            usdc_contract = get_erc20_contract(self._w3, collateral_token)
-            transfer_tx = usdc_contract.functions.transfer(
-                order_vault, collateral_amount_raw
-            ).build_transaction(self._build_tx())
-            self._sign_and_send(transfer_tx)
+        with self._nonce_lock:
+          try:
+            self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
 
             send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
+            send_tokens_data = exchange_router.functions.sendTokens(
+                Web3.to_checksum_address(collateral_token), order_vault, collateral_amount_raw
+            )._encode_transaction_data()
             create_order_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
-            total_value = execution_fee
-            multicall_tx = exchange_router.functions.multicall([
+            multicall_data = [
                 bytes.fromhex(send_wnt_data[2:]),
+                bytes.fromhex(send_tokens_data[2:]),
                 bytes.fromhex(create_order_data[2:]),
-            ]).build_transaction(self._build_tx(value=total_value))
+            ]
+            base_tx = self._build_tx(value=execution_fee)
+            base_tx["to"] = exchange_router.address
+            base_tx["data"] = exchange_router.functions.multicall(multicall_data)._encode_transaction_data()
 
-            tx_hash = self._sign_and_send(multicall_tx)
+            tx_hash = self._sign_and_send(base_tx)
 
             result = {
                 "success": True,
@@ -3897,7 +3863,8 @@ class GMXAdapter(ExchangeAdapter):
 
             return result
 
-        except Exception as e:
+          except Exception as e:
+            self._pending_nonce = None
             log.error("GMX place_order failed: %s", e)
             return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
@@ -3954,15 +3921,18 @@ class GMXAdapter(ExchangeAdapter):
                 [],
             )
 
-            send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
-            create_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
+            with self._nonce_lock:
+                send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
+                create_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
-            multicall_tx = exchange_router.functions.multicall(
-                [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
-            ).build_transaction(self._build_tx(value=execution_fee))
+                base_tx = self._build_tx(value=execution_fee)
+                base_tx["to"] = exchange_router.address
+                base_tx["data"] = exchange_router.functions.multicall(
+                    [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
+                )._encode_transaction_data()
 
-            tx_hash = self._sign_and_send(multicall_tx)
-            log.info("GMX %s order placed: %s (trigger=%.2f)", "TP" if is_tp else "SL", tx_hash, trigger_price_usd)
+                tx_hash = self._sign_and_send(base_tx)
+                log.info("GMX %s order placed: %s (trigger=%.2f)", "TP" if is_tp else "SL", tx_hash, trigger_price_usd)
 
         except Exception as e:
             log.warning("GMX %s order failed: %s", "TP" if is_tp else "SL", e)
@@ -4065,15 +4035,18 @@ class GMXAdapter(ExchangeAdapter):
             [],
         )
 
-        try:
+        with self._nonce_lock:
+          try:
             send_wnt_data = exchange_router.functions.sendWnt(order_vault, execution_fee)._encode_transaction_data()
             create_data = exchange_router.functions.createOrder(order_params)._encode_transaction_data()
 
-            multicall_tx = exchange_router.functions.multicall(
+            base_tx = self._build_tx(value=execution_fee)
+            base_tx["to"] = exchange_router.address
+            base_tx["data"] = exchange_router.functions.multicall(
                 [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
-            ).build_transaction(self._build_tx(value=execution_fee))
+            )._encode_transaction_data()
 
-            tx_hash = self._sign_and_send(multicall_tx)
+            tx_hash = self._sign_and_send(base_tx)
 
             return {
                 "success": True,
@@ -4090,7 +4063,8 @@ class GMXAdapter(ExchangeAdapter):
                 "exchange": "GMX",
             }
 
-        except Exception as e:
+          except Exception as e:
+            self._pending_nonce = None
             log.error("GMX close_position failed: %s", e)
             return {"success": False, "error": sanitize_error(e)}
 
@@ -9405,7 +9379,7 @@ def api_execute():
     if err:
         return jsonify({"error": err}), 400
     try:
-        leverage = max(1, min(int(body.get("leverage", 1)), 500))
+        leverage = max(1, min(int(body.get("leverage", 1)), GMX_MAX_LEVERAGE))
     except (TypeError, ValueError):
         leverage = 1
     tp = body.get("tp")
@@ -10158,6 +10132,8 @@ def api_gmx_prices():
 @app.route("/api/gmx/positions")
 def api_gmx_positions():
     """Get all GMX V2 positions for the connected account with enriched data."""
+    denied = require_auth()
+    if denied: return denied
     try:
         adapter = exchange_manager.get_adapter_by_type("gmx")
         if not adapter or not adapter._initialized:
@@ -10500,14 +10476,7 @@ def api_gmx_diagnose():
     except Exception as e:
         steps["balances"] = {"ok": False, "error": str(e)}
 
-    try:
-        router_contract = adapter._contracts.get("router_contract")
-        is_approved = router_contract.functions.approvedPlugins(
-            account, ex_router.address
-        ).call()
-        steps["plugin_approval"] = {"ok": is_approved, "exchange_router": ex_router.address}
-    except Exception as e:
-        steps["plugin_approval"] = {"ok": False, "error": str(e)}
+    steps["plugin_approval"] = {"ok": True, "note": "GMX V2 does not use per-user plugin approval"}
 
     try:
         router_addr = adapter._contracts.get("router")
