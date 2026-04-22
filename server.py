@@ -3771,13 +3771,6 @@ class GMXAdapter(ExchangeAdapter):
         if not exchange_router or not order_vault or not router_addr:
             return {"success": False, "error": "GMX contracts not loaded", "exchange": "GMX"}
 
-        try:
-            approval_tx = self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
-            if approval_tx:
-                log.info("GMX ERC-20 approval tx: %s", approval_tx)
-        except Exception as e:
-            return {"success": False, "error": f"Token approval failed: {e}", "exchange": "GMX"}
-
         order_params = (
             (
                 self._account.address,
@@ -11704,25 +11697,34 @@ def api_alerts_test():
 # ===========================================================================
 
 if __name__ == "__main__":
-    init_db()
-    exchange_manager.load_from_db()
-    macro_engine.start_refresh()
+    try:
+        init_db()
+    except Exception as e:
+        log.critical("Database init failed: %s", e)
 
-    # --- Security checks at startup ---
+    try:
+        exchange_manager.load_from_db()
+    except Exception as e:
+        log.critical("Exchange load failed: %s", e)
+
+    try:
+        macro_engine.start_refresh()
+    except Exception as e:
+        log.warning("Macro engine start failed: %s", e)
+
     if not HAS_FERNET:
-        log.critical("=" * 60)
         log.critical("CRYPTOGRAPHY NOT INSTALLED — encryption disabled!")
-        log.critical("Sensitive routes (keys, wallet, exchanges) will be blocked.")
-        log.critical("Fix: pip install cryptography")
-        log.critical("=" * 60)
     else:
-        if not check_fernet_integrity():
-            log.critical("Fernet integrity check FAILED — secret.key may be corrupted")
-        else:
-            log.info("Encryption integrity check passed")
-        perms_ok, perms_str = check_key_file_permissions()
-        if not perms_ok:
-            log.warning("secret.key permissions issue: %s", perms_str)
+        try:
+            if not check_fernet_integrity():
+                log.critical("Fernet integrity check FAILED — secret.key may be corrupted")
+            else:
+                log.info("Encryption integrity check passed")
+            perms_ok, perms_str = check_key_file_permissions()
+            if not perms_ok:
+                log.warning("secret.key permissions issue: %s", perms_str)
+        except Exception as e:
+            log.warning("Security check error: %s", e)
 
     from werkzeug.serving import WSGIRequestHandler
     WSGIRequestHandler.server_version = "JARVIS"
