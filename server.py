@@ -478,13 +478,18 @@ class Cache:
     def get(self, key, ttl=30):
         with self._lock:
             entry = self._store.get(key)
-            if entry and (time.time() - entry["ts"]) < ttl:
-                return entry["data"]
+            if entry:
+                effective_ttl = entry.get("ttl", ttl)
+                if (time.time() - entry["ts"]) < effective_ttl:
+                    return entry["data"]
         return None
 
-    def set(self, key, data):
+    def set(self, key, data, ttl=None):
         with self._lock:
-            self._store[key] = {"data": data, "ts": time.time()}
+            entry = {"data": data, "ts": time.time()}
+            if ttl is not None:
+                entry["ttl"] = ttl
+            self._store[key] = entry
 
     def invalidate(self, key):
         with self._lock:
@@ -9535,7 +9540,7 @@ def api_positions():
     for p in live_pos:
         p["mode"] = "live"
 
-    return jsonify(paper_pos + live_pos)
+    return jsonify({"positions": paper_pos + live_pos})
 
 
 @app.route("/api/balance")
