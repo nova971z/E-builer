@@ -3613,34 +3613,64 @@ class GMXAdapter(ExchangeAdapter):
                 return {"success": False, "error": f"Token approval failed: {e}", "exchange": "GMX"}
 
             try:
+                log.info("GMX ORDER DEBUG: account=%s, market=%s, collateral_token=%s",
+                         self._account.address, market["market_token"], collateral_token)
+                log.info("GMX ORDER DEBUG: size_delta_usd=%s, collateral_raw=%s, acceptable_price=%s, exec_fee=%s",
+                         size_delta_usd, collateral_amount_raw, acceptable_price, execution_fee)
+                log.info("GMX ORDER DEBUG: order_vault=%s, router=%s, exchange_router=%s",
+                         order_vault, router_addr, exchange_router.address)
+
                 send_wnt_data = exchange_router.functions.sendWnt(
                     order_vault, execution_fee
                 ).build_transaction({"from": self._account.address})["data"]
+                log.info("GMX DEBUG: sendWnt calldata OK (%d bytes)", len(send_wnt_data))
 
                 send_tokens_data = exchange_router.functions.sendTokens(
                     Web3.to_checksum_address(collateral_token),
                     order_vault,
                     collateral_amount_raw
                 ).build_transaction({"from": self._account.address})["data"]
+                log.info("GMX DEBUG: sendTokens calldata OK (%d bytes)", len(send_tokens_data))
 
                 create_order_data = exchange_router.functions.createOrder(
                     order_params
                 ).build_transaction({"from": self._account.address})["data"]
+                log.info("GMX DEBUG: createOrder calldata OK (%d bytes)", len(create_order_data))
 
                 total_value = execution_fee
+                base_tx = self._build_tx(value=total_value)
+                log.info("GMX DEBUG: base_tx nonce=%s, value=%s, gas=%s", base_tx.get("nonce"), base_tx.get("value"), base_tx.get("gas"))
+
+                multicall_data = [
+                    bytes.fromhex(send_wnt_data[2:]),
+                    bytes.fromhex(send_tokens_data[2:]),
+                    bytes.fromhex(create_order_data[2:]),
+                ]
+
+                try:
+                    exchange_router.functions.multicall(multicall_data).call(
+                        {"from": self._account.address, "value": total_value}
+                    )
+                    log.info("GMX DEBUG: multicall eth_call simulation PASSED")
+                except Exception as sim_err:
+                    log.error("GMX DEBUG: multicall eth_call simulation FAILED: %s (type: %s)", sim_err, type(sim_err).__name__)
+                    if hasattr(sim_err, 'data'):
+                        log.error("GMX DEBUG: revert data: %s", sim_err.data)
+                    if hasattr(sim_err, 'message'):
+                        log.error("GMX DEBUG: revert message: %s", sim_err.message)
+                    raise
+
                 multicall_tx = exchange_router.functions.multicall(
-                    [
-                        bytes.fromhex(send_wnt_data[2:]),
-                        bytes.fromhex(send_tokens_data[2:]),
-                        bytes.fromhex(create_order_data[2:]),
-                    ]
-                ).build_transaction(self._build_tx(value=total_value))
+                    multicall_data
+                ).build_transaction(base_tx)
 
                 tx_hash = self._sign_and_send(multicall_tx)
 
             except Exception as e:
                 self._pending_nonce = None
-                log.error("GMX place_order_by_collateral failed: %s", e)
+                log.error("GMX place_order_by_collateral failed: %s (type: %s)", e, type(e).__name__)
+                if hasattr(e, 'args') and len(e.args) > 1:
+                    log.error("GMX error args: %s", e.args)
                 return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
         result = {
