@@ -109,11 +109,11 @@ GMX_RPC_MAINNET = os.environ.get("GMX_RPC_URL", "https://arb1.arbitrum.io/rpc")
 GMX_RPC_TESTNET = os.environ.get("GMX_RPC_TESTNET_URL", "https://sepolia-rollup.arbitrum.io/rpc")
 
 GMX_V2_CONTRACTS_MAINNET = {
-    "ExchangeRouter": "0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8",
+    "ExchangeRouter": "0x1C3fa76e6E1088bCE750f23a5BFcffa1efEF6A41",
     "Router": "0x7452c558d45f8afC8c83dAe62C3f8A5BE19c71f6",
-    "OrderVault": "0x31eF83a530Fde1B38deDA89C0A6c72a85DC51756",
+    "OrderVault": "0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5",
     "DataStore": "0xFD70de6b91282D8017aA4E741e9Ae325CAb992d8",
-    "Reader": "0xf60becbba223EEA9495Da3f606753867eC10d139",
+    "Reader": "0x470fbC46bcC0f16532691Df360A07d8Bf5ee0789",
     "OrderHandler": "0x352f684ab9e97a6321a13CF03A61316B681D9fD2",
 }
 
@@ -178,9 +178,9 @@ GMX_ORDER_TYPE_LIQUIDATION = 7
 GMX_DECREASE_POSITION_SWAP_TYPE = 0
 
 GMX_MAX_LEVERAGE = 50
-GMX_EXECUTION_FEE_BUFFER_WEI = 200000000000000
-GMX_DEFAULT_SLIPPAGE_BPS = 30
-GMX_CALLBACK_GAS_LIMIT = 2000000
+GMX_EXECUTION_FEE_BUFFER_WEI = 600000000000000
+GMX_DEFAULT_SLIPPAGE_BPS = 100
+GMX_CALLBACK_GAS_LIMIT = 0
 GMX_POSITION_FEE_BPS = 5
 GMX_REFERRAL_CODE = b"\x00" * 32
 
@@ -317,6 +317,7 @@ GMX_EXCHANGE_ROUTER_ABI = [
                             {"internalType": "uint256", "name": "executionFee", "type": "uint256"},
                             {"internalType": "uint256", "name": "callbackGasLimit", "type": "uint256"},
                             {"internalType": "uint256", "name": "minOutputAmount", "type": "uint256"},
+                            {"internalType": "uint256", "name": "validFromTime", "type": "uint256"},
                         ],
                         "internalType": "struct IBaseOrderUtils.CreateOrderParamsNumbers",
                         "name": "numbers",
@@ -3543,7 +3544,9 @@ class GMXAdapter(ExchangeAdapter):
         """Estimate execution fee in wei for GMX order keeper."""
         try:
             gas_price = self._w3.eth.gas_price
-            return max(gas_price * GMX_CALLBACK_GAS_LIMIT, GMX_EXECUTION_FEE_BUFFER_WEI)
+            base_gas = 1_500_000
+            estimated = int(gas_price * base_gas * 1.5)
+            return max(estimated, GMX_EXECUTION_FEE_BUFFER_WEI)
         except Exception:
             return GMX_EXECUTION_FEE_BUFFER_WEI
 
@@ -3633,6 +3636,7 @@ class GMXAdapter(ExchangeAdapter):
                 execution_fee,
                 GMX_CALLBACK_GAS_LIMIT,
                 0,
+                0,
             ),
             gmx_order_type,
             GMX_DECREASE_POSITION_SWAP_TYPE,
@@ -3693,15 +3697,30 @@ class GMXAdapter(ExchangeAdapter):
                     bytes.fromhex(create_order_data[2:]),
                 ]
 
+                log.info("GMX multicall: exec_fee=%.6f ETH, collateral=$%.2f, size=$%.2f, leverage=%dx, %s %s",
+                         execution_fee / 10**18, collateral_usd, collateral_usd * leverage, leverage,
+                         "LONG" if is_long else "SHORT", symbol)
+
                 base_tx = self._build_tx(value=total_value)
                 base_tx["to"] = exchange_router.address
                 base_tx["data"] = exchange_router.functions.multicall(multicall_data)._encode_transaction_data()
 
                 tx_hash = self._sign_and_send(base_tx)
+                log.info("GMX order submitted: tx=%s", tx_hash)
 
             except Exception as e:
                 self._pending_nonce = None
-                log.error("GMX place_order_by_collateral failed: %s (type: %s)", e, type(e).__name__)
+                err_str = str(e)
+                log.error("GMX place_order_by_collateral failed: %s (type: %s)", err_str, type(e).__name__)
+                if hasattr(e, 'data') and e.data:
+                    log.error("GMX revert data: %s", e.data)
+                    try:
+                        raw = e.data if isinstance(e.data, str) else str(e.data)
+                        if raw.startswith("0x") and len(raw) > 10:
+                            ascii_attempt = bytes.fromhex(raw[2:]).decode("ascii", errors="replace")
+                            log.error("GMX revert ASCII decode: %s", ascii_attempt)
+                    except Exception:
+                        pass
                 return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
         result = {
@@ -3814,6 +3833,7 @@ class GMXAdapter(ExchangeAdapter):
                 execution_fee,
                 GMX_CALLBACK_GAS_LIMIT,
                 0,
+                0,
             ),
             gmx_order_type,
             GMX_DECREASE_POSITION_SWAP_TYPE,
@@ -3922,6 +3942,7 @@ class GMXAdapter(ExchangeAdapter):
                     acceptable,
                     execution_fee,
                     GMX_CALLBACK_GAS_LIMIT,
+                    0,
                     0,
                 ),
                 GMX_ORDER_TYPE_LIMIT_DECREASE,
@@ -4032,6 +4053,7 @@ class GMXAdapter(ExchangeAdapter):
                 acceptable_price,
                 execution_fee,
                 GMX_CALLBACK_GAS_LIMIT,
+                0,
                 0,
             ),
             GMX_ORDER_TYPE_MARKET_DECREASE,
@@ -10418,6 +10440,90 @@ def api_gmx_health():
         health["status"] = "healthy"
 
     return jsonify(health)
+
+
+@app.route("/api/gmx/diagnose")
+def api_gmx_diagnose():
+    """Full pre-trade diagnostic: checks every requirement for placing a GMX V2 order."""
+    denied = require_auth()
+    if denied:
+        return denied
+    adapter = exchange_manager.get_adapter_by_type("gmx")
+    if not adapter or not adapter._initialized:
+        return jsonify({"error": "GMX adapter not connected", "steps": {}}), 400
+    if not adapter._has_signer():
+        return jsonify({"error": "No private key configured", "steps": {}}), 400
+
+    steps = {}
+    account = adapter._account.address
+
+    try:
+        chain_id = adapter._w3.eth.chain_id
+        block = adapter._w3.eth.block_number
+        steps["rpc"] = {"ok": True, "chain_id": chain_id, "block": block}
+    except Exception as e:
+        steps["rpc"] = {"ok": False, "error": str(e)}
+        return jsonify({"error": "RPC failed", "steps": steps})
+
+    try:
+        ex_router = adapter._contracts.get("exchange_router")
+        ov = adapter._contracts.get("order_vault")
+        code_er = adapter._w3.eth.get_code(ex_router.address)
+        code_ov = adapter._w3.eth.get_code(Web3.to_checksum_address(ov))
+        steps["contracts"] = {
+            "ok": len(code_er) > 2 and len(code_ov) > 2,
+            "exchange_router": ex_router.address,
+            "exchange_router_has_code": len(code_er) > 2,
+            "order_vault": ov,
+            "order_vault_has_code": len(code_ov) > 2,
+        }
+    except Exception as e:
+        steps["contracts"] = {"ok": False, "error": str(e)}
+
+    try:
+        eth_bal = adapter._w3.eth.get_balance(account)
+        usdc_bal = adapter._get_token_balance(GMX_V2_TOKENS["USDC"], 6)
+        exec_fee = adapter._estimate_execution_fee()
+        gas_price = adapter._w3.eth.gas_price
+        gas_cost = 1_500_000 * gas_price
+        total_eth_needed = exec_fee + gas_cost
+        steps["balances"] = {
+            "ok": eth_bal > total_eth_needed and usdc_bal > 1.0,
+            "eth_wei": eth_bal,
+            "eth": round(eth_bal / 10**18, 6),
+            "usdc": round(usdc_bal, 4),
+            "execution_fee_eth": round(exec_fee / 10**18, 6),
+            "gas_cost_eth": round(gas_cost / 10**18, 6),
+            "total_eth_needed": round(total_eth_needed / 10**18, 6),
+            "gas_price_gwei": round(gas_price / 10**9, 4),
+        }
+    except Exception as e:
+        steps["balances"] = {"ok": False, "error": str(e)}
+
+    try:
+        router_contract = adapter._contracts.get("router_contract")
+        is_approved = router_contract.functions.approvedPlugins(
+            account, ex_router.address
+        ).call()
+        steps["plugin_approval"] = {"ok": is_approved, "exchange_router": ex_router.address}
+    except Exception as e:
+        steps["plugin_approval"] = {"ok": False, "error": str(e)}
+
+    try:
+        router_addr = adapter._contracts.get("router")
+        usdc_contract = get_erc20_contract(adapter._w3, GMX_V2_TOKENS["USDC"])
+        allowance = usdc_contract.functions.allowance(account, router_addr).call()
+        steps["usdc_approval"] = {
+            "ok": allowance > 0,
+            "allowance_raw": allowance,
+            "allowance_usdc": round(allowance / 10**6, 2),
+            "router": router_addr,
+        }
+    except Exception as e:
+        steps["usdc_approval"] = {"ok": False, "error": str(e)}
+
+    all_ok = all(s.get("ok", False) for s in steps.values())
+    return jsonify({"status": "ready" if all_ok else "issues_found", "steps": steps})
 
 
 @app.route("/api/gmx/circuit-breaker", methods=["POST"])
