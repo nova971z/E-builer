@@ -586,6 +586,35 @@ def init_db():
         success INTEGER DEFAULT 1
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS bot_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        exit_price REAL,
+        size_usd REAL NOT NULL,
+        leverage REAL NOT NULL,
+        pnl_usd REAL,
+        pnl_pct REAL,
+        fees_usd REAL,
+        slippage_pct REAL,
+        duration_minutes REAL,
+        regime_at_entry TEXT,
+        regime_at_exit TEXT,
+        signal_score REAL,
+        signal_confidence REAL,
+        macro_score REAL,
+        stop_loss REAL,
+        take_profit REAL,
+        exit_reason TEXT,
+        tx_hash_open TEXT,
+        tx_hash_close TEXT,
+        notes TEXT,
+        status TEXT DEFAULT 'open'
+    )""")
+
     conn.commit()
     conn.close()
     log.info("Database initialized at %s", DB_PATH)
@@ -5030,6 +5059,12 @@ class StrategySelector:
             pf = perf.get("profit_factor", 1.0)
             wr = perf.get("win_rate", 50) / 100.0
             base *= (0.5 + 0.5 * min(pf, 3.0) / 3.0) * (0.5 + 0.5 * wr)
+        try:
+            weights = performance_tracker.get_strategy_weights()
+            if name in weights and weights[name] > 0:
+                base *= (0.5 + weights[name] * 2.0)
+        except Exception:
+            pass
         return round(base, 2)
 
     def get_applicable(self, regime):
@@ -5073,6 +5108,468 @@ class StrategySelector:
 
 
 strategy_selector = StrategySelector()
+
+
+# ---------------------------------------------------------------------------
+# Performance Tracker — institutional-grade trade analytics
+# ---------------------------------------------------------------------------
+
+class PerformanceTracker:
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    # --- record / close -----------------------------------------------------
+
+    def record_trade(self, trade_data):
+        conn = get_db()
+        try:
+            c = conn.execute(
+                """INSERT INTO bot_trades
+                   (timestamp, symbol, direction, strategy, entry_price, size_usd,
+                    leverage, regime_at_entry, signal_score, signal_confidence,
+                    macro_score, stop_loss, take_profit, tx_hash_open, notes, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (trade_data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                 trade_data.get("symbol", ""),
+                 trade_data.get("direction", ""),
+                 trade_data.get("strategy", ""),
+                 trade_data.get("entry_price", 0),
+                 trade_data.get("size_usd", 0),
+                 trade_data.get("leverage", 1),
+                 trade_data.get("regime", ""),
+                 trade_data.get("signal_score", 0),
+                 trade_data.get("signal_confidence", 0),
+                 trade_data.get("macro_score", 0),
+                 trade_data.get("stop_loss", 0),
+                 trade_data.get("take_profit", 0),
+                 trade_data.get("tx_hash", ""),
+                 trade_data.get("notes", ""),
+                 "open"))
+            conn.commit()
+            return c.lastrowid
+        except Exception as exc:
+            log.warning("[PERF] record_trade error: %s", exc)
+            return None
+        finally:
+            conn.close()
+
+    def close_trade(self, trade_id, exit_data):
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM bot_trades WHERE id=?", (trade_id,)).fetchone()
+            if not row:
+                conn.close()
+                return
+            cols = [d[0] for d in conn.execute("SELECT * FROM bot_trades LIMIT 0").description]
+            rec = dict(zip(cols, row))
+            entry_price = rec["entry_price"]
+            exit_price = exit_data.get("exit_price", 0)
+            direction = rec["direction"]
+            size_usd = rec["size_usd"]
+            leverage = rec["leverage"] or 1
+
+            if direction.upper() == "LONG":
+                pnl_pct = (exit_price - entry_price) / entry_price * 100 * leverage if entry_price else 0
+            else:
+                pnl_pct = (entry_price - exit_price) / entry_price * 100 * leverage if entry_price else 0
+            pnl_usd = size_usd * pnl_pct / 100.0
+            fees = size_usd * 0.001
+            slippage = exit_data.get("slippage_pct", 0)
+
+            entry_time = rec["timestamp"]
+            exit_time = exit_data.get("timestamp", datetime.now(timezone.utc).isoformat())
+            dur = 0
+            try:
+                t0 = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(exit_time.replace("Z", "+00:00"))
+                dur = (t1 - t0).total_seconds() / 60.0
+            except Exception:
+                pass
+
+            conn.execute(
+                """UPDATE bot_trades SET
+                    exit_price=?, pnl_usd=?, pnl_pct=?, fees_usd=?, slippage_pct=?,
+                    duration_minutes=?, regime_at_exit=?, exit_reason=?,
+                    tx_hash_close=?, status='closed'
+                   WHERE id=?""",
+                (exit_price, round(pnl_usd, 4), round(pnl_pct, 4), round(fees, 4),
+                 round(slippage, 4), round(dur, 1),
+                 exit_data.get("regime", ""),
+                 exit_data.get("exit_reason", "manual"),
+                 exit_data.get("tx_hash", ""),
+                 trade_id))
+            conn.commit()
+        except Exception as exc:
+            log.warning("[PERF] close_trade error: %s", exc)
+        finally:
+            conn.close()
+
+    # --- core metrics -------------------------------------------------------
+
+    def _query_trades(self, period="all", strategy=None, symbol=None, status="closed"):
+        conn = get_db()
+        try:
+            sql = "SELECT * FROM bot_trades WHERE status=?"
+            params = [status]
+            if strategy:
+                sql += " AND strategy=?"
+                params.append(strategy)
+            if symbol:
+                sql += " AND symbol=?"
+                params.append(symbol)
+            if period != "all":
+                days = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(period, 30)
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                sql += " AND timestamp>=?"
+                params.append(cutoff)
+            sql += " ORDER BY timestamp ASC"
+            rows = conn.execute(sql, params).fetchall()
+            cols = [d[0] for d in conn.execute("SELECT * FROM bot_trades LIMIT 0").description]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            log.warning("[PERF] _query_trades error: %s", exc)
+            return []
+        finally:
+            conn.close()
+
+    def get_summary(self, period="all", strategy=None, symbol=None):
+        trades = self._query_trades(period, strategy, symbol)
+        if not trades:
+            return {"total_trades": 0, "winners": 0, "losers": 0, "win_rate": 0,
+                    "total_pnl": 0, "average_pnl": 0, "best_trade": 0, "worst_trade": 0,
+                    "profit_factor": 0, "sharpe_ratio": 0, "sortino_ratio": 0,
+                    "max_drawdown": 0, "max_drawdown_duration_h": 0,
+                    "average_duration_min": 0, "average_leverage": 0,
+                    "total_fees": 0, "net_pnl": 0, "expectancy": 0, "calmar_ratio": 0}
+
+        pnls = [t["pnl_usd"] or 0 for t in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        total = len(pnls)
+        n_wins = len(wins)
+        n_losses = len(losses)
+        win_rate = n_wins / total * 100 if total else 0
+        gross_win = sum(wins)
+        gross_loss = sum(abs(l) for l in losses)
+        pf = gross_win / gross_loss if gross_loss > 0 else 99.0
+        total_pnl = sum(pnls)
+        avg_pnl = total_pnl / total if total else 0
+        total_fees = sum(t.get("fees_usd") or 0 for t in trades)
+        net_pnl = total_pnl - total_fees
+
+        avg_win = gross_win / n_wins if n_wins else 0
+        avg_loss = gross_loss / n_losses if n_losses else 0
+        wr_dec = n_wins / total if total else 0
+        expectancy = avg_win * wr_dec - avg_loss * (1 - wr_dec)
+
+        mean_pnl = sum(pnls) / len(pnls) if pnls else 0
+        var = sum((p - mean_pnl) ** 2 for p in pnls) / len(pnls) if pnls else 0
+        std = var ** 0.5
+        risk_free_daily = 0.04 / 365
+        sharpe = ((mean_pnl - risk_free_daily) / std * (252 ** 0.5)) if std > 0 else 0
+
+        down = [p for p in pnls if p < 0]
+        down_var = sum(p ** 2 for p in down) / len(down) if down else 0
+        down_std = down_var ** 0.5
+        sortino = ((mean_pnl - risk_free_daily) / down_std * (252 ** 0.5)) if down_std > 0 else 0
+
+        equity = 0
+        peak = 0
+        max_dd = 0
+        dd_start = 0
+        max_dd_dur = 0
+        for i, p in enumerate(pnls):
+            equity += p
+            if equity > peak:
+                peak = equity
+                dd_start = i
+            dd = peak - equity
+            if dd > max_dd:
+                max_dd = dd
+                max_dd_dur = i - dd_start
+
+        durations = [t.get("duration_minutes") or 0 for t in trades]
+        avg_dur = sum(durations) / len(durations) if durations else 0
+        leverages = [t.get("leverage") or 1 for t in trades]
+        avg_lev = sum(leverages) / len(leverages) if leverages else 1
+
+        ann_ret = total_pnl * 365 / max(1, len(pnls))
+        calmar = ann_ret / max_dd if max_dd > 0 else 0
+
+        return {
+            "total_trades": total, "winners": n_wins, "losers": n_losses,
+            "win_rate": round(win_rate, 1),
+            "total_pnl": round(total_pnl, 4), "average_pnl": round(avg_pnl, 4),
+            "best_trade": round(max(pnls), 4) if pnls else 0,
+            "worst_trade": round(min(pnls), 4) if pnls else 0,
+            "profit_factor": round(pf, 2),
+            "sharpe_ratio": round(sharpe, 2), "sortino_ratio": round(sortino, 2),
+            "max_drawdown": round(max_dd, 4),
+            "max_drawdown_duration_h": round(max_dd_dur * avg_dur / 60, 1) if avg_dur else 0,
+            "average_duration_min": round(avg_dur, 1),
+            "average_leverage": round(avg_lev, 1),
+            "total_fees": round(total_fees, 4), "net_pnl": round(net_pnl, 4),
+            "expectancy": round(expectancy, 4), "calmar_ratio": round(calmar, 2),
+        }
+
+    def get_equity_curve(self, period="30d"):
+        trades = self._query_trades(period)
+        equity = 0
+        peak = 0
+        points = []
+        for t in trades[-1000:]:
+            equity += (t["pnl_usd"] or 0)
+            if equity > peak:
+                peak = equity
+            dd_pct = ((peak - equity) / peak * 100) if peak > 0 else 0
+            points.append({
+                "timestamp": t["timestamp"],
+                "equity": round(equity, 4),
+                "drawdown_pct": round(dd_pct, 2),
+            })
+        return points
+
+    def get_by_strategy(self):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT strategy FROM bot_trades WHERE status='closed'").fetchall()
+            result = {}
+            for (strat,) in rows:
+                trades = self._query_trades(strategy=strat)
+                if not trades:
+                    continue
+                pnls = [t["pnl_usd"] or 0 for t in trades]
+                wins = [p for p in pnls if p > 0]
+                losses_abs = [abs(p) for p in pnls if p <= 0]
+                gw = sum(wins)
+                gl = sum(losses_abs)
+                result[strat] = {
+                    "trade_count": len(trades),
+                    "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0,
+                    "avg_pnl": round(sum(pnls) / len(pnls), 4) if pnls else 0,
+                    "total_pnl": round(sum(pnls), 4),
+                    "profit_factor": round(gw / gl, 2) if gl > 0 else 99.0,
+                }
+            return result
+        finally:
+            conn.close()
+
+    def get_by_symbol(self):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM bot_trades WHERE status='closed'").fetchall()
+            result = {}
+            for (sym,) in rows:
+                trades = self._query_trades(symbol=sym)
+                if not trades:
+                    continue
+                pnls = [t["pnl_usd"] or 0 for t in trades]
+                wins = [p for p in pnls if p > 0]
+                losses_abs = [abs(p) for p in pnls if p <= 0]
+                gw = sum(wins)
+                gl = sum(losses_abs)
+                result[sym] = {
+                    "trade_count": len(trades),
+                    "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0,
+                    "avg_pnl": round(sum(pnls) / len(pnls), 4) if pnls else 0,
+                    "total_pnl": round(sum(pnls), 4),
+                    "profit_factor": round(gw / gl, 2) if gl > 0 else 99.0,
+                }
+            return result
+        finally:
+            conn.close()
+
+    def get_by_hour(self):
+        trades = self._query_trades()
+        hours = {}
+        for t in trades:
+            try:
+                h = datetime.fromisoformat(t["timestamp"].replace("Z", "+00:00")).hour
+            except Exception:
+                continue
+            if h not in hours:
+                hours[h] = {"trades": 0, "pnl": 0, "wins": 0}
+            hours[h]["trades"] += 1
+            hours[h]["pnl"] += (t["pnl_usd"] or 0)
+            if (t["pnl_usd"] or 0) > 0:
+                hours[h]["wins"] += 1
+        result = {}
+        for h in range(24):
+            d = hours.get(h, {"trades": 0, "pnl": 0, "wins": 0})
+            result[str(h)] = {
+                "trades": d["trades"],
+                "pnl": round(d["pnl"], 4),
+                "win_rate": round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0,
+            }
+        return result
+
+    def get_by_regime(self):
+        trades = self._query_trades()
+        regimes = {}
+        for t in trades:
+            r = t.get("regime_at_entry") or "UNKNOWN"
+            if r not in regimes:
+                regimes[r] = {"trades": 0, "pnl": 0, "wins": 0}
+            regimes[r]["trades"] += 1
+            regimes[r]["pnl"] += (t["pnl_usd"] or 0)
+            if (t["pnl_usd"] or 0) > 0:
+                regimes[r]["wins"] += 1
+        result = {}
+        for r, d in regimes.items():
+            result[r] = {
+                "trades": d["trades"],
+                "pnl": round(d["pnl"], 4),
+                "win_rate": round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0,
+            }
+        return result
+
+    def get_streaks(self):
+        trades = self._query_trades()
+        if not trades:
+            return {"current_streak": 0, "current_type": "none",
+                    "max_win_streak": 0, "max_loss_streak": 0, "avg_streak": 0}
+        cur = 0
+        cur_type = "none"
+        max_win = 0
+        max_loss = 0
+        streaks = []
+        for t in trades:
+            p = t["pnl_usd"] or 0
+            if p > 0:
+                if cur_type == "win":
+                    cur += 1
+                else:
+                    if cur > 0:
+                        streaks.append(cur)
+                    cur = 1
+                    cur_type = "win"
+                max_win = max(max_win, cur)
+            else:
+                if cur_type == "loss":
+                    cur += 1
+                else:
+                    if cur > 0:
+                        streaks.append(cur)
+                    cur = 1
+                    cur_type = "loss"
+                max_loss = max(max_loss, cur)
+        if cur > 0:
+            streaks.append(cur)
+        return {
+            "current_streak": cur, "current_type": cur_type,
+            "max_win_streak": max_win, "max_loss_streak": max_loss,
+            "avg_streak": round(sum(streaks) / len(streaks), 1) if streaks else 0,
+        }
+
+    # --- auto-improvement ---------------------------------------------------
+
+    def get_recommendations(self):
+        recs = []
+        by_strat = self.get_by_strategy()
+        for name, data in by_strat.items():
+            if data["trade_count"] >= 10 and data["win_rate"] < 40:
+                recs.append({"type": "strategy", "severity": "high",
+                             "message": f"Strategy '{name}' has {data['win_rate']}% win rate over {data['trade_count']} trades — consider disabling",
+                             "action": f"disable_strategy:{name}"})
+            if data["trade_count"] >= 10 and data["profit_factor"] < 0.7:
+                recs.append({"type": "strategy", "severity": "high",
+                             "message": f"Strategy '{name}' profit factor is {data['profit_factor']} — unprofitable",
+                             "action": f"disable_strategy:{name}"})
+
+        by_sym = self.get_by_symbol()
+        for sym, data in by_sym.items():
+            if data["trade_count"] >= 10 and data["profit_factor"] < 0.8:
+                recs.append({"type": "symbol", "severity": "medium",
+                             "message": f"{sym} has profit factor {data['profit_factor']} — consider excluding",
+                             "action": f"exclude_symbol:{sym}"})
+
+        by_hour = self.get_by_hour()
+        bad_hours = []
+        for h, data in by_hour.items():
+            if data["trades"] >= 5 and data["pnl"] < 0 and data["win_rate"] < 30:
+                bad_hours.append(int(h))
+        if bad_hours:
+            recs.append({"type": "schedule", "severity": "medium",
+                         "message": f"Poor performance at hours (UTC): {bad_hours} — consider avoiding",
+                         "action": f"avoid_hours:{','.join(str(h) for h in bad_hours)}"})
+
+        by_regime = self.get_by_regime()
+        for regime, data in by_regime.items():
+            if data["trades"] >= 5 and data["pnl"] < 0 and data["win_rate"] < 35:
+                recs.append({"type": "regime", "severity": "high",
+                             "message": f"Regime '{regime}' is unprofitable ({data['win_rate']}% WR) — consider excluding",
+                             "action": f"exclude_regime:{regime}"})
+
+        summary = self.get_summary(period="7d")
+        if summary["max_drawdown"] > 0 and summary["total_trades"] >= 5:
+            if summary["average_leverage"] > 5 and summary["max_drawdown"] > summary["total_pnl"] * 0.5:
+                recs.append({"type": "risk", "severity": "high",
+                             "message": f"High drawdown relative to PnL with avg leverage {summary['average_leverage']}x — reduce leverage",
+                             "action": "reduce_leverage"})
+
+        return recs
+
+    def get_strategy_weights(self):
+        by_strat = self.get_by_strategy()
+        scores = {}
+        for name, data in by_strat.items():
+            tc = data["trade_count"]
+            if tc < 5:
+                scores[name] = 1.0
+                continue
+            pf = max(data["profit_factor"], 0.1)
+            wr = data["win_rate"] / 100.0
+            scores[name] = pf * wr * (tc ** 0.5)
+        total = sum(scores.values())
+        if total <= 0:
+            return {n: round(1.0 / len(scores), 3) for n in scores} if scores else {}
+        return {n: round(s / total, 3) for n, s in scores.items()}
+
+    def should_auto_adjust(self):
+        summary = self.get_summary()
+        if summary["total_trades"] < 50:
+            return {"adjust": False, "reason": f"Only {summary['total_trades']}/50 trades — too early"}
+        adjustments = []
+        by_strat = self.get_by_strategy()
+        for name, data in by_strat.items():
+            if data["trade_count"] >= 15 and data["profit_factor"] < 0.7:
+                adjustments.append({"type": "disable_strategy", "target": name,
+                                    "reason": f"PF={data['profit_factor']}"})
+        recent = self.get_summary(period="7d")
+        if recent["max_drawdown"] > 5 and recent["average_leverage"] > 3:
+            adjustments.append({"type": "reduce_leverage", "target": "global",
+                                "reason": f"DD={recent['max_drawdown']:.1f}%, Lev={recent['average_leverage']:.0f}x"})
+        return {"adjust": len(adjustments) > 0, "adjustments": adjustments}
+
+    def export_csv(self):
+        trades = self._query_trades(period="all")
+        all_trades = trades + self._query_trades(period="all", status="open")
+        if not all_trades:
+            return "﻿No trades\n"
+        cols = ["id", "timestamp", "symbol", "direction", "strategy", "entry_price",
+                "exit_price", "size_usd", "leverage", "pnl_usd", "pnl_pct", "fees_usd",
+                "slippage_pct", "duration_minutes", "regime_at_entry", "regime_at_exit",
+                "signal_score", "signal_confidence", "macro_score", "stop_loss",
+                "take_profit", "exit_reason", "status"]
+        lines = ["﻿" + ",".join(cols)]
+        for t in all_trades:
+            row = []
+            for c in cols:
+                v = t.get(c, "")
+                if v is None:
+                    v = ""
+                s = str(v)
+                if "," in s or '"' in s or "\n" in s:
+                    s = '"' + s.replace('"', '""') + '"'
+                row.append(s)
+            lines.append(",".join(row))
+        return "\n".join(lines) + "\n"
+
+
+performance_tracker = PerformanceTracker()
 
 
 # ---------------------------------------------------------------------------
@@ -6720,6 +7217,20 @@ class AutonomousEngine:
                     self._record_error(f"Position management: {exc}")
                     log.warning("[BOT] Position mgmt error | %s", exc)
 
+                if self._state["scan_count"] > 0 and self._state["scan_count"] % 60 == 0:
+                    try:
+                        adj = performance_tracker.should_auto_adjust()
+                        if adj.get("adjust") and self._config.get("auto_adjust", False):
+                            for a in adj.get("adjustments", []):
+                                if a["type"] == "disable_strategy":
+                                    log.warning("[BOT] Auto-adjust: disabling strategy %s (%s)",
+                                                a["target"], a["reason"])
+                                elif a["type"] == "reduce_leverage":
+                                    log.warning("[BOT] Auto-adjust: reduce leverage recommended (%s)",
+                                                a["reason"])
+                    except Exception:
+                        pass
+
                 elapsed = time.time() - scan_start
                 self._state["scan_count"] += 1
                 self._state["last_scan"] = datetime.now(timezone.utc).isoformat()
@@ -7024,6 +7535,23 @@ class AutonomousEngine:
                             stop_loss=sl or 0, take_profit=tp or 0,
                             trailing_pct=exit_conditions.get("trailing_pct", 0),
                             strategy=strategy, capital=balance)
+                try:
+                    pt_id = performance_tracker.record_trade({
+                        "timestamp": trade_record["time"],
+                        "symbol": symbol, "direction": direction.upper(),
+                        "strategy": strategy, "entry_price": price,
+                        "size_usd": size_usd, "leverage": leverage,
+                        "regime": signal_info.get("regime", ""),
+                        "signal_score": signal_info.get("score", 0),
+                        "signal_confidence": signal_info.get("confidence", 0),
+                        "macro_score": self._state.get("macro_score", 0),
+                        "stop_loss": sl or 0, "take_profit": tp or 0,
+                        "tx_hash": result.get("tx_hash", ""),
+                    })
+                    if pt_id:
+                        trade_record["_pt_id"] = pt_id
+                except Exception:
+                    pass
             else:
                 err = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
                 log.warning("[BOT] Trade failed | %s %s | %s", symbol, direction, err)
@@ -7070,7 +7598,8 @@ class AutonomousEngine:
                             result = self._paper.close(trade_id, current)
                             pnl = result.get("pnl", 0)
                             self._state["daily_pnl"] += pnl
-                            self._on_trade_closed(trade_id, pnl, "force_close")
+                            self._on_trade_closed(trade_id, pnl, "force_close",
+                                                 exit_price=current, exit_reason="CB", symbol=symbol)
                             log.info("[BOT] Force-close | %s | pnl=%.4f", symbol, pnl)
                 except Exception as exc:
                     log.warning("[BOT] Force-close error %s: %s", pos.get("symbol", "?"), exc)
@@ -7125,7 +7654,8 @@ class AutonomousEngine:
                         pnl = result.get("pnl", 0)
                         self._state["daily_pnl"] += pnl
                         strat_name = self._pm._positions.get(trade_id, {}).get("strategy", "")
-                        self._on_trade_closed(trade_id, pnl, strat_name)
+                        self._on_trade_closed(trade_id, pnl, strat_name,
+                                             exit_price=current, exit_reason=close_reason, symbol=symbol)
                         log.info("[BOT] Closed | %s %s | pnl=%.4f | %s | strategy=%s",
                                  side, symbol, pnl, close_reason, strat_name)
                     continue
@@ -7177,7 +7707,8 @@ class AutonomousEngine:
                     result = self._paper.close(trade_id, current)
                     pnl = result.get("pnl", 0)
                     self._state["daily_pnl"] += pnl
-                    self._on_trade_closed(trade_id, pnl, strat_name)
+                    self._on_trade_closed(trade_id, pnl, strat_name,
+                                         exit_price=current, exit_reason=close_reason, symbol=symbol)
                     log.info("[BOT] Closed position | %s %s | pnl=%.4f | %s | strategy=%s",
                              side, symbol, pnl, close_reason, strat_name)
 
@@ -7261,8 +7792,9 @@ class AutonomousEngine:
             if len(self._state["errors"]) > 100:
                 self._state["errors"] = self._state["errors"][-100:]
 
-    def _on_trade_closed(self, trade_id, pnl, strat_name):
-        """Central handler for trade close: update CB, PM, strategy tracker."""
+    def _on_trade_closed(self, trade_id, pnl, strat_name,
+                         exit_price=0, exit_reason="manual", symbol=""):
+        """Central handler for trade close: update CB, PM, strategy tracker, perf tracker."""
         if pnl < 0:
             self._state["last_loss_time"] = time.time()
             if self._cb:
@@ -7274,6 +7806,38 @@ class AutonomousEngine:
             strategy_selector.record_result(strat_name, pnl)
         if self._pm:
             self._pm.remove_position(trade_id)
+        try:
+            pt_id = self._find_pt_id(trade_id, symbol)
+            if pt_id:
+                regime = self._state.get("_last_regime", "")
+                performance_tracker.close_trade(pt_id, {
+                    "exit_price": exit_price,
+                    "exit_reason": exit_reason,
+                    "regime": regime,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except Exception:
+            pass
+
+    def _find_pt_id(self, trade_id, symbol):
+        """Find performance_tracker bot_trades id for a given paper trade."""
+        with self._lock:
+            for t in reversed(self._trade_log):
+                if t.get("_pt_id") and t.get("symbol") == symbol:
+                    return t["_pt_id"]
+                r = t.get("result")
+                if isinstance(r, dict) and r.get("trade_id") == trade_id and t.get("_pt_id"):
+                    return t["_pt_id"]
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM bot_trades WHERE symbol=? AND status='open' ORDER BY id DESC LIMIT 1",
+                (symbol,)).fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+        finally:
+            conn.close()
 
     def _record_price(self, symbol, price):
         """Track recent prices per symbol for flash crash detection."""
@@ -10309,6 +10873,64 @@ def api_execution_pending():
     if not smart_executor:
         return jsonify({"error": "SmartExecutionEngine not available"}), 503
     return jsonify({"pending_orders": smart_executor.get_pending_orders()})
+
+
+# ---------------------------------------------------------------------------
+# Performance Tracking routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/performance")
+@rate_limit("bot")
+def api_performance():
+    period = request.args.get("period", "all")
+    strategy = request.args.get("strategy")
+    symbol = request.args.get("symbol")
+    summary = performance_tracker.get_summary(period, strategy, symbol)
+    streaks = performance_tracker.get_streaks()
+    summary["streaks"] = streaks
+    return jsonify(summary)
+
+
+@app.route("/api/performance/equity")
+@rate_limit("bot")
+def api_performance_equity():
+    period = request.args.get("period", "30d")
+    points = performance_tracker.get_equity_curve(period)
+    return jsonify({"points": points, "count": len(points)})
+
+
+@app.route("/api/performance/breakdown")
+@rate_limit("bot")
+def api_performance_breakdown():
+    return jsonify({
+        "by_strategy": performance_tracker.get_by_strategy(),
+        "by_symbol": performance_tracker.get_by_symbol(),
+        "by_hour": performance_tracker.get_by_hour(),
+        "by_regime": performance_tracker.get_by_regime(),
+    })
+
+
+@app.route("/api/performance/recommendations")
+@rate_limit("bot")
+def api_performance_recommendations():
+    recs = performance_tracker.get_recommendations()
+    weights = performance_tracker.get_strategy_weights()
+    auto = performance_tracker.should_auto_adjust()
+    return jsonify({
+        "recommendations": recs,
+        "strategy_weights": weights,
+        "auto_adjust": auto,
+    })
+
+
+@app.route("/api/performance/export")
+def api_performance_export():
+    csv_data = performance_tracker.export_csv()
+    return app.response_class(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=jarvis_trades.csv"})
 
 
 # ===========================================================================

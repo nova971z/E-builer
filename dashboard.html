@@ -2621,6 +2621,31 @@ button:active { opacity: 0.7; }
 .bot-log-entry.error { color: #f44336; }
 .bot-log-entry.trade { color: var(--accent); }
 
+/* Performance Tab */
+.perf-metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 8px 0; }
+.perf-metric { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-sm); padding: 8px; text-align: center; }
+.perf-metric .pm-val { font-size: 16px; font-weight: 700; color: var(--text); }
+.perf-metric .pm-lbl { font-size: 9px; color: var(--text-dim); text-transform: uppercase; margin-top: 2px; }
+.perf-metric.good .pm-val { color: var(--green); }
+.perf-metric.bad .pm-val { color: var(--red); }
+.perf-equity-chart { width: 100%; height: 140px; background: #0a0a0a; border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-sm); margin: 8px 0; position: relative; }
+.perf-heatmap { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; margin: 8px 0; }
+.perf-heatmap-cell { aspect-ratio: 1; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 600; color: rgba(255,255,255,0.7); cursor: default; position: relative; }
+.perf-heatmap-cell:hover::after { content: attr(data-tooltip); position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); background: var(--surface-2); color: var(--text); padding: 3px 6px; border-radius: 4px; font-size: 9px; white-space: nowrap; z-index: 10; pointer-events: none; }
+.perf-recs { max-height: 120px; overflow-y: auto; }
+.perf-rec { padding: 6px 8px; margin: 4px 0; border-radius: var(--radius-sm); font-size: 11px; border-left: 3px solid var(--text-dim); background: rgba(255,255,255,0.02); }
+.perf-rec.high { border-left-color: var(--red); }
+.perf-rec.medium { border-left-color: var(--yellow); }
+.perf-rec.low { border-left-color: var(--green); }
+.perf-strat-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 11px; }
+.perf-strat-row .psr-name { width: 100px; color: var(--text-dim); }
+.perf-strat-row .psr-bar { flex: 1; height: 14px; background: rgba(255,255,255,0.04); border-radius: 7px; overflow: hidden; position: relative; }
+.perf-strat-row .psr-fill { height: 100%; border-radius: 7px; transition: width 0.3s; }
+.perf-strat-row .psr-val { width: 60px; text-align: right; font-weight: 600; font-size: 10px; }
+.perf-period-btns { display: flex; gap: 4px; margin-bottom: 8px; }
+.perf-period-btns button { padding: 3px 8px; border: 1px solid rgba(255,255,255,0.1); border-radius: var(--radius-sm); background: transparent; color: var(--text-dim); font-size: 10px; cursor: pointer; }
+.perf-period-btns button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
 </style>
 </head>
 <body>
@@ -2926,6 +2951,7 @@ button:active { opacity: 0.7; }
     <div class="sd-tabs">
         <button class="active" onclick="switchDrawerTab('trade')">Trade</button>
         <button onclick="switchDrawerTab('bot')">Bot</button>
+        <button onclick="switchDrawerTab('perf')">Perf</button>
         <button onclick="switchDrawerTab('info')">Info</button>
     </div>
     <div class="sd-body">
@@ -3125,6 +3151,58 @@ button:active { opacity: 0.7; }
                     <button onclick="sendDrawerJarvis()" style="padding:8px 12px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#000;font-weight:600;font-size:12px;cursor:pointer">Go</button>
                 </div>
                 <div id="sd-jarvis-reply" style="margin-top:8px;font-size:11px;color:var(--text-dim);max-height:150px;overflow-y:auto"></div>
+            </div>
+        </div>
+        <!-- PERFORMANCE TAB -->
+        <div class="sd-tab-content" id="sd-tab-perf" style="display:none">
+
+            <div class="perf-period-btns">
+                <button class="active" onclick="setPerfPeriod('all',this)">All</button>
+                <button onclick="setPerfPeriod('7d',this)">7D</button>
+                <button onclick="setPerfPeriod('30d',this)">30D</button>
+                <button onclick="setPerfPeriod('90d',this)">90D</button>
+                <button onclick="exportPerfCSV()" style="margin-left:auto;background:var(--surface-2);color:var(--text)">&#8681; CSV</button>
+            </div>
+
+            <!-- Key Metrics -->
+            <div class="sd-section">
+                <div class="sd-section-title">Key Metrics</div>
+                <div class="perf-metrics-grid">
+                    <div class="perf-metric" id="pm-winrate"><div class="pm-val">--</div><div class="pm-lbl">Win Rate</div></div>
+                    <div class="perf-metric" id="pm-pf"><div class="pm-val">--</div><div class="pm-lbl">Profit Factor</div></div>
+                    <div class="perf-metric" id="pm-sharpe"><div class="pm-val">--</div><div class="pm-lbl">Sharpe</div></div>
+                    <div class="perf-metric" id="pm-sortino"><div class="pm-val">--</div><div class="pm-lbl">Sortino</div></div>
+                    <div class="perf-metric" id="pm-pnl"><div class="pm-val">--</div><div class="pm-lbl">Net PnL</div></div>
+                    <div class="perf-metric" id="pm-mdd"><div class="pm-val">--</div><div class="pm-lbl">Max DD</div></div>
+                    <div class="perf-metric" id="pm-trades"><div class="pm-val">--</div><div class="pm-lbl">Trades</div></div>
+                    <div class="perf-metric" id="pm-expect"><div class="pm-val">--</div><div class="pm-lbl">Expectancy</div></div>
+                </div>
+            </div>
+
+            <!-- Equity Curve -->
+            <div class="sd-section" style="margin-top:8px">
+                <div class="sd-section-title">Equity Curve</div>
+                <div class="perf-equity-chart" id="perf-equity-chart"></div>
+            </div>
+
+            <!-- Strategy Breakdown -->
+            <div class="sd-section" style="margin-top:8px">
+                <div class="sd-section-title">By Strategy</div>
+                <div id="perf-by-strategy"></div>
+            </div>
+
+            <!-- Hour Heatmap -->
+            <div class="sd-section" style="margin-top:8px">
+                <div class="sd-section-title">PnL by Hour (UTC)</div>
+                <div class="perf-heatmap" id="perf-heatmap"></div>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="sd-section" style="margin-top:8px">
+                <div class="sd-section-title">Recommendations</div>
+                <div class="perf-recs" id="perf-recs">
+                    <div style="font-size:10px;color:var(--text-dim)">No data yet</div>
+                </div>
             </div>
         </div>
         <!-- INFO TAB -->
@@ -7217,6 +7295,7 @@ function switchDrawerTab(tab) {
     var target = $('sd-tab-' + tab);
     if (target) target.style.display = '';
     switchDrawerTabBot(tab === 'bot');
+    switchPerfTab(tab === 'perf');
 }
 
 // ========== BOT CONTROL PANEL ==========
@@ -8077,6 +8156,186 @@ function setBotPeriod(period) {
     document.querySelectorAll('#bot-period-tabs button').forEach(function(b) { b.classList.remove('active'); });
     event.target.classList.add('active');
     loadBotPerformance();
+}
+
+// ========== PERFORMANCE TAB ==========
+
+var _perfTabActive = false;
+var _perfIntervals = [];
+var _perfPeriod = 'all';
+var _perfEquityChart = null;
+var _perfEquitySeries = null;
+
+function switchPerfTab(isPerf) {
+    _perfTabActive = isPerf;
+    if (isPerf && _perfIntervals.length === 0) {
+        loadPerfSummary();
+        loadPerfBreakdown();
+        loadPerfEquity();
+        loadPerfRecommendations();
+        _perfIntervals.push(setInterval(loadPerfSummary, 30000));
+        _perfIntervals.push(setInterval(loadPerfBreakdown, 60000));
+        _perfIntervals.push(setInterval(loadPerfEquity, 60000));
+        _perfIntervals.push(setInterval(loadPerfRecommendations, 120000));
+    } else if (!isPerf) {
+        _perfIntervals.forEach(function(id) { clearInterval(id); });
+        _perfIntervals = [];
+    }
+}
+
+function setPerfPeriod(p, btn) {
+    _perfPeriod = p;
+    document.querySelectorAll('.perf-period-btns button').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    loadPerfSummary();
+    loadPerfBreakdown();
+    loadPerfEquity();
+}
+
+function loadPerfSummary() {
+    fetch(API + '/api/performance?period=' + _perfPeriod).then(function(r) { return r.json(); }).then(function(d) {
+        function setMetric(id, val, cls) {
+            var el = $(id);
+            if (!el) return;
+            el.querySelector('.pm-val').textContent = val;
+            el.className = 'perf-metric ' + (cls || '');
+        }
+        setMetric('pm-winrate', (d.win_rate || 0).toFixed(1) + '%', d.win_rate >= 50 ? 'good' : d.win_rate > 0 ? 'bad' : '');
+        setMetric('pm-pf', (d.profit_factor || 0).toFixed(2), d.profit_factor >= 1 ? 'good' : d.profit_factor > 0 ? 'bad' : '');
+        setMetric('pm-sharpe', (d.sharpe_ratio || 0).toFixed(2), d.sharpe_ratio >= 1 ? 'good' : d.sharpe_ratio >= 0 ? '' : 'bad');
+        setMetric('pm-sortino', (d.sortino_ratio || 0).toFixed(2), d.sortino_ratio >= 1 ? 'good' : d.sortino_ratio >= 0 ? '' : 'bad');
+        var netPnl = d.net_pnl || 0;
+        setMetric('pm-pnl', (netPnl >= 0 ? '+' : '') + '$' + Math.abs(netPnl).toFixed(2), netPnl >= 0 ? 'good' : 'bad');
+        setMetric('pm-mdd', '$' + (d.max_drawdown || 0).toFixed(2), 'bad');
+        setMetric('pm-trades', String(d.total_trades || 0), '');
+        var exp = d.expectancy || 0;
+        setMetric('pm-expect', (exp >= 0 ? '+' : '') + '$' + Math.abs(exp).toFixed(4), exp >= 0 ? 'good' : 'bad');
+    }).catch(function(e) { console.warn('loadPerfSummary:', e); });
+}
+
+function initPerfEquityChart() {
+    var container = $('perf-equity-chart');
+    if (!container || _perfEquityChart) return;
+    _perfEquityChart = LightweightCharts.createChart(container, {
+        layout: { background: { color: 'transparent' }, textColor: '#8b95a5', fontSize: 10 },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
+        timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true },
+        crosshair: { horzLine: { color: 'rgba(56,189,248,0.3)' }, vertLine: { color: 'rgba(56,189,248,0.3)' } },
+        handleScroll: { vertTouchDrag: false },
+        width: container.clientWidth,
+        height: container.clientHeight,
+    });
+    _perfEquitySeries = _perfEquityChart.addAreaSeries({
+        topColor: 'rgba(56,189,248,0.35)',
+        bottomColor: 'rgba(56,189,248,0.02)',
+        lineColor: '#38bdf8',
+        lineWidth: 2,
+        priceFormat: { type: 'custom', formatter: function(v) { return '$' + v.toFixed(2); } },
+    });
+    new ResizeObserver(function() {
+        _perfEquityChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    }).observe(container);
+}
+
+function loadPerfEquity() {
+    initPerfEquityChart();
+    fetch(API + '/api/performance/equity?period=' + _perfPeriod).then(function(r) { return r.json(); }).then(function(d) {
+        if (!_perfEquitySeries || !d.points || d.points.length === 0) return;
+        var pts = [];
+        for (var i = 0; i < d.points.length; i++) {
+            var p = d.points[i];
+            try {
+                var ts = new Date(p.timestamp).getTime() / 1000;
+                if (ts > 0) pts.push({ time: epochToLocal(ts), value: p.equity });
+            } catch(e) {}
+        }
+        if (pts.length > 0) _perfEquitySeries.setData(pts);
+    }).catch(function(e) { console.warn('loadPerfEquity:', e); });
+}
+
+function loadPerfBreakdown() {
+    fetch(API + '/api/performance/breakdown').then(function(r) { return r.json(); }).then(function(d) {
+        renderPerfStrategies(d.by_strategy || {});
+        renderPerfHeatmap(d.by_hour || {});
+    }).catch(function(e) { console.warn('loadPerfBreakdown:', e); });
+}
+
+function renderPerfStrategies(byStrat) {
+    var el = $('perf-by-strategy');
+    if (!el) return;
+    var names = Object.keys(byStrat);
+    if (names.length === 0) {
+        el.innerHTML = '<div style="font-size:10px;color:var(--text-dim)">No data yet</div>';
+        return;
+    }
+    var maxTrades = 1;
+    names.forEach(function(n) { maxTrades = Math.max(maxTrades, byStrat[n].trade_count); });
+    var html = '';
+    names.forEach(function(n) {
+        var s = byStrat[n];
+        var wr = s.win_rate || 0;
+        var pf = s.profit_factor || 0;
+        var pnl = s.total_pnl || 0;
+        var barW = Math.max(2, (s.trade_count / maxTrades) * 100);
+        var barColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        html += '<div class="perf-strat-row">';
+        html += '<span class="psr-name">' + n + '</span>';
+        html += '<div class="psr-bar"><div class="psr-fill" style="width:' + barW + '%;background:' + barColor + '"></div></div>';
+        html += '<span class="psr-val" style="color:' + barColor + '">' + wr.toFixed(0) + '% / ' + pf.toFixed(1) + '</span>';
+        html += '</div>';
+    });
+    el.innerHTML = html;
+}
+
+function renderPerfHeatmap(byHour) {
+    var el = $('perf-heatmap');
+    if (!el) return;
+    var pnls = [];
+    for (var h = 0; h < 24; h++) {
+        var d = byHour[String(h)] || { trades: 0, pnl: 0, win_rate: 0 };
+        pnls.push({ hour: h, pnl: d.pnl, trades: d.trades, wr: d.win_rate });
+    }
+    var maxAbs = 1;
+    pnls.forEach(function(p) { maxAbs = Math.max(maxAbs, Math.abs(p.pnl)); });
+    var html = '';
+    pnls.forEach(function(p) {
+        var intensity = Math.min(1, Math.abs(p.pnl) / maxAbs);
+        var bg;
+        if (p.trades === 0) {
+            bg = 'rgba(255,255,255,0.03)';
+        } else if (p.pnl >= 0) {
+            bg = 'rgba(76,175,80,' + (0.15 + intensity * 0.6) + ')';
+        } else {
+            bg = 'rgba(244,67,54,' + (0.15 + intensity * 0.6) + ')';
+        }
+        var tip = p.hour + ':00 UTC | ' + p.trades + ' trades | $' + p.pnl.toFixed(2) + ' | WR:' + p.wr.toFixed(0) + '%';
+        html += '<div class="perf-heatmap-cell" style="background:' + bg + '" data-tooltip="' + tip + '">' + p.hour + '</div>';
+    });
+    el.innerHTML = html;
+}
+
+function loadPerfRecommendations() {
+    fetch(API + '/api/performance/recommendations').then(function(r) { return r.json(); }).then(function(d) {
+        var el = $('perf-recs');
+        if (!el) return;
+        var recs = d.recommendations || [];
+        if (recs.length === 0) {
+            el.innerHTML = '<div style="font-size:10px;color:var(--text-dim)">No recommendations — keep trading</div>';
+            return;
+        }
+        var html = '';
+        recs.forEach(function(r) {
+            html += '<div class="perf-rec ' + (r.severity || 'low') + '">';
+            html += '<strong>' + r.type.toUpperCase() + ':</strong> ' + r.message;
+            html += '</div>';
+        });
+        el.innerHTML = html;
+    }).catch(function(e) { console.warn('loadPerfRecs:', e); });
+}
+
+function exportPerfCSV() {
+    window.open(API + '/api/performance/export', '_blank');
 }
 
 // ========== THEME TOGGLE ==========
