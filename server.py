@@ -9391,6 +9391,20 @@ def api_execute():
         leverage = 1
     tp = body.get("tp")
     sl = body.get("sl")
+    if tp is not None:
+        try:
+            tp = float(tp)
+            if tp <= 0:
+                tp = None
+        except (TypeError, ValueError):
+            tp = None
+    if sl is not None:
+        try:
+            sl = float(sl)
+            if sl <= 0:
+                sl = None
+        except (TypeError, ValueError):
+            sl = None
     mode = body.get("mode", "live")
     requested_exchange = body.get("exchange", "").lower()
 

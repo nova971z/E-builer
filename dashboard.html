@@ -5436,6 +5436,9 @@ async function executeOrder(side) {
         exchange: 'gmx',
     };
     if (orderType !== 'market' && price) body.price = price;
+    if (body.exchange === 'gmx' && qtyUnit === 'usdt') {
+        body.collateral_usd = rawQty;
+    }
 
     // Advanced order fields
     if (orderType === 'oco') {
