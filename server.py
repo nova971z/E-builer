@@ -3311,6 +3311,7 @@ class GMXAdapter(ExchangeAdapter):
         return {
             "from": address,
             "nonce": nonce,
+            "gas": 1500000,
             "maxFeePerGas": gas_price * 2,
             "maxPriorityFeePerGas": self._w3.to_wei(0.1, "gwei"),
             "value": value,
@@ -3665,16 +3666,37 @@ class GMXAdapter(ExchangeAdapter):
                 )._encode_transaction_data()
 
                 total_value = execution_fee
-                multicall_tx = exchange_router.functions.multicall([
+                multicall_data = [
                     bytes.fromhex(send_wnt_data[2:]),
                     bytes.fromhex(create_order_data[2:]),
-                ]).build_transaction(self._build_tx(value=total_value))
+                ]
+
+                try:
+                    result_data = exchange_router.functions.multicall(multicall_data).call(
+                        {"from": self._account.address, "value": total_value}
+                    )
+                    log.info("GMX: multicall simulation PASSED: %s", result_data)
+                except Exception as sim_err:
+                    err_str = str(sim_err)
+                    log.error("GMX: multicall simulation FAILED: %s", err_str)
+                    if hasattr(sim_err, 'data') and sim_err.data:
+                        raw = sim_err.data if isinstance(sim_err.data, str) else str(sim_err.data)
+                        if len(raw) > 10:
+                            selector = raw[:10] if raw.startswith('0x') else raw[:8]
+                            log.error("GMX: error selector=%s, full_data_len=%d", selector, len(raw))
+                            ascii_part = bytes.fromhex(raw[2:] if raw.startswith('0x') else raw).decode('ascii', errors='ignore')
+                            log.error("GMX: decoded ASCII in revert: %s", ascii_part.strip())
+                    raise
+
+                multicall_tx = exchange_router.functions.multicall(
+                    multicall_data
+                ).build_transaction(self._build_tx(value=total_value))
 
                 tx_hash = self._sign_and_send(multicall_tx)
 
             except Exception as e:
                 self._pending_nonce = None
-                log.error("GMX place_order_by_collateral failed: %s (type: %s)", e, type(e).__name__)
+                log.error("GMX place_order_by_collateral final error: %s (type: %s)", e, type(e).__name__)
                 return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
 
         result = {
