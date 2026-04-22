@@ -5016,23 +5016,29 @@ async function loadPositions() {
 
         for (let i = 0; i < positions.length; i++) {
             const p = positions[i];
-            const sideClass = p.side === 'LONG' ? 'col-long' : 'col-short';
-            const pnl = p.unrealized_pnl || 0;
-            const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
-            const roe = p.roe_pct || 0;
+            var side = (p.side || '').toUpperCase();
+            var size = p.size || p.size_usd || (p.quantity * (p.entry_price || 0));
+            var markPrice = p.mark_price || p.current_price || p.entry_price || 0;
+            var liqPrice = p.liq_price || p.liquidation_price || 0;
+            var margin = p.margin || p.collateral_usd || 0;
+            var unrealizedPnl = p.unrealized_pnl || p.pnl || 0;
+            var roePct = p.roe_pct || p.pnl_pct || 0;
+            var posId = p.id || p.market_address || p.symbol;
+            const sideClass = side === 'LONG' ? 'col-long' : 'col-short';
+            const pnlClass = unrealizedPnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
 
             html += '<tr>'
                 + '<td class="col-symbol">' + escapeHtml(p.symbol) + '</td>'
-                + '<td class="' + sideClass + '">' + escapeHtml(p.side) + '</td>'
-                + '<td>' + fmt(p.size, 4) + '</td>'
+                + '<td class="' + sideClass + '">' + escapeHtml(side) + '</td>'
+                + '<td>' + fmt(size, 4) + '</td>'
                 + '<td>' + fmt(p.entry_price) + '</td>'
-                + '<td>' + fmt(p.mark_price || p.entry_price) + '</td>'
-                + '<td>' + fmt(p.liq_price || 0) + '</td>'
-                + '<td>' + fmt(p.margin || 0, 2) + '</td>'
-                + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
-                + '<td class="' + pnlClass + '">' + (roe >= 0 ? '+' : '') + roe.toFixed(2) + '%</td>'
+                + '<td>' + fmt(markPrice) + '</td>'
+                + '<td>' + fmt(liqPrice) + '</td>'
+                + '<td>' + fmt(margin, 2) + '</td>'
+                + '<td class="' + pnlClass + '">' + (unrealizedPnl >= 0 ? '+' : '') + fmt(unrealizedPnl, 2) + '</td>'
+                + '<td class="' + pnlClass + '">' + (roePct >= 0 ? '+' : '') + roePct.toFixed(2) + '%</td>'
                 + '<td>' + (p.tp ? fmt(p.tp) : '--') + '/' + (p.sl ? fmt(p.sl) : '--') + '</td>'
-                + '<td><button class="btn-close-pos" onclick="closePosition(\'' + escapeHtml(p.id) + '\')">Close</button></td>'
+                + '<td><button class="btn-close-pos" onclick="closePosition(\'' + escapeHtml(posId) + '\', \'' + escapeHtml(p.symbol) + '\')">Close</button></td>'
                 + '</tr>';
         }
         html += '</tbody></table>';
