@@ -7259,7 +7259,7 @@ function executeGMXOrder(side) {
 
     fetch('/api/execute', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken},
         body: JSON.stringify(payload)
     }).then(function(r) {
         if (r.status === 429) { showToast('Rate limited — wait a moment', 'error'); throw new Error('rate limited'); }
@@ -7290,7 +7290,7 @@ function closeGMXPosition(symbol) {
     showToast('Closing ' + symbol + '...', 'info', 5000);
     fetch('/api/close', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken},
         body: JSON.stringify({symbol: symbol, exchange: 'gmx', mode: 'live'})
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.success) {
