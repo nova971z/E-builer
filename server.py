@@ -7335,7 +7335,7 @@ class AutonomousEngine:
 
         self._config = {
             "enabled": False,
-            "mode": "paper",
+            "mode": "live",
             "scan_interval": 120,
             "symbols": ["BTCUSDT", "ETHUSDT"],
             "max_concurrent_positions": 2,
@@ -8862,11 +8862,36 @@ def api_news():
     if cached:
         return jsonify(cached)
 
-    feeds = [
-        {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss"},
-        {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
-        {"name": "CryptoNews", "url": "https://cryptonews.com/news/feed/"},
+    category = request.args.get("category", "all")
+
+    crypto_feeds = [
+        {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss", "cat": "crypto"},
+        {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "cat": "crypto"},
+        {"name": "CryptoNews", "url": "https://cryptonews.com/news/feed/", "cat": "crypto"},
+        {"name": "Bitcoin Magazine", "url": "https://bitcoinmagazine.com/feed", "cat": "crypto"},
+        {"name": "The Block", "url": "https://www.theblock.co/rss.xml", "cat": "crypto"},
+        {"name": "Decrypt", "url": "https://decrypt.co/feed", "cat": "crypto"},
     ]
+    finance_feeds = [
+        {"name": "CNBC Markets", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258", "cat": "finance"},
+        {"name": "Bloomberg Markets", "url": "https://feeds.bloomberg.com/markets/news.rss", "cat": "finance"},
+        {"name": "Reuters Business", "url": "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best", "cat": "finance"},
+        {"name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories", "cat": "finance"},
+    ]
+    geo_feeds = [
+        {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "cat": "geopolitical"},
+        {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "cat": "geopolitical"},
+        {"name": "Reuters World", "url": "https://www.reutersagency.com/feed/?best-topics=political-general&post_type=best", "cat": "geopolitical"},
+    ]
+
+    if category == "crypto":
+        feeds = crypto_feeds
+    elif category == "finance":
+        feeds = finance_feeds
+    elif category == "geopolitical":
+        feeds = geo_feeds
+    else:
+        feeds = crypto_feeds + finance_feeds + geo_feeds
 
     articles = []
     for feed in feeds:
@@ -8875,12 +8900,14 @@ def api_news():
             if resp.status_code != 200:
                 continue
             items = _parse_rss_minimal(resp.text, feed["name"])
+            for item in items:
+                item["category"] = feed.get("cat", "crypto")
             articles.extend(items)
         except Exception as e:
             log.warning("RSS %s failed: %s", feed["name"], e)
 
     articles.sort(key=lambda a: a.get("pub_date", ""), reverse=True)
-    result = articles[:30]
+    result = articles[:50]
     cache.set(cache_key, result)
     return jsonify(result)
 
@@ -9096,7 +9123,8 @@ def api_execute():
         leverage = 1
     tp = body.get("tp")
     sl = body.get("sl")
-    mode = body.get("mode", "paper")
+    mode = body.get("mode", "live")
+    requested_exchange = body.get("exchange", "").lower()
 
     if side not in ("long", "short", "buy", "sell"):
         return jsonify({"error": "Invalid side"}), 400
@@ -9155,7 +9183,6 @@ def api_execute():
                     (symbol, trade_side, "limit", "iceberg", slice_qty, price, leverage, status_val, parent_id, i),
                 )
                 order_ids.append(cur.lastrowid)
-            paper_trader.execute(symbol, trade_side, slice_qty, price, leverage, tp, sl)
 
         elif order_type == "dca":
             levels = int(body.get("levels", 5))
@@ -9174,54 +9201,14 @@ def api_execute():
                     (symbol, trade_side, "limit", "dca", level_qty, level_price, leverage, status_val, parent_id, i),
                 )
                 order_ids.append(cur.lastrowid)
-            first_qty = quantity * (weights[0] / total_weight)
-            paper_trader.execute(symbol, trade_side, first_qty, price, leverage, tp, sl)
 
         conn.commit()
         conn.close()
         log_audit("trade_executed", f"{order_type} {symbol} {side} qty={quantity}")
-        return jsonify({"success": True, "order_ids": order_ids, "type": order_type, "mode": "paper"})
+        return jsonify({"success": True, "order_ids": order_ids, "type": order_type, "mode": "live"})
 
-    # Paper trading (standard limit/market)
-    if mode == "paper":
-        trade_side = "long" if side in ("long", "buy") else "short"
-        result = paper_trader.execute(symbol, trade_side, quantity, price, leverage, tp, sl)
-
-        # Log to journal
-        conn = get_db()
-        conn.execute(
-            "INSERT INTO trade_journal (symbol, action, reason, signal_score, confidence, regime) VALUES (?, ?, ?, ?, ?, ?)",
-            (symbol, f"paper_{trade_side}", f"Paper {order_type} order", 0, 0, ""),
-        )
-        conn.commit()
-        conn.close()
-
-        log_audit("trade_executed", f"paper {trade_side} {symbol} qty={quantity} @{price}")
-        return jsonify(result)
-
-    # Live trading
-    status = paper_trader.get_status()
-    if not status["is_live_allowed"]:
-        return jsonify({
-            "error": f"Live trading requires {status['required']} paper trades. Current: {status['total_trades']}",
-            "remaining": status["remaining"],
-        }), 403
-
-    # Micro position validation
-    balance = 1000
-    balances = exchange_manager.get_all_balances()
-    for b in balances:
-        if "total_usdt" in b:
-            balance = b["total_usdt"]
-            break
-
-    validation = micro_engine.validate_order(symbol, side, quantity, price, leverage, balance)
-    if not validation["valid"]:
-        return jsonify({"error": "Position validation failed", "issues": validation["issues"]}), 400
-
-    # Route to exchange
+    # Route to exchange — live execution
     ccxt_side = "buy" if side in ("long", "buy") else "sell"
-    requested_exchange = body.get("exchange", "").lower()
 
     if requested_exchange == "gmx":
         adapter = exchange_manager.get_adapter_by_type("gmx")
@@ -9231,9 +9218,20 @@ def api_execute():
         adapter = None
 
     if not adapter:
-        return jsonify({"error": "No exchange configured. Add one in Settings or connect GMX wallet."}), 400
+        return jsonify({"error": "No exchange configured. Connect GMX wallet first."}), 400
+
     result = adapter.place_order(symbol, ccxt_side, order_type, quantity, price if order_type == "limit" else None, leverage, tp, sl)
-    log_audit("trade_executed", f"live {side} {symbol} qty={quantity} @{price}")
+
+    if isinstance(result, dict) and result.get("success"):
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO trade_journal (symbol, action, reason, signal_score, confidence, regime) VALUES (?, ?, ?, ?, ?, ?)",
+            (symbol, f"live_{ccxt_side}", f"Live {order_type} via {requested_exchange or 'default'}", 0, 0, ""),
+        )
+        conn.commit()
+        conn.close()
+
+    log_audit("trade_executed", f"live {side} {symbol} qty={quantity} @{price} via {requested_exchange or 'default'}")
     return jsonify(result)
 
 
@@ -9307,32 +9305,30 @@ def api_close():
     body = request.get_json(force=True)
     trade_id = body.get("trade_id")
     symbol = str(body.get("symbol", "")).upper()
-    mode = body.get("mode", "paper")
+    requested_exchange = body.get("exchange", "").lower()
     exit_price, err = validate_price(body.get("exit_price", 0))
     if err:
         return jsonify({"error": err}), 400
 
-    if mode == "paper":
-        if not trade_id:
-            return jsonify({"error": "trade_id required for paper close"}), 400
-        if exit_price <= 0:
-            price_data = fetch_binance("/api/v3/ticker/price", {"symbol": symbol}, ttl=2)
-            if price_data:
-                exit_price = float(price_data.get("price", 0))
-            if exit_price <= 0:
-                return jsonify({"error": "Could not determine exit price"}), 502
-        result = paper_trader.close(int(trade_id), exit_price)
-        log_audit("trade_closed", f"paper #{trade_id} {symbol} @{exit_price}")
-        return jsonify(result)
-
     if not symbol:
-        return jsonify({"error": "symbol required for live close"}), 400
-    if not exchange_manager._adapters:
-        return jsonify({"error": "No exchange configured"}), 400
+        return jsonify({"error": "symbol required"}), 400
 
-    adapter = list(exchange_manager._adapters.values())[0]
-    result = adapter.close_position(symbol)
-    log_audit("trade_closed", f"live {symbol}")
+    if requested_exchange == "gmx":
+        adapter = exchange_manager.get_adapter_by_type("gmx")
+    elif exchange_manager._adapters:
+        adapter = list(exchange_manager._adapters.values())[0]
+    else:
+        adapter = None
+
+    if not adapter:
+        return jsonify({"error": "No exchange configured. Connect GMX wallet first."}), 400
+
+    close_pct = float(body.get("close_pct", 100.0))
+    try:
+        result = adapter.close_position(symbol, position_id=trade_id, close_pct=close_pct)
+    except TypeError:
+        result = adapter.close_position(symbol, position_id=trade_id)
+    log_audit("trade_closed", f"live {symbol} via {requested_exchange or 'default'}")
     return jsonify(result)
 
 
