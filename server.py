@@ -3620,21 +3620,23 @@ class GMXAdapter(ExchangeAdapter):
                 log.info("GMX ORDER DEBUG: order_vault=%s, router=%s, exchange_router=%s",
                          order_vault, router_addr, exchange_router.address)
 
-                send_wnt_data = exchange_router.functions.sendWnt(
-                    order_vault, execution_fee
-                ).build_transaction({"from": self._account.address})["data"]
+                send_wnt_data = exchange_router.encodeABI(
+                    fn_name='sendWnt', args=[order_vault, execution_fee]
+                )
                 log.info("GMX DEBUG: sendWnt calldata OK (%d bytes)", len(send_wnt_data))
 
-                send_tokens_data = exchange_router.functions.sendTokens(
-                    Web3.to_checksum_address(collateral_token),
-                    order_vault,
-                    collateral_amount_raw
-                ).build_transaction({"from": self._account.address})["data"]
+                send_tokens_data = exchange_router.encodeABI(
+                    fn_name='sendTokens', args=[
+                        Web3.to_checksum_address(collateral_token),
+                        order_vault,
+                        collateral_amount_raw,
+                    ]
+                )
                 log.info("GMX DEBUG: sendTokens calldata OK (%d bytes)", len(send_tokens_data))
 
-                create_order_data = exchange_router.functions.createOrder(
-                    order_params
-                ).build_transaction({"from": self._account.address})["data"]
+                create_order_data = exchange_router.encodeABI(
+                    fn_name='createOrder', args=[order_params]
+                )
                 log.info("GMX DEBUG: createOrder calldata OK (%d bytes)", len(create_order_data))
 
                 total_value = execution_fee
@@ -3653,7 +3655,7 @@ class GMXAdapter(ExchangeAdapter):
                     )
                     log.info("GMX DEBUG: multicall eth_call simulation PASSED")
                 except Exception as sim_err:
-                    log.error("GMX DEBUG: multicall eth_call simulation FAILED: %s (type: %s)", sim_err, type(sim_err).__name__)
+                    log.error("GMX DEBUG: multicall simulation FAILED: %s (type: %s)", sim_err, type(sim_err).__name__)
                     if hasattr(sim_err, 'data'):
                         log.error("GMX DEBUG: revert data: %s", sim_err.data)
                     if hasattr(sim_err, 'message'):
@@ -3794,28 +3796,17 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         try:
-            send_wnt_data = exchange_router.functions.sendWnt(
-                order_vault, execution_fee
-            ).build_transaction({"from": self._account.address})["data"]
-
-            send_tokens_data = exchange_router.functions.sendTokens(
-                Web3.to_checksum_address(collateral_token),
-                order_vault,
-                collateral_amount_raw
-            ).build_transaction({"from": self._account.address})["data"]
-
-            create_order_data = exchange_router.functions.createOrder(
-                order_params
-            ).build_transaction({"from": self._account.address})["data"]
+            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
+            send_tokens_data = exchange_router.encodeABI(fn_name='sendTokens', args=[
+                Web3.to_checksum_address(collateral_token), order_vault, collateral_amount_raw])
+            create_order_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
 
             total_value = execution_fee
-            multicall_tx = exchange_router.functions.multicall(
-                [
-                    bytes.fromhex(send_wnt_data[2:]),
-                    bytes.fromhex(send_tokens_data[2:]),
-                    bytes.fromhex(create_order_data[2:]),
-                ]
-            ).build_transaction(self._build_tx(value=total_value))
+            multicall_tx = exchange_router.functions.multicall([
+                bytes.fromhex(send_wnt_data[2:]),
+                bytes.fromhex(send_tokens_data[2:]),
+                bytes.fromhex(create_order_data[2:]),
+            ]).build_transaction(self._build_tx(value=total_value))
 
             tx_hash = self._sign_and_send(multicall_tx)
 
@@ -3910,13 +3901,8 @@ class GMXAdapter(ExchangeAdapter):
                 [],
             )
 
-            send_wnt_data = exchange_router.functions.sendWnt(
-                order_vault, execution_fee
-            ).build_transaction({"from": self._account.address})["data"]
-
-            create_data = exchange_router.functions.createOrder(
-                order_params
-            ).build_transaction({"from": self._account.address})["data"]
+            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
+            create_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
 
             multicall_tx = exchange_router.functions.multicall(
                 [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
@@ -4026,13 +4012,8 @@ class GMXAdapter(ExchangeAdapter):
         )
 
         try:
-            send_wnt_data = exchange_router.functions.sendWnt(
-                order_vault, execution_fee
-            ).build_transaction({"from": self._account.address})["data"]
-
-            create_data = exchange_router.functions.createOrder(
-                order_params
-            ).build_transaction({"from": self._account.address})["data"]
+            send_wnt_data = exchange_router.encodeABI(fn_name='sendWnt', args=[order_vault, execution_fee])
+            create_data = exchange_router.encodeABI(fn_name='createOrder', args=[order_params])
 
             multicall_tx = exchange_router.functions.multicall(
                 [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_data[2:])]
