@@ -178,7 +178,7 @@ GMX_ORDER_TYPE_LIQUIDATION = 7
 GMX_DECREASE_POSITION_SWAP_TYPE = 0
 
 GMX_MAX_LEVERAGE = 50
-GMX_EXECUTION_FEE_BUFFER_WEI = 6000000000000000
+GMX_EXECUTION_FEE_BUFFER_WEI = 200000000000000
 GMX_DEFAULT_SLIPPAGE_BPS = 30
 GMX_CALLBACK_GAS_LIMIT = 2000000
 GMX_POSITION_FEE_BPS = 5
@@ -3273,11 +3273,11 @@ class GMXAdapter(ExchangeAdapter):
             return None
         address = self._account.address
         nonce = self._pending_nonce if self._pending_nonce is not None else self._w3.eth.get_transaction_count(address, "pending")
+        gas_price = self._w3.eth.gas_price
         return {
             "from": address,
             "nonce": nonce,
-            "gas": 3000000,
-            "maxFeePerGas": self._w3.eth.gas_price * 2,
+            "maxFeePerGas": gas_price * 2,
             "maxPriorityFeePerGas": self._w3.to_wei(0.1, "gwei"),
             "value": value,
             "chainId": 42161 if not self.testnet else 421614,
@@ -3547,10 +3547,14 @@ class GMXAdapter(ExchangeAdapter):
         if usdc_balance < collateral_usd:
             return {"success": False, "error": f"Insufficient USDC: have ${usdc_balance:.2f}, need ${collateral_usd:.2f}", "exchange": "GMX"}
 
-        eth_balance = self._w3.eth.get_balance(self._account.address) / 10**18
-        min_eth = 0.002
-        if eth_balance < min_eth:
-            return {"success": False, "error": f"Insufficient ETH for gas: have {eth_balance:.4f} ETH, need at least {min_eth} ETH", "exchange": "GMX"}
+        execution_fee = self._estimate_execution_fee()
+        gas_price = self._w3.eth.gas_price
+        gas_cost_estimate = 1500000 * gas_price / 10**18
+        total_eth_needed = (execution_fee / 10**18) + gas_cost_estimate
+        eth_balance_wei = self._w3.eth.get_balance(self._account.address)
+        eth_balance = eth_balance_wei / 10**18
+        if eth_balance < total_eth_needed:
+            return {"success": False, "error": f"Insufficient ETH: have {eth_balance:.4f} ETH, need ~{total_eth_needed:.4f} ETH (exec fee {execution_fee/10**18:.4f} + gas ~{gas_cost_estimate:.4f}). Send more ETH to your wallet.", "exchange": "GMX"}
 
         current_price = self._get_index_price(symbol)
         if current_price <= 0 and not price:
