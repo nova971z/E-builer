@@ -3671,28 +3671,12 @@ class GMXAdapter(ExchangeAdapter):
                     bytes.fromhex(create_order_data[2:]),
                 ]
 
-                try:
-                    result_data = exchange_router.functions.multicall(multicall_data).call(
-                        {"from": self._account.address, "value": total_value}
-                    )
-                    log.info("GMX: multicall simulation PASSED: %s", result_data)
-                except Exception as sim_err:
-                    err_str = str(sim_err)
-                    log.error("GMX: multicall simulation FAILED: %s", err_str)
-                    if hasattr(sim_err, 'data') and sim_err.data:
-                        raw = sim_err.data if isinstance(sim_err.data, str) else str(sim_err.data)
-                        if len(raw) > 10:
-                            selector = raw[:10] if raw.startswith('0x') else raw[:8]
-                            log.error("GMX: error selector=%s, full_data_len=%d", selector, len(raw))
-                            ascii_part = bytes.fromhex(raw[2:] if raw.startswith('0x') else raw).decode('ascii', errors='ignore')
-                            log.error("GMX: decoded ASCII in revert: %s", ascii_part.strip())
-                    raise
+                base_tx = self._build_tx(value=total_value)
+                raw_tx_data = exchange_router.functions.multicall(multicall_data)._encode_transaction_data()
+                base_tx["to"] = exchange_router.address
+                base_tx["data"] = raw_tx_data
 
-                multicall_tx = exchange_router.functions.multicall(
-                    multicall_data
-                ).build_transaction(self._build_tx(value=total_value))
-
-                tx_hash = self._sign_and_send(multicall_tx)
+                tx_hash = self._sign_and_send(base_tx)
 
             except Exception as e:
                 self._pending_nonce = None
