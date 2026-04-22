@@ -3484,6 +3484,139 @@ class GMXAdapter(ExchangeAdapter):
         tx = contract.functions.approve(spender, max_uint).build_transaction(self._build_tx())
         return self._sign_and_send(tx)
 
+    def place_order_by_collateral(self, symbol, side, order_type, collateral_usd, price=None, leverage=1, tp=None, sl=None):
+        """Place order using USDC collateral amount directly — no quantity conversion needed."""
+        if not HAS_WEB3:
+            return {"success": False, "error": "web3.py not installed", "exchange": "GMX"}
+        if not self._ensure_connection():
+            return {"success": False, "error": "Cannot connect to Arbitrum RPC", "exchange": "GMX"}
+        if not self._has_signer():
+            return {"success": False, "error": "No private key — cannot sign transactions", "exchange": "GMX"}
+
+        market = gmx_symbol_to_market(symbol)
+        if not market:
+            return {"success": False, "error": f"Unsupported GMX market: {symbol}", "exchange": "GMX"}
+
+        leverage = min(leverage, GMX_MAX_LEVERAGE)
+        is_long = side.lower() in ("long", "buy")
+        is_market = order_type.lower() in ("market", "")
+
+        current_price = self._get_index_price(symbol)
+        if current_price <= 0 and not price:
+            return {"success": False, "error": "Cannot fetch index price for order", "exchange": "GMX"}
+        ref_price = price if price and price > 0 else current_price
+
+        size_delta_usd = int(collateral_usd * leverage * 10**30)
+
+        collateral_token = market["short_token"]
+        collateral_decimals = 6
+        collateral_amount_raw = int(collateral_usd * 10**collateral_decimals)
+
+        slippage_mult = GMX_DEFAULT_SLIPPAGE_BPS / 10000
+        if is_long:
+            acceptable_price = int(ref_price * (1 + slippage_mult) * 10**30)
+        else:
+            acceptable_price = int(ref_price * (1 - slippage_mult) * 10**30)
+
+        trigger_price = int(price * 10**30) if price and not is_market else 0
+        execution_fee = self._estimate_execution_fee()
+
+        exchange_router = self._contracts.get("exchange_router")
+        order_vault = self._contracts.get("order_vault")
+        router_addr = self._contracts.get("router")
+        if not exchange_router or not order_vault or not router_addr:
+            return {"success": False, "error": "GMX contracts not loaded", "exchange": "GMX"}
+
+        try:
+            approval_tx = self._ensure_token_approval(collateral_token, router_addr, collateral_amount_raw)
+            if approval_tx:
+                log.info("GMX ERC-20 approval tx: %s", approval_tx)
+        except Exception as e:
+            return {"success": False, "error": f"Token approval failed: {e}", "exchange": "GMX"}
+
+        gmx_order_type = GMX_ORDER_TYPE_MARKET_INCREASE if is_market else GMX_ORDER_TYPE_LIMIT_INCREASE
+
+        order_params = (
+            (
+                self._account.address,
+                "0x0000000000000000000000000000000000000000",
+                "0x0000000000000000000000000000000000000000",
+                Web3.to_checksum_address(market["market_token"]),
+                Web3.to_checksum_address(collateral_token),
+                [],
+            ),
+            (
+                size_delta_usd,
+                collateral_amount_raw,
+                trigger_price,
+                acceptable_price,
+                execution_fee,
+                GMX_CALLBACK_GAS_LIMIT,
+                0,
+            ),
+            gmx_order_type,
+            GMX_DECREASE_POSITION_SWAP_TYPE,
+            is_long,
+            True,
+            GMX_REFERRAL_CODE,
+        )
+
+        try:
+            send_wnt_data = exchange_router.functions.sendWnt(
+                order_vault, execution_fee
+            ).build_transaction({"from": self._account.address})["data"]
+
+            create_order_data = exchange_router.functions.createOrder(
+                order_params
+            ).build_transaction({"from": self._account.address})["data"]
+
+            total_value = execution_fee
+            multicall_tx = exchange_router.functions.multicall(
+                [bytes.fromhex(send_wnt_data[2:]), bytes.fromhex(create_order_data[2:])]
+            ).build_transaction(self._build_tx(value=total_value))
+
+            tx_hash = self._sign_and_send(multicall_tx)
+
+            result = {
+                "success": True,
+                "order_id": tx_hash,
+                "tx_hash": tx_hash,
+                "symbol": symbol,
+                "side": "long" if is_long else "short",
+                "type": "market" if is_market else "limit",
+                "collateral_usd": round(collateral_usd, 2),
+                "size_usd": round(collateral_usd * leverage, 2),
+                "leverage": leverage,
+                "price": ref_price,
+                "acceptable_price": round(acceptable_price / 10**30, 4),
+                "execution_fee_eth": round(execution_fee / 10**18, 6),
+                "exchange": "GMX",
+                "network": "Arbitrum One" if not self.testnet else "Arbitrum Sepolia",
+            }
+
+            if tp:
+                try:
+                    qty_for_tp = collateral_usd * leverage / ref_price if ref_price > 0 else 0
+                    self._place_tp_sl_order(symbol, market, not is_long, qty_for_tp, tp, is_tp=True)
+                    result["tp"] = tp
+                except Exception as e:
+                    log.warning("GMX TP order failed (main order OK): %s", e)
+                    result["tp_error"] = str(e)
+            if sl:
+                try:
+                    qty_for_sl = collateral_usd * leverage / ref_price if ref_price > 0 else 0
+                    self._place_tp_sl_order(symbol, market, not is_long, qty_for_sl, sl, is_tp=False)
+                    result["sl"] = sl
+                except Exception as e:
+                    log.warning("GMX SL order failed (main order OK): %s", e)
+                    result["sl_error"] = str(e)
+
+            return result
+
+        except Exception as e:
+            log.error("GMX place_order_by_collateral failed: %s", e)
+            return {"success": False, "error": sanitize_error(e), "exchange": "GMX"}
+
     def place_order(self, symbol, side, order_type, quantity, price=None, leverage=1, tp=None, sl=None):
         if not HAS_WEB3:
             return {"success": False, "error": "web3.py not installed", "exchange": "GMX"}
@@ -3600,11 +3733,19 @@ class GMXAdapter(ExchangeAdapter):
             }
 
             if tp:
-                self._place_tp_sl_order(symbol, market, not is_long, quantity, tp, is_tp=True)
-                result["tp"] = tp
+                try:
+                    self._place_tp_sl_order(symbol, market, not is_long, quantity, tp, is_tp=True)
+                    result["tp"] = tp
+                except Exception as e:
+                    log.warning("GMX TP order failed (main order OK): %s", e)
+                    result["tp_error"] = str(e)
             if sl:
-                self._place_tp_sl_order(symbol, market, not is_long, quantity, sl, is_tp=False)
-                result["sl"] = sl
+                try:
+                    self._place_tp_sl_order(symbol, market, not is_long, quantity, sl, is_tp=False)
+                    result["sl"] = sl
+                except Exception as e:
+                    log.warning("GMX SL order failed (main order OK): %s", e)
+                    result["sl_error"] = str(e)
 
             return result
 
@@ -9208,7 +9349,8 @@ def api_execute():
         return jsonify({"success": True, "order_ids": order_ids, "type": order_type, "mode": "live"})
 
     # Route to exchange — live execution
-    ccxt_side = "buy" if side in ("long", "buy") else "sell"
+    trade_side = side if side in ("long", "short") else ("long" if side == "buy" else "short")
+    ccxt_side = "buy" if trade_side == "long" else "sell"
 
     if requested_exchange == "gmx":
         adapter = exchange_manager.get_adapter_by_type("gmx")
@@ -9220,7 +9362,18 @@ def api_execute():
     if not adapter:
         return jsonify({"error": "No exchange configured. Connect GMX wallet first."}), 400
 
-    result = adapter.place_order(symbol, ccxt_side, order_type, quantity, price if order_type == "limit" else None, leverage, tp, sl)
+    if hasattr(adapter, '_initialized') and not adapter._initialized:
+        return jsonify({"error": "Exchange adapter not connected. Reconnect your wallet."}), 400
+
+    collateral_usd = float(body.get("collateral_usd", 0))
+    if collateral_usd > 0 and requested_exchange == "gmx":
+        result = adapter.place_order_by_collateral(
+            symbol=symbol, side=ccxt_side, order_type=order_type,
+            collateral_usd=collateral_usd, price=price if order_type == "limit" else None,
+            leverage=leverage, tp=tp, sl=sl)
+    else:
+        result = adapter.place_order(symbol, ccxt_side, order_type, quantity,
+                                      price if order_type == "limit" else None, leverage, tp, sl)
 
     if isinstance(result, dict) and result.get("success"):
         conn = get_db()
@@ -9231,7 +9384,7 @@ def api_execute():
         conn.commit()
         conn.close()
 
-    log_audit("trade_executed", f"live {side} {symbol} qty={quantity} @{price} via {requested_exchange or 'default'}")
+    log_audit("trade_executed", f"live {side} {symbol} qty={quantity} collateral={collateral_usd} @{price} via {requested_exchange or 'default'}")
     return jsonify(result)
 
 

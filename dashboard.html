@@ -7051,6 +7051,12 @@ function onGmxCollateralSlider() {
 }
 
 function onGMXMarketChange() {
+    var sym = $('gmx-market').value;
+    fetch(API + '/api/price?symbol=' + sym).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.price) {
+            $('gmx-price-input').placeholder = 'Market: $' + fmt(d.price);
+        }
+    }).catch(function() {});
     updateGMXEstimate();
     loadGMXEntryPlan();
 }
@@ -7172,40 +7178,52 @@ function loadGMXPositions() {
 
 function updateGMXEstimate() {
     var symbol = $('gmx-market').value;
-    var leverage = parseInt($('gmx-leverage').value);
-    var collateral = parseFloat($('gmx-collateral-input').value) || 10;
-    var price = parseFloat($('gmx-price-input').value) || 0;
+    var leverage = parseInt($('gmx-leverage').value) || 5;
+    var collateral = parseFloat($('gmx-collateral-input').value) || 0;
 
-    var quantity = price > 0 ? (collateral * leverage / price) : (collateral / 1);
+    if (collateral <= 0) {
+        $('gmx-estimate-info').textContent = 'Size: -- | Fee: -- | Liq: --';
+        return;
+    }
+
+    var sizeUsd = collateral * leverage;
+    var feeBps = 5;
+    var feeUsd = sizeUsd * feeBps / 10000 * 2;
+    $('gmx-estimate-info').textContent = 'Size: $' + fmtK(sizeUsd) + ' | Fee: ~$' + feeUsd.toFixed(2) + ' | Liq: calc...';
 
     fetch('/api/gmx/estimate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({symbol: symbol, side: 'long', quantity: quantity, leverage: leverage, price: price})
+        body: JSON.stringify({symbol: symbol, side: 'long', collateral_usd: collateral, leverage: leverage})
     }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) {
-            $('gmx-estimate-info').textContent = 'Size: -- | Fee: -- | Liq: --';
-            return;
-        }
-        $('gmx-estimate-info').textContent = 'Size: $' + fmtK(data.size_usd)
-            + ' | Fee: $' + data.position_fee_usd.toFixed(2)
-            + ' + ' + data.execution_fee_eth.toFixed(4) + ' ETH'
-            + ' | Liq: $' + fmt(data.liquidation_price);
-    }).catch(function() {
-        $('gmx-estimate-info').textContent = 'Size: -- | Fee: -- | Liq: --';
-    });
+        if (data.error) return;
+        $('gmx-estimate-info').textContent = 'Size: $' + fmtK(data.size_usd || sizeUsd)
+            + ' | Fee: $' + (data.position_fee_usd || feeUsd).toFixed(2)
+            + ' + ' + (data.execution_fee_eth || 0).toFixed(4) + ' ETH'
+            + ' | Liq: $' + fmt(data.liquidation_price || 0);
+    }).catch(function() {});
 }
 
 function executeGMXOrder(side) {
+    var header = $('gmx-header');
+    if (header && header.classList.contains('disconnected')) {
+        showToast('Connect your GMX wallet first', 'error');
+        return;
+    }
+
     var symbol = $('gmx-market').value;
-    var leverage = parseInt($('gmx-leverage').value);
+    var leverage = parseInt($('gmx-leverage').value) || 5;
     var collateral = parseFloat($('gmx-collateral-input').value);
-    var price = parseFloat($('gmx-price-input').value) || 0;
+    var limitPrice = parseFloat($('gmx-price-input').value) || 0;
     var tp = parseFloat($('gmx-tp-input').value) || 0;
     var sl = parseFloat($('gmx-sl-input').value) || 0;
 
     if (!collateral || collateral <= 0) {
-        showToast('Enter collateral amount', 'error');
+        showToast('Enter collateral amount (USDC)', 'error');
+        return;
+    }
+    if (collateral < 1) {
+        showToast('Minimum collateral is $1', 'error');
         return;
     }
 
@@ -7213,52 +7231,70 @@ function executeGMXOrder(side) {
         return;
     }
 
-    var refPrice = price || 0;
-    if (refPrice <= 0) {
-        showToast('Fetching market price...', 'info');
-    }
+    var sizeUsd = (collateral * leverage).toFixed(2);
+    var orderType = limitPrice > 0 ? 'limit' : 'market';
+    var confirmMsg = side.toUpperCase() + ' ' + symbol.replace('USDT', '/USD') + '\n'
+        + 'Collateral: $' + collateral.toFixed(2) + '\n'
+        + 'Size: $' + sizeUsd + ' (' + leverage + 'x)\n'
+        + 'Type: ' + orderType.toUpperCase();
+    if (tp > 0) confirmMsg += '\nTP: $' + tp;
+    if (sl > 0) confirmMsg += '\nSL: $' + sl;
+    if (!confirm(confirmMsg + '\n\nConfirm trade?')) return;
 
-    var quantity = refPrice > 0 ? (collateral / refPrice) : collateral;
+    showToast('Sending ' + side.toUpperCase() + ' order...', 'info', 5000);
+
+    var payload = {
+        symbol: symbol,
+        side: side,
+        type: orderType,
+        collateral_usd: collateral,
+        quantity: collateral,
+        leverage: leverage,
+        exchange: 'gmx',
+        mode: 'live'
+    };
+    if (limitPrice > 0) payload.price = limitPrice;
+    if (tp > 0) payload.tp = tp;
+    if (sl > 0) payload.sl = sl;
 
     fetch('/api/execute', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            symbol: symbol,
-            side: side,
-            type: price > 0 ? 'limit' : 'market',
-            quantity: quantity,
-            price: price > 0 ? price : undefined,
-            leverage: leverage,
-            tp: tp > 0 ? tp : undefined,
-            sl: sl > 0 ? sl : undefined,
-            exchange: 'gmx',
-            mode: 'live'
-        })
-    }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.success || data.order_id || data.tx_hash) {
-            showToast('GMX ' + side.toUpperCase() + ' LIVE order sent! TX: ' + (data.tx_hash || data.order_id || '').substring(0, 10) + '...', 'success');
-            if (typeof playSound === 'function') playSound('order');
-            setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
+        body: JSON.stringify(payload)
+    }).then(function(r) {
+        if (r.status === 429) { showToast('Rate limited — wait a moment', 'error'); throw new Error('rate limited'); }
+        if (r.status === 401) { showToast('Authentication required', 'error'); throw new Error('auth'); }
+        return r.json();
+    }).then(function(data) {
+        if (data.success || data.tx_hash) {
+            var msg = side.toUpperCase() + ' ' + symbol.replace('USDT','/USD')
+                + ' | $' + sizeUsd + ' (' + leverage + 'x)';
+            if (data.tx_hash) msg += '\nTX: ' + data.tx_hash.substring(0, 16) + '...';
+            showToast(msg, 'success', 8000);
+            setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 4000);
         } else {
-            showToast('GMX order failed: ' + (data.error || 'Unknown error'), 'error');
+            showToast('Order failed: ' + (data.error || 'Unknown error'), 'error', 8000);
+            console.error('GMX order error:', data);
         }
     }).catch(function(err) {
-        showToast('GMX order error: ' + err.message, 'error');
+        if (err.message !== 'rate limited' && err.message !== 'auth') {
+            showToast('Network error: ' + err.message, 'error');
+            console.error('GMX order network error:', err);
+        }
     });
 }
 
 function closeGMXPosition(symbol) {
     if (!confirm('Close GMX position: ' + symbol + '?')) return;
 
+    showToast('Closing ' + symbol + '...', 'info', 5000);
     fetch('/api/close', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({symbol: symbol, exchange: 'gmx'})
+        body: JSON.stringify({symbol: symbol, exchange: 'gmx', mode: 'live'})
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.success) {
             showToast('Position closed: ' + symbol + ' | PnL: $' + (data.pnl_at_close || 0).toFixed(2), 'success');
-            if (typeof playSound === 'function') playSound('close');
             setTimeout(function() { loadGMXPositions(); loadGMXWallet(); }, 3000);
         } else {
             showToast('Close failed: ' + (data.error || 'Unknown'), 'error');
