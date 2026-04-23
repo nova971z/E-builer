@@ -37,6 +37,12 @@ from flask_cors import CORS
 _http_session = requests.Session()
 _http_session.headers.update({"Connection": "keep-alive", "User-Agent": "JARVIS/3.0"})
 
+BINANCE_PROXY = os.environ.get("BINANCE_PROXY", "")
+_binance_session = requests.Session()
+_binance_session.headers.update({"Connection": "keep-alive", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+if BINANCE_PROXY:
+    _binance_session.proxies = {"http": BINANCE_PROXY, "https": BINANCE_PROXY}
+
 try:
     from cryptography.fernet import Fernet
     HAS_FERNET = True
@@ -1176,7 +1182,7 @@ def fetch_binance(endpoint, params=None, base=None, ttl=15):
     endpoints = [base] if base else BINANCE_ENDPOINTS
     for base_url in endpoints:
         try:
-            resp = _http_session.get(base_url + endpoint, params=params, timeout=5)
+            resp = _binance_session.get(base_url + endpoint, params=params, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 cache.set(cache_key, data)
@@ -3448,7 +3454,8 @@ class GMXAdapter(ExchangeAdapter):
         ]
         for url, params, extract in sources:
             try:
-                resp = _http_session.get(url, params=params, timeout=5)
+                session = _binance_session if "binance" in url else _http_session
+                resp = session.get(url, params=params, timeout=5)
                 if resp.status_code == 200:
                     price = extract(resp.json())
                     if price > 0:
@@ -9463,7 +9470,7 @@ def api_execute():
         if price <= 0:
             for fallback_url in ["https://api1.binance.com", "https://api.binance.us"]:
                 try:
-                    r = _http_session.get(f"{fallback_url}/api/v3/ticker/price", params={"symbol": symbol}, timeout=5)
+                    r = _binance_session.get(f"{fallback_url}/api/v3/ticker/price", params={"symbol": symbol}, timeout=5)
                     if r.status_code == 200:
                         price = float(r.json().get("price", 0))
                         if price > 0:
