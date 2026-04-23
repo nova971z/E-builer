@@ -10730,7 +10730,65 @@ def api_journal():
         "SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    entries = [dict(r) for r in rows]
+    for e in entries:
+        e.setdefault("side", e.get("action") or "")
+        e.setdefault("timestamp", e.get("created_at"))
+    return jsonify({"entries": entries})
+
+
+@app.route("/api/order-history")
+def api_order_history():
+    """Unified history of closed trades (paper + live). Live trades read from
+    paper_trades where mode='live' if logged, plus paper trades."""
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM paper_trades WHERE status = 'closed' "
+            "ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    trades = []
+    for r in rows:
+        t = dict(r)
+        entry = float(t.get("entry_price") or 0)
+        exit_ = float(t.get("exit_price") or 0)
+        qty = float(t.get("quantity") or 0)
+        pnl = float(t.get("pnl") or 0)
+        side = (t.get("side") or "").upper()
+        size = qty * entry if entry > 0 else 0
+        pnl_pct = 0.0
+        if entry > 0 and exit_ > 0:
+            if side in ("LONG", "BUY"):
+                pnl_pct = (exit_ - entry) / entry * 100.0
+            else:
+                pnl_pct = (entry - exit_) / entry * 100.0
+        trades.append({
+            "id": t.get("id"),
+            "mode": "paper",
+            "symbol": t.get("symbol"),
+            "side": side,
+            "size": size,
+            "quantity": qty,
+            "entry_price": entry,
+            "exit_price": exit_ if exit_ > 0 else None,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "leverage": t.get("leverage"),
+            "status": t.get("status") or "closed",
+            "opened_at": t.get("opened_at"),
+            "closed_at": t.get("closed_at"),
+        })
+    return jsonify({"trades": trades})
 
 
 @app.route("/api/export/csv")

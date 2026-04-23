@@ -3004,7 +3004,7 @@ button:active { opacity: 0.7; }
                         <div style="flex:1"></div>
                         <div class="of-leverage">
                             <label>Lev</label>
-                            <input type="range" id="leverage-slider" min="1" max="200" value="10" oninput="updateLeverage(this.value)">
+                            <input type="range" id="leverage-slider" min="1" max="50" value="10" oninput="updateLeverage(this.value)">
                             <span class="lev-val" id="lev-display">10x</span>
                         </div>
                     </div>
@@ -4095,7 +4095,14 @@ function renderCandleData(data) {
     }
 
     var last = data[data.length - 1];
-    if (last) updateAssetPrice(last.close, data.length > 1 ? data[data.length - 2].close : last.open);
+    if (last) {
+        updateAssetPrice(last.close, data.length > 1 ? data[data.length - 2].close : last.open);
+        var lc = parseFloat(last.close);
+        if (lc > 0) {
+            obLastPrice = lc;
+            if (typeof updateOrderInfo === 'function') updateOrderInfo();
+        }
+    }
 }
 
 // ========== BINANCE WEBSOCKET — REAL-TIME CANDLES ==========
@@ -4543,6 +4550,7 @@ function toggleIndicator(key) {
 function changeSymbol(sym) {
     saveDrawings();
     currentSymbol = sym;
+    obLastPrice = null;  // invalidate cached price from previous symbol
     var sel = $('symbol-select');
     if (sel && !sel.querySelector('option[value="' + sym + '"]')) {
         var opt = document.createElement('option');
@@ -4562,11 +4570,14 @@ function changeSymbol(sym) {
 
     syncGMXMarketToChart(sym);
 
+    loadPriceData(sym);
     loadCandles(sym, currentInterval);
+    loadOrderBook();
     updateAssetSparkline();
     loadMTF();
     checkAlerts();
     loadDrawings();
+    if (typeof refreshActiveBPTab === 'function') refreshActiveBPTab();
     if (drawerOpen && window.innerWidth <= 768) toggleDrawer();
 }
 
@@ -4812,7 +4823,14 @@ async function loadPriceData(symbol) {
         if (!resp.ok) return;
         const data = await resp.json();
 
-        if (data.price) updateAssetPrice(data.price);
+        if (data.price) {
+            updateAssetPrice(data.price);
+            var p = parseFloat(data.price);
+            if (p > 0) {
+                obLastPrice = p;
+                if (typeof updateOrderInfo === 'function') updateOrderInfo();
+            }
+        }
         if (data.change_pct != null) {
             const chgEl = $('stat-change');
             if (chgEl) {
@@ -4977,17 +4995,137 @@ async function loadKillSwitchStatus() {
 }
 
 // ========== BOTTOM PANEL TAB SWITCHING ==========
-function switchBPTab(tab) {
-    playClickSound();
-    document.querySelectorAll('.bp-tabs button').forEach(function(b) { b.classList.remove('active'); });
-    event.target.classList.add('active');
+var activeBPTab = 'positions';
 
+function switchBPTab(tab, ev) {
+    playClickSound();
+    activeBPTab = tab;
+    var buttons = document.querySelectorAll('.bp-tabs button');
+    buttons.forEach(function(b) { b.classList.remove('active'); });
+    var target = (ev && ev.currentTarget) || (window.event && window.event.currentTarget) || null;
+    if (target) {
+        target.classList.add('active');
+    } else {
+        for (var i = 0; i < buttons.length; i++) {
+            var oc = buttons[i].getAttribute('onclick') || '';
+            if (oc.indexOf("'" + tab + "'") !== -1) { buttons[i].classList.add('active'); break; }
+        }
+    }
+    refreshActiveBPTab();
+}
+
+function refreshActiveBPTab() {
+    var tab = activeBPTab;
     if (tab === 'positions') loadPositions();
     else if (tab === 'open-orders') loadScheduledOrders();
+    else if (tab === 'history') loadOrderHistory();
     else if (tab === 'paper') loadPaperHistory();
     else if (tab === 'portfolio') loadPortfolio();
+    else if (tab === 'journal') loadTradeJournal();
     else if (tab === 'audit') loadAuditLog();
-    else $('bp-content').innerHTML = '<div class="bp-empty">No data for ' + escapeHtml(tab) + '</div>';
+}
+
+// ========== UNIFIED ORDER HISTORY (live + paper, closed only) ==========
+async function loadOrderHistory() {
+    try {
+        const resp = await fetch(API + '/api/order-history?limit=100');
+        if (!resp.ok) {
+            $('bp-content').innerHTML = '<div class="bp-empty">Error loading history</div>';
+            return;
+        }
+        const data = await resp.json();
+        const trades = data.trades || [];
+
+        if (!trades.length) {
+            $('bp-content').innerHTML = '<div class="bp-empty">No closed trades yet</div>';
+            return;
+        }
+
+        let html = '<table class="bp-table"><thead><tr>'
+            + '<th>Time</th><th>Mode</th><th>Symbol</th><th>Side</th><th>Size</th>'
+            + '<th>Entry</th><th>Exit</th><th>PNL</th><th>PNL%</th><th>Status</th>'
+            + '</tr></thead><tbody>';
+
+        for (let i = 0; i < trades.length; i++) {
+            const t = trades[i];
+            const pnl = parseFloat(t.pnl || 0);
+            const pnlPct = parseFloat(t.pnl_pct || 0);
+            const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
+            const side = (t.side || '').toUpperCase();
+            const sideClass = side === 'LONG' || side === 'BUY' ? 'col-long' : 'col-short';
+            const openedAt = t.closed_at || t.opened_at || t.created_at || '';
+            const timeStr = openedAt ? new Date(openedAt).toLocaleString() : '--';
+
+            html += '<tr>'
+                + '<td>' + escapeHtml(timeStr) + '</td>'
+                + '<td>' + escapeHtml((t.mode || 'live').toUpperCase()) + '</td>'
+                + '<td class="col-symbol">' + escapeHtml(t.symbol || '--') + '</td>'
+                + '<td class="' + sideClass + '">' + escapeHtml(side) + '</td>'
+                + '<td>' + fmt(t.size || t.quantity || 0, 4) + '</td>'
+                + '<td>' + fmt(t.entry_price || 0) + '</td>'
+                + '<td>' + (t.exit_price ? fmt(t.exit_price) : '--') + '</td>'
+                + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
+                + '<td class="' + pnlClass + '">' + (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%</td>'
+                + '<td>' + escapeHtml(t.status || 'closed') + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        $('bp-content').innerHTML = html;
+
+    } catch (err) {
+        console.error('loadOrderHistory error:', err);
+        $('bp-content').innerHTML = '<div class="bp-empty">Error loading history</div>';
+    }
+}
+
+// ========== TRADE JOURNAL ==========
+async function loadTradeJournal() {
+    try {
+        const resp = await fetch(API + '/api/journal?limit=100');
+        if (!resp.ok) {
+            $('bp-content').innerHTML = '<div class="bp-empty">Error loading journal</div>';
+            return;
+        }
+        const data = await resp.json();
+        const entries = data.entries || data.journal || [];
+
+        if (!entries.length) {
+            $('bp-content').innerHTML = '<div class="bp-empty">No journal entries yet</div>';
+            return;
+        }
+
+        let html = '<table class="bp-table"><thead><tr>'
+            + '<th>Time</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>'
+            + '<th>PNL</th><th>Reason</th><th>Regime</th><th>Notes</th>'
+            + '</tr></thead><tbody>';
+
+        for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            const pnl = parseFloat(e.pnl || 0);
+            const pnlClass = pnl >= 0 ? 'col-pnl-up' : 'col-pnl-down';
+            const side = (e.side || '').toUpperCase();
+            const sideClass = side === 'LONG' || side === 'BUY' ? 'col-long' : 'col-short';
+            const t = e.closed_at || e.timestamp || e.created_at || '';
+
+            html += '<tr>'
+                + '<td>' + escapeHtml(t ? new Date(t).toLocaleString() : '--') + '</td>'
+                + '<td class="col-symbol">' + escapeHtml(e.symbol || '--') + '</td>'
+                + '<td class="' + sideClass + '">' + escapeHtml(side) + '</td>'
+                + '<td>' + fmt(e.entry_price || 0) + '</td>'
+                + '<td>' + (e.exit_price ? fmt(e.exit_price) : '--') + '</td>'
+                + '<td class="' + pnlClass + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl, 2) + '</td>'
+                + '<td>' + escapeHtml(e.reason || '--') + '</td>'
+                + '<td>' + escapeHtml(e.regime || '--') + '</td>'
+                + '<td>' + escapeHtml(e.notes || '') + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        $('bp-content').innerHTML = html;
+
+    } catch (err) {
+        console.error('loadTradeJournal error:', err);
+        $('bp-content').innerHTML = '<div class="bp-empty">Error loading journal</div>';
+    }
 }
 
 // ========== POSITIONS TABLE ==========
@@ -5157,14 +5295,26 @@ function updateLeverage(val) {
 // ========== ORDER TAB / TYPE SWITCHING ==========
 function switchOrderTab(tab) {
     orderTab = tab;
-    document.querySelectorAll('.of-tabs button').forEach(function(b) { b.classList.remove('active'); });
-    event.target.classList.add('active');
+    var buttons = document.querySelectorAll('.of-tabs button');
+    buttons.forEach(function(b) { b.classList.remove('active'); });
+    var tgt = (window.event && window.event.currentTarget) || null;
+    if (tgt) { tgt.classList.add('active'); return; }
+    for (var i = 0; i < buttons.length; i++) {
+        var oc = buttons[i].getAttribute('onclick') || '';
+        if (oc.indexOf("'" + tab + "'") !== -1) { buttons[i].classList.add('active'); return; }
+    }
 }
 
 function switchOrderType(type) {
     orderType = type;
-    document.querySelectorAll('.of-type-tabs button').forEach(function(b) { b.classList.remove('active'); });
-    event.target.classList.add('active');
+    var typeButtons = document.querySelectorAll('.of-type-tabs button');
+    typeButtons.forEach(function(b) { b.classList.remove('active'); });
+    var typeTgt = (window.event && window.event.currentTarget) || null;
+    if (typeTgt) typeTgt.classList.add('active');
+    else for (var k = 0; k < typeButtons.length; k++) {
+        var oc2 = typeButtons[k].getAttribute('onclick') || '';
+        if (oc2.indexOf("'" + type + "'") !== -1) { typeButtons[k].classList.add('active'); break; }
+    }
 
     var priceRow = $('price-field-row');
     var priceField = $('order-price');
@@ -7459,10 +7609,14 @@ function startAutoRefresh() {
     // 60s — indicators refresh (decoupled from candles for speed)
     refreshTimers.push(setInterval(function() { loadIndicators(); }, 60000));
 
-    // 60s — positions, wallet, paper status, kill switch, funding, sentiment, MTF
+    // 5s — active bottom-panel tab (positions / history / orders / journal) + wallet
     refreshTimers.push(setInterval(function() {
-        loadPositions();
+        refreshActiveBPTab();
         loadWallet();
+    }, 5000));
+
+    // 60s — paper status, kill switch, funding, sentiment, MTF
+    refreshTimers.push(setInterval(function() {
         loadPaperStatus();
         loadKillSwitchStatus();
         loadFunding();
@@ -8996,19 +9150,19 @@ document.addEventListener('DOMContentLoaded', function() {
     syncTimeScales();
     loadDrawings();
 
-    // First data load
+    // First data load — price and wallet FIRST so Cost/Max/Fee populate immediately
     updateClock();
+    loadPriceData();
+    loadWallet();
+    loadPositions();
     loadCandles(currentSymbol, currentInterval);
     loadOrderBook();
     loadTrades();
     loadTicker();
-    loadPriceData();
     loadFunding();
     loadSentiment();
     loadFearGreed();
     loadDrawdown();
-    loadPositions();
-    loadWallet();
     loadPaperStatus();
     loadKillSwitchStatus();
     loadNews();
