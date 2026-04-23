@@ -85,6 +85,19 @@ STOOQ_BASE = "https://stooq.com/q/l/"
 ALTERNATIVE_ME = "https://api.alternative.me"
 WHALE_ALERT_BASE = "https://api.whale-alert.io/v1"
 
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+COINGECKO_SYMBOL_MAP = {
+    "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
+    "XRPUSDT": "ripple", "DOGEUSDT": "dogecoin", "ARBUSDT": "arbitrum",
+    "BNBUSDT": "binancecoin", "ADAUSDT": "cardano", "AVAXUSDT": "avalanche-2",
+    "MATICUSDT": "matic-network", "DOTUSDT": "polkadot", "LINKUSDT": "chainlink",
+}
+COINGECKO_INTERVAL_MAP = {
+    "1m": 1, "3m": 1, "5m": 1, "15m": 1, "30m": 1,
+    "1h": 1, "2h": 1, "4h": 1, "6h": 7, "8h": 7,
+    "12h": 14, "1d": 30, "3d": 90, "1w": 180, "1M": 365,
+}
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 WHALE_ALERT_KEY = os.environ.get("WHALE_ALERT_API_KEY", "")
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
@@ -1208,6 +1221,61 @@ def transform_klines(raw):
         }
         for k in raw
     ]
+
+
+def fetch_coingecko_ohlc(symbol, interval="1h", limit=100):
+    cg_id = COINGECKO_SYMBOL_MAP.get(symbol)
+    if not cg_id:
+        return None
+    days = COINGECKO_INTERVAL_MAP.get(interval, 1)
+    cache_key = f"cg_ohlc:{symbol}:{days}"
+    cached = cache.get(cache_key, ttl=30)
+    if cached is not None:
+        return cached
+    try:
+        resp = _http_session.get(f"{COINGECKO_BASE}/coins/{cg_id}/ohlc",
+                                 params={"vs_currency": "usd", "days": days}, timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json()
+            candles = [{"time": int(c[0]) // 1000, "open": c[1], "high": c[2],
+                        "low": c[3], "close": c[4], "volume": 0} for c in raw]
+            if limit and len(candles) > limit:
+                candles = candles[-limit:]
+            cache.set(cache_key, candles, ttl=30)
+            return candles
+    except Exception as e:
+        log.warning("CoinGecko OHLC failed for %s: %s", symbol, e)
+    return None
+
+
+def fetch_coingecko_price(symbol):
+    cg_id = COINGECKO_SYMBOL_MAP.get(symbol)
+    if not cg_id:
+        return None
+    cache_key = f"cg_price:{symbol}"
+    cached = cache.get(cache_key, ttl=10)
+    if cached is not None:
+        return cached
+    try:
+        resp = _http_session.get(f"{COINGECKO_BASE}/simple/price",
+                                 params={"ids": cg_id, "vs_currencies": "usd",
+                                         "include_24hr_change": "true",
+                                         "include_24hr_vol": "true",
+                                         "include_market_cap": "true"}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get(cg_id, {})
+            result = {
+                "symbol": symbol, "price": str(data.get("usd", 0)),
+                "priceChangePercent": str(data.get("usd_24h_change", 0)),
+                "volume": str(data.get("usd_24h_vol", 0)),
+                "quoteVolume": str(data.get("usd_24h_vol", 0)),
+                "highPrice": "0", "lowPrice": "0",
+            }
+            cache.set(cache_key, result, ttl=10)
+            return result
+    except Exception as e:
+        log.warning("CoinGecko price failed for %s: %s", symbol, e)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -8654,9 +8722,12 @@ def api_candles():
 
     if limit <= 1000:
         raw = fetch_binance("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit}, ttl=10)
-        if raw is None:
-            return jsonify({"error": "Failed to fetch candles from Binance"}), 502
-        return jsonify({"candles": transform_klines(raw)})
+        if raw is not None:
+            return jsonify({"candles": transform_klines(raw)})
+        cg_candles = fetch_coingecko_ohlc(symbol, interval, limit)
+        if cg_candles:
+            return jsonify({"candles": cg_candles})
+        return jsonify({"error": "Failed to fetch candles from all sources"}), 502
 
     all_klines = []
     remaining = limit
@@ -8694,7 +8765,20 @@ def api_price():
 
     ticker = fetch_binance("/api/v3/ticker/24hr", {"symbol": symbol}, ttl=5)
     if not ticker:
-        return jsonify({"error": "Failed to fetch price from Binance"}), 502
+        cg = fetch_coingecko_price(symbol)
+        if not cg:
+            return jsonify({"error": "Failed to fetch price from all sources"}), 502
+        return jsonify({
+            "symbol": symbol,
+            "price": float(cg.get("price", 0)),
+            "change_24h": 0,
+            "change_24h_pct": float(cg.get("priceChangePercent", 0)),
+            "high_24h": 0, "low_24h": 0,
+            "volume_24h": float(cg.get("volume", 0)),
+            "quote_volume": float(cg.get("quoteVolume", 0)),
+            "weighted_avg": 0,
+            "source": "coingecko",
+        })
 
     return jsonify({
         "symbol": symbol,
