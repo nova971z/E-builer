@@ -11591,12 +11591,21 @@ def api_mtf_signals():
 
 @app.route("/")
 def serve_dashboard():
-    return send_from_directory(str(BASE_DIR), "dashboard.html")
+    resp = send_from_directory(str(BASE_DIR), "dashboard.html")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/<path:path>")
 def serve_static(path):
-    return send_from_directory(str(BASE_DIR), path)
+    resp = send_from_directory(str(BASE_DIR), path)
+    if path.endswith((".html", ".htm")):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
 
 
 # ===========================================================================
